@@ -6,47 +6,23 @@ import (
 	"io"
 )
 
+const (
+	settingsPacketID uint32 = 0x80000000 + iota
+	windowPacketID
+	openPacketID
+	resetPacketID
+	pingPacketID
+	fatalPacketID
+)
+
 // Returned when an unknown packet is encountered on the wire
 var ErrUnknownPacket = errors.New("unknown packet")
 
 // Returned when an invalid data is encountered in a well defined packet
 var ErrInvalidPacket = errors.New("invalid packet")
 
-type dataPacket struct {
-	streamID uint32
-	data     []byte
-	flags    uint8
-}
-
-type settingsPacket struct {
-	values map[uint32][]byte
-}
-
-type windowPacket struct {
-	streamID  uint32
-	increment uint32
-}
-
-type openPacket struct {
-	streamID uint32
-	targetID uint32
-	data     []byte
-	flags    uint8
-}
-
-type resetPacket struct {
-	streamID uint32
-	reason   uint32
-	message  []byte
-}
-
-type pingPacket struct {
-	value uint32
-}
-
-type fatalPacket struct {
-	reason  uint32
-	message []byte
+type packet interface {
+	writePacketTo(w io.Writer) error
 }
 
 func readRawPacket(r io.Reader) (hdr packetHeader, data []byte, err error) {
@@ -58,7 +34,173 @@ func readRawPacket(r io.Reader) (hdr packetHeader, data []byte, err error) {
 	return
 }
 
-func readPacket(r io.Reader) (packet interface{}, err error) {
+type dataPacket struct {
+	streamID uint32
+	data     []byte
+	flags    uint8
+}
+
+func (p dataPacket) writePacketTo(w io.Writer) (err error) {
+	err = writePacketHeader(w, packetHeader{
+		packetTypeID: p.streamID,
+		flagsAndSize: uint32(p.flags)<<24 | uint32(len(p.data)),
+	})
+	if err == nil {
+		_, err = w.Write(p.data)
+	}
+	return
+}
+
+type settingsPacket struct {
+	values map[uint32][]byte
+}
+
+func (p settingsPacket) writePacketTo(w io.Writer) (err error) {
+	size := 4 + len(p.values)*8
+	for _, data := range p.values {
+		size += len(data)
+	}
+	err = writePacketHeader(w, packetHeader{
+		packetTypeID: settingsPacketID,
+		flagsAndSize: uint32(size),
+	})
+	if err != nil {
+		return
+	}
+	var buf [8]byte
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(len(p.values)))
+	_, err = w.Write(buf[0:4])
+	if err != nil {
+		return
+	}
+	for id, data := range p.values {
+		binary.LittleEndian.PutUint32(buf[0:4], id)
+		binary.LittleEndian.PutUint32(buf[4:8], uint32(len(data)))
+		_, err = w.Write(buf[:])
+		if err != nil {
+			return
+		}
+		if len(data) > 0 {
+			_, err = w.Write(data)
+			if err != nil {
+				return
+			}
+		}
+	}
+	return
+}
+
+type windowPacket struct {
+	streamID  uint32
+	increment uint32
+}
+
+func (p windowPacket) writePacketTo(w io.Writer) (err error) {
+	err = writePacketHeader(w, packetHeader{
+		packetTypeID: windowPacketID,
+		flagsAndSize: 8,
+	})
+	if err == nil {
+		var buf [8]byte
+		binary.LittleEndian.PutUint32(buf[0:4], p.streamID)
+		binary.LittleEndian.PutUint32(buf[4:8], p.increment)
+		_, err = w.Write(buf[:])
+	}
+	return
+}
+
+type openPacket struct {
+	streamID uint32
+	targetID uint32
+	data     []byte
+	flags    uint8
+}
+
+func (p openPacket) writePacketTo(w io.Writer) (err error) {
+	err = writePacketHeader(w, packetHeader{
+		packetTypeID: openPacketID,
+		flagsAndSize: uint32(p.flags)<<24 | uint32(len(p.data)+8),
+	})
+	if err == nil {
+		var buf [8]byte
+		binary.LittleEndian.PutUint32(buf[0:4], p.streamID)
+		binary.LittleEndian.PutUint32(buf[4:8], p.targetID)
+		_, err = w.Write(buf[:])
+		if err == nil {
+			if len(p.data) > 0 {
+				_, err = w.Write(p.data)
+			}
+		}
+	}
+	return
+}
+
+type resetPacket struct {
+	streamID uint32
+	reason   uint32
+	message  []byte
+}
+
+func (p resetPacket) writePacketTo(w io.Writer) (err error) {
+	err = writePacketHeader(w, packetHeader{
+		packetTypeID: resetPacketID,
+		flagsAndSize: uint32(len(p.message) + 8),
+	})
+	if err == nil {
+		var buf [8]byte
+		binary.LittleEndian.PutUint32(buf[0:4], p.streamID)
+		binary.LittleEndian.PutUint32(buf[4:8], p.reason)
+		_, err = w.Write(buf[:])
+		if err == nil {
+			if len(p.message) > 0 {
+				_, err = w.Write(p.message)
+			}
+		}
+	}
+	return
+}
+
+type pingPacket struct {
+	value uint32
+}
+
+func (p pingPacket) writePacketTo(w io.Writer) (err error) {
+	err = writePacketHeader(w, packetHeader{
+		packetTypeID: pingPacketID,
+		flagsAndSize: 4,
+	})
+	if err == nil {
+		var buf [4]byte
+		binary.LittleEndian.PutUint32(buf[0:4], p.value)
+		_, err = w.Write(buf[:])
+	}
+	return
+}
+
+type fatalPacket struct {
+	reason  uint32
+	message []byte
+}
+
+func (p fatalPacket) writePacketTo(w io.Writer) (err error) {
+	err = writePacketHeader(w, packetHeader{
+		packetTypeID: fatalPacketID,
+		flagsAndSize: uint32(len(p.message) + 4),
+	})
+	if err == nil {
+		var buf [4]byte
+		binary.LittleEndian.PutUint32(buf[0:4], p.reason)
+		_, err = w.Write(buf[:])
+		if err == nil {
+			if len(p.message) > 0 {
+				_, err = w.Write(p.message)
+			}
+		}
+	}
+	return
+}
+
+func readPacket(r io.Reader) (p packet, err error) {
 	hdr, data, err := readRawPacket(r)
 	if err != nil {
 		return nil, err
@@ -70,8 +212,8 @@ func readPacket(r io.Reader) (packet interface{}, err error) {
 			data:     data,
 		}, nil
 	}
-	switch hdr.CommandID() {
-	case 0:
+	switch hdr.packetTypeID {
+	case settingsPacketID:
 		if len(data) < 4 {
 			return nil, ErrInvalidPacket
 		}
@@ -96,7 +238,7 @@ func readPacket(r io.Reader) (packet interface{}, err error) {
 		return settingsPacket{
 			values: values,
 		}, nil
-	case 1:
+	case windowPacketID:
 		if len(data) < 8 {
 			return nil, ErrInvalidPacket
 		}
@@ -104,7 +246,7 @@ func readPacket(r io.Reader) (packet interface{}, err error) {
 			streamID:  binary.LittleEndian.Uint32(data[0:4]),
 			increment: binary.LittleEndian.Uint32(data[4:8]),
 		}, nil
-	case 2:
+	case openPacketID:
 		if len(data) < 8 {
 			return nil, ErrInvalidPacket
 		}
@@ -114,7 +256,7 @@ func readPacket(r io.Reader) (packet interface{}, err error) {
 			flags:    hdr.Flags(),
 			data:     data[8:],
 		}, nil
-	case 3:
+	case resetPacketID:
 		if len(data) < 8 {
 			return nil, ErrInvalidPacket
 		}
@@ -123,14 +265,14 @@ func readPacket(r io.Reader) (packet interface{}, err error) {
 			reason:   binary.LittleEndian.Uint32(data[4:8]),
 			message:  data[8:],
 		}, nil
-	case 4:
+	case pingPacketID:
 		if len(data) < 4 {
 			return nil, ErrInvalidPacket
 		}
 		return pingPacket{
 			value: binary.LittleEndian.Uint32(data[0:4]),
 		}, nil
-	case 5:
+	case fatalPacketID:
 		if len(data) < 4 {
 			return nil, ErrInvalidPacket
 		}
@@ -141,120 +283,4 @@ func readPacket(r io.Reader) (packet interface{}, err error) {
 	default:
 		return nil, ErrUnknownPacket
 	}
-}
-
-func writePacket(w io.Writer, packet interface{}) (err error) {
-	switch v := packet.(type) {
-	case dataPacket:
-		err = writePacketHeader(w, packetHeader{
-			commandAndID: v.streamID,
-			flagsAndSize: uint32(v.flags)<<24 | uint32(len(v.data)),
-		})
-		if err == nil {
-			_, err = w.Write(v.data)
-		}
-	case settingsPacket:
-		size := 4 + len(v.values)*8
-		for _, data := range v.values {
-			size += len(data)
-		}
-		err = writePacketHeader(w, packetHeader{
-			commandAndID: 0x80000000,
-			flagsAndSize: uint32(size),
-		})
-		if err != nil {
-			return
-		}
-		var buf [8]byte
-		binary.LittleEndian.PutUint32(buf[0:4], uint32(len(v.values)))
-		_, err = w.Write(buf[0:4])
-		if err != nil {
-			return
-		}
-		for id, data := range v.values {
-			binary.LittleEndian.PutUint32(buf[0:4], id)
-			binary.LittleEndian.PutUint32(buf[4:8], uint32(len(data)))
-			_, err = w.Write(buf[:])
-			if err != nil {
-				return
-			}
-			if len(data) > 0 {
-				_, err = w.Write(data)
-				if err != nil {
-					return
-				}
-			}
-		}
-	case windowPacket:
-		err = writePacketHeader(w, packetHeader{
-			commandAndID: 0x80000001,
-			flagsAndSize: 8,
-		})
-		if err == nil {
-			var buf [8]byte
-			binary.LittleEndian.PutUint32(buf[0:4], v.streamID)
-			binary.LittleEndian.PutUint32(buf[4:8], v.increment)
-			_, err = w.Write(buf[:])
-		}
-	case openPacket:
-		err = writePacketHeader(w, packetHeader{
-			commandAndID: 0x80000002,
-			flagsAndSize: uint32(v.flags)<<24 | uint32(len(v.data)+8),
-		})
-		if err == nil {
-			var buf [8]byte
-			binary.LittleEndian.PutUint32(buf[0:4], v.streamID)
-			binary.LittleEndian.PutUint32(buf[4:8], v.targetID)
-			_, err = w.Write(buf[:])
-			if err == nil {
-				if len(v.data) > 0 {
-					_, err = w.Write(v.data)
-				}
-			}
-		}
-	case resetPacket:
-		err = writePacketHeader(w, packetHeader{
-			commandAndID: 0x80000003,
-			flagsAndSize: uint32(len(v.message) + 8),
-		})
-		if err == nil {
-			var buf [8]byte
-			binary.LittleEndian.PutUint32(buf[0:4], v.streamID)
-			binary.LittleEndian.PutUint32(buf[4:8], v.reason)
-			_, err = w.Write(buf[:])
-			if err == nil {
-				if len(v.message) > 0 {
-					_, err = w.Write(v.message)
-				}
-			}
-		}
-	case pingPacket:
-		err = writePacketHeader(w, packetHeader{
-			commandAndID: 0x80000004,
-			flagsAndSize: 4,
-		})
-		if err == nil {
-			var buf [4]byte
-			binary.LittleEndian.PutUint32(buf[0:4], v.value)
-			_, err = w.Write(buf[:])
-		}
-	case fatalPacket:
-		err = writePacketHeader(w, packetHeader{
-			commandAndID: 0x80000005,
-			flagsAndSize: uint32(len(v.message) + 4),
-		})
-		if err == nil {
-			var buf [4]byte
-			binary.LittleEndian.PutUint32(buf[0:4], v.reason)
-			_, err = w.Write(buf[:])
-			if err == nil {
-				if len(v.message) > 0 {
-					_, err = w.Write(v.message)
-				}
-			}
-		}
-	default:
-		return ErrUnknownPacket
-	}
-	return
 }
