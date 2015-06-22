@@ -145,18 +145,19 @@ func (p resetFrame) writeFrameTo(w io.Writer) (err error) {
 }
 
 type pingFrame struct {
-	value uint32
+	flags uint8
+	value uint64
 }
 
 func (p pingFrame) writeFrameTo(w io.Writer) (err error) {
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  pingFrameID,
-		flagsSize: 4,
+		flagsSize: uint32(p.flags)<<24 | 8,
 	})
 	if err == nil {
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[0:4], p.value)
-		_, err = w.Write(buf[0:4])
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[0:8], p.value)
+		_, err = w.Write(buf[0:8])
 	}
 	return
 }
@@ -314,16 +315,17 @@ func readFrame(r io.Reader) (p frame, err error) {
 			message:  message,
 		}, nil
 	case pingFrameID:
-		if size < 4 {
+		if size < 8 {
 			return nil, ErrInvalidFrame
 		}
-		var buf [4]byte
-		_, err = io.ReadFull(lr, buf[0:4])
+		var buf [8]byte
+		_, err = io.ReadFull(lr, buf[0:8])
 		if err != nil {
 			return
 		}
 		return pingFrame{
-			value: binary.LittleEndian.Uint32(buf[0:4]),
+			flags: flags,
+			value: binary.LittleEndian.Uint64(buf[0:8]),
 		}, nil
 	case fatalFrameID:
 		if size < 4 {
