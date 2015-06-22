@@ -52,14 +52,11 @@ func (p dataPacket) writePacketTo(w io.Writer) (err error) {
 }
 
 type settingsPacket struct {
-	values map[uint32][]byte
+	values map[uint32]uint32
 }
 
 func (p settingsPacket) writePacketTo(w io.Writer) (err error) {
 	size := 4 + len(p.values)*8
-	for _, data := range p.values {
-		size += len(data)
-	}
 	err = writePacketHeader(w, packetHeader{
 		packetTypeID: settingsPacketID,
 		flagsAndSize: uint32(size),
@@ -73,18 +70,12 @@ func (p settingsPacket) writePacketTo(w io.Writer) (err error) {
 	if err != nil {
 		return
 	}
-	for id, data := range p.values {
+	for id, value := range p.values {
 		binary.LittleEndian.PutUint32(buf[0:4], id)
-		binary.LittleEndian.PutUint32(buf[4:8], uint32(len(data)))
+		binary.LittleEndian.PutUint32(buf[4:8], value)
 		_, err = w.Write(buf[:])
 		if err != nil {
 			return
-		}
-		if len(data) > 0 {
-			_, err = w.Write(data)
-			if err != nil {
-				return
-			}
 		}
 	}
 	return
@@ -222,17 +213,16 @@ func readPacket(r io.Reader) (p packet, err error) {
 		if count > 256 {
 			return nil, ErrInvalidPacket
 		}
-		values := make(map[uint32][]byte, count)
+		values := make(map[uint32]uint32, count)
 		for count > 0 {
 			if pos > len(data) || len(data)-pos < 8 {
 				return nil, ErrInvalidPacket
 			}
 			id := binary.LittleEndian.Uint32(data[pos : pos+4])
 			pos += 4
-			size := binary.LittleEndian.Uint32(data[pos : pos+4])
+			value := binary.LittleEndian.Uint32(data[pos : pos+4])
 			pos += 4
-			values[id] = data[pos : pos+int(size)]
-			pos += int(size)
+			values[id] = value
 			count--
 		}
 		return settingsPacket{
