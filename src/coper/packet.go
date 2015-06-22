@@ -35,9 +35,9 @@ func readRawPacket(r io.Reader) (hdr packetHeader, data []byte, err error) {
 }
 
 type dataPacket struct {
+	flags    uint8
 	streamID uint32
 	data     []byte
-	flags    uint8
 }
 
 func (p dataPacket) writePacketTo(w io.Writer) (err error) {
@@ -110,21 +110,21 @@ func (p windowPacket) writePacketTo(w io.Writer) (err error) {
 }
 
 type openPacket struct {
-	streamID uint32
-	targetID uint32
-	data     []byte
 	flags    uint8
+	streamID uint32
+	targetID uint64
+	data     []byte
 }
 
 func (p openPacket) writePacketTo(w io.Writer) (err error) {
 	err = writePacketHeader(w, packetHeader{
 		packetTypeID: openPacketID,
-		flagsAndSize: uint32(p.flags)<<24 | uint32(len(p.data)+8),
+		flagsAndSize: uint32(p.flags)<<24 | uint32(len(p.data)+12),
 	})
 	if err == nil {
-		var buf [8]byte
+		var buf [12]byte
 		binary.LittleEndian.PutUint32(buf[0:4], p.streamID)
-		binary.LittleEndian.PutUint32(buf[4:8], p.targetID)
+		binary.LittleEndian.PutUint64(buf[4:12], p.targetID)
 		_, err = w.Write(buf[:])
 		if err == nil {
 			if len(p.data) > 0 {
@@ -247,12 +247,12 @@ func readPacket(r io.Reader) (p packet, err error) {
 			increment: binary.LittleEndian.Uint32(data[4:8]),
 		}, nil
 	case openPacketID:
-		if len(data) < 8 {
+		if len(data) < 12 {
 			return nil, ErrInvalidPacket
 		}
 		return openPacket{
 			streamID: binary.LittleEndian.Uint32(data[0:4]),
-			targetID: binary.LittleEndian.Uint32(data[4:8]),
+			targetID: binary.LittleEndian.Uint64(data[4:12]),
 			flags:    hdr.Flags(),
 			data:     data[8:],
 		}, nil
