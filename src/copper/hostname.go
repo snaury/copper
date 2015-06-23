@@ -1,4 +1,4 @@
-package coper
+package copper
 
 import (
 	"net"

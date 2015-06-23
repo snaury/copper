@@ -1,4 +1,4 @@
-package coper
+package copper
 
 import (
 	"bufio"
@@ -38,7 +38,7 @@ func (f StreamHandlerFunc) HandleStream(target int64, r io.Reader, w io.Writer) 
 	f(target, r, w)
 }
 
-// Conn is a multiplexed connection implementing the coper protocol
+// Conn is a multiplexed connection implementing the copper protocol
 type Conn interface {
 	Close() error
 	OpenStream(target int64) (r io.Reader, w io.Writer, err error)
@@ -61,7 +61,7 @@ type rawConn struct {
 
 var _ Conn = &rawConn{}
 
-// NewConn wraps the underlying network connection with the coper protocol
+// NewConn wraps the underlying network connection with the copper protocol
 func NewConn(conn net.Conn, handler StreamHandler) Conn {
 	handlers := map[int64]StreamHandler{
 		0: handler,

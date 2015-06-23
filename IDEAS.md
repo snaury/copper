@@ -1,3 +1,5 @@
+WARNING: details in this document are outdated and might not match with the actual protocol implementation.
+
 # Coping with Microservices
 
 The basic idea is to make communication between microservices in a cloud of clusters in different datacenters as simple as possible, making launching and debugging microservices easier, moving routing and load balancing out of scope of application code.
