@@ -251,6 +251,11 @@ func (c *rawConn) writeloop() {
 	for {
 		select {
 		case <-c.signal:
+			if !t.Stop() {
+				// If t has expired we need to drain the channel to prevent
+				// spurios activation on the next iteration.
+				<-t.C
+			}
 		case <-t.C:
 			datarequired = true
 		}
@@ -270,10 +275,12 @@ func (c *rawConn) writeloop() {
 				c.conn.Close()
 				return
 			}
+			// if there are no frames to send we may go to sleep
 			datarequired = false
 			if len(frames) == 0 {
 				break
 			}
+			// send all frames that have been accumulated
 			for _, frame := range frames {
 				c.conn.SetWriteDeadline(time.Now().Add(inactivityTimeout))
 				err = frame.writeFrameTo(w)
@@ -283,7 +290,13 @@ func (c *rawConn) writeloop() {
 					return
 				}
 			}
+			// clear the signal flag before the next iteration
+			select {
+			case <-c.signal:
+			default:
+			}
 		}
+		// we must flush all accumulated data before going to sleep
 		if w.Buffered() > 0 {
 			c.conn.SetWriteDeadline(time.Now().Add(inactivityTimeout))
 			err := w.Flush()
