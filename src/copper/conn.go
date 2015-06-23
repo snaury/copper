@@ -219,17 +219,11 @@ func (c *rawConn) readloop() {
 	c.failAllPings()
 }
 
-func (c *rawConn) prepareWriteBatch(timeout bool) (frames []frame, err error) {
+func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if c.closed {
 		return nil, c.failure
-	}
-	if timeout && len(c.pingQueue) == 0 {
-		// add a syntetic ping request
-		value := uint64(time.Now().UnixNano())
-		c.pingResults[value] = append([]chan error{nil}, c.pingResults[value]...)
-		c.pingQueue = append(c.pingQueue, value)
 	}
 	if len(c.pingQueue) > 0 {
 		for _, value := range c.pingQueue {
@@ -240,21 +234,27 @@ func (c *rawConn) prepareWriteBatch(timeout bool) (frames []frame, err error) {
 		c.pingQueue = c.pingQueue[:0]
 		return
 	}
-	panic("TODO")
+	if datarequired {
+		frames = append(frames, dataFrame{
+			streamID: 0,
+			data:     nil,
+		})
+	}
+	return
 }
 
 func (c *rawConn) writeloop() {
+	datarequired := false
 	w := bufio.NewWriter(c.conn)
 	t := time.NewTimer(generatePingAfter)
 	for {
-		timeout := false
 		select {
 		case <-c.signal:
 		case <-t.C:
-			timeout = true
+			datarequired = true
 		}
 		for {
-			frames, err := c.prepareWriteBatch(timeout)
+			frames, err := c.prepareWriteBatch(datarequired)
 			if err != nil {
 				// Attempt to notify the other side that we have an error
 				// It's ok if any of this fails, the read side will stop
@@ -269,6 +269,7 @@ func (c *rawConn) writeloop() {
 				c.conn.Close()
 				return
 			}
+			datarequired = false
 			if len(frames) == 0 {
 				break
 			}
@@ -281,7 +282,6 @@ func (c *rawConn) writeloop() {
 					return
 				}
 			}
-			timeout = false
 		}
 		if w.Buffered() > 0 {
 			c.conn.SetWriteDeadline(time.Now().Add(inactivityTimeout))
