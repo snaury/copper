@@ -7,16 +7,26 @@ import (
 )
 
 const (
-	settingsFrameID uint32 = 0x80000000 + iota
-	windowFrameID
+	pingFrameID uint32 = 0x80000000 + iota
 	openFrameID
 	resetFrameID
-	pingFrameID
 	fatalFrameID
+	windowFrameID
+	settingsFrameID
 )
 
 const (
-	maxFramePayloadSize = 0xffffff
+	maxFramePayloadSize         = 0xffffff
+	maxOpenFramePayloadSize     = maxFramePayloadSize - 12
+	maxResetFrameMessageSize    = maxFramePayloadSize - 8
+	maxFatalFrameMessageSize    = maxFramePayloadSize - 4
+	maxSettingsFramePayloadSize = 8 * 256
+)
+
+const (
+	// Used for PING and SETTINGS
+	flagAck uint8 = 1
+	flagFin uint8 = 1
 )
 
 // Returned when an unknown packet is encountered on the wire
@@ -51,56 +61,19 @@ func (p dataFrame) writeFrameTo(w io.Writer) (err error) {
 	return
 }
 
-type settingsFrame struct {
-	values map[int]int
+type pingFrame struct {
+	flags uint8
+	value uint64
 }
 
-func (p settingsFrame) writeFrameTo(w io.Writer) (err error) {
-	if len(p.values) > 256 {
-		return ErrInvalidFrame
-	}
-	size := 4 + len(p.values)*8
-	if size > maxFramePayloadSize {
-		return ErrInvalidFrame
-	}
+func (p pingFrame) writeFrameTo(w io.Writer) (err error) {
 	err = writeFrameHeader(w, frameHeader{
-		streamID:  settingsFrameID,
-		flagsSize: uint32(size),
-	})
-	if err != nil {
-		return
-	}
-	var buf [8]byte
-	binary.LittleEndian.PutUint32(buf[0:4], uint32(len(p.values)))
-	_, err = w.Write(buf[0:4])
-	if err != nil {
-		return
-	}
-	for id, value := range p.values {
-		binary.LittleEndian.PutUint32(buf[0:4], uint32(id))
-		binary.LittleEndian.PutUint32(buf[4:8], uint32(value))
-		_, err = w.Write(buf[0:8])
-		if err != nil {
-			return
-		}
-	}
-	return
-}
-
-type windowFrame struct {
-	streamID  int
-	increment int
-}
-
-func (p windowFrame) writeFrameTo(w io.Writer) (err error) {
-	err = writeFrameHeader(w, frameHeader{
-		streamID:  windowFrameID,
-		flagsSize: uint32(8),
+		streamID:  pingFrameID,
+		flagsSize: uint32(p.flags)<<24 | 8,
 	})
 	if err == nil {
 		var buf [8]byte
-		binary.LittleEndian.PutUint32(buf[0:4], uint32(p.streamID))
-		binary.LittleEndian.PutUint32(buf[4:8], uint32(p.increment))
+		binary.LittleEndian.PutUint64(buf[0:8], p.value)
 		_, err = w.Write(buf[0:8])
 	}
 	return
@@ -114,7 +87,7 @@ type openFrame struct {
 }
 
 func (p openFrame) writeFrameTo(w io.Writer) (err error) {
-	if len(p.data) > maxFramePayloadSize-12 {
+	if len(p.data) > maxOpenFramePayloadSize {
 		return ErrInvalidFrame
 	}
 	err = writeFrameHeader(w, frameHeader{
@@ -136,18 +109,19 @@ func (p openFrame) writeFrameTo(w io.Writer) (err error) {
 }
 
 type resetFrame struct {
+	flags    uint8
 	streamID int
 	reason   int
 	message  []byte
 }
 
 func (p resetFrame) writeFrameTo(w io.Writer) (err error) {
-	if len(p.message) > maxFramePayloadSize-8 {
+	if len(p.message) > maxResetFrameMessageSize {
 		return ErrInvalidFrame
 	}
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  resetFrameID,
-		flagsSize: uint32(len(p.message) + 8),
+		flagsSize: uint32(p.flags)<<24 | uint32(len(p.message)+8),
 	})
 	if err == nil {
 		var buf [8]byte
@@ -163,36 +137,19 @@ func (p resetFrame) writeFrameTo(w io.Writer) (err error) {
 	return
 }
 
-type pingFrame struct {
-	flags uint8
-	value uint64
-}
-
-func (p pingFrame) writeFrameTo(w io.Writer) (err error) {
-	err = writeFrameHeader(w, frameHeader{
-		streamID:  pingFrameID,
-		flagsSize: uint32(p.flags)<<24 | 8,
-	})
-	if err == nil {
-		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[0:8], p.value)
-		_, err = w.Write(buf[0:8])
-	}
-	return
-}
-
 type fatalFrame struct {
+	flags   uint8
 	reason  int
 	message []byte
 }
 
 func (p fatalFrame) writeFrameTo(w io.Writer) (err error) {
-	if len(p.message) > maxFramePayloadSize-4 {
+	if len(p.message) > maxFatalFrameMessageSize {
 		return ErrInvalidFrame
 	}
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  fatalFrameID,
-		flagsSize: uint32(len(p.message) + 4),
+		flagsSize: uint32(p.flags)<<24 | uint32(len(p.message)+4),
 	})
 	if err == nil {
 		var buf [4]byte
@@ -202,6 +159,55 @@ func (p fatalFrame) writeFrameTo(w io.Writer) (err error) {
 			if len(p.message) > 0 {
 				_, err = w.Write(p.message)
 			}
+		}
+	}
+	return
+}
+
+type windowFrame struct {
+	flags     uint8
+	streamID  int
+	increment int
+}
+
+func (p windowFrame) writeFrameTo(w io.Writer) (err error) {
+	err = writeFrameHeader(w, frameHeader{
+		streamID:  windowFrameID,
+		flagsSize: uint32(p.flags)<<24 | uint32(8),
+	})
+	if err == nil {
+		var buf [8]byte
+		binary.LittleEndian.PutUint32(buf[0:4], uint32(p.streamID))
+		binary.LittleEndian.PutUint32(buf[4:8], uint32(p.increment))
+		_, err = w.Write(buf[0:8])
+	}
+	return
+}
+
+type settingsFrame struct {
+	flags  uint8
+	values map[int]int
+}
+
+func (p settingsFrame) writeFrameTo(w io.Writer) (err error) {
+	size := len(p.values) * 8
+	if size > maxSettingsFramePayloadSize {
+		return ErrInvalidFrame
+	}
+	err = writeFrameHeader(w, frameHeader{
+		streamID:  settingsFrameID,
+		flagsSize: uint32(p.flags)<<24 | uint32(size),
+	})
+	if err != nil {
+		return
+	}
+	var buf [8]byte
+	for id, value := range p.values {
+		binary.LittleEndian.PutUint32(buf[0:4], uint32(id))
+		binary.LittleEndian.PutUint32(buf[4:8], uint32(value))
+		_, err = w.Write(buf[0:8])
+		if err != nil {
+			return
 		}
 	}
 	return
@@ -222,8 +228,8 @@ func readFrame(r io.Reader) (p frame, err error) {
 			}
 		}
 		return dataFrame{
-			streamID: int(hdr.streamID),
 			flags:    hdr.Flags(),
+			streamID: int(hdr.streamID),
 			data:     data,
 		}, nil
 	}
@@ -232,37 +238,7 @@ func readFrame(r io.Reader) (p frame, err error) {
 		N: int64(hdr.Size()),
 	}
 	switch hdr.streamID {
-	case settingsFrameID:
-		if lr.N < 4 {
-			return nil, ErrInvalidFrame
-		}
-		var buf [8]byte
-		_, err = io.ReadFull(lr, buf[0:4])
-		if err != nil {
-			return
-		}
-		count := binary.LittleEndian.Uint32(buf[0:4])
-		if count > 256 {
-			return nil, ErrInvalidFrame
-		}
-		if lr.N != int64(count*8) {
-			return nil, ErrInvalidFrame
-		}
-		values := make(map[int]int, count)
-		for count > 0 {
-			_, err = io.ReadFull(lr, buf[0:8])
-			if err != nil {
-				return
-			}
-			id := int(binary.LittleEndian.Uint32(buf[0:4]))
-			value := int(binary.LittleEndian.Uint32(buf[4:8]))
-			values[id] = value
-			count--
-		}
-		return settingsFrame{
-			values: values,
-		}, nil
-	case windowFrameID:
+	case pingFrameID:
 		if lr.N != 8 {
 			return nil, ErrInvalidFrame
 		}
@@ -271,9 +247,9 @@ func readFrame(r io.Reader) (p frame, err error) {
 		if err != nil {
 			return
 		}
-		return windowFrame{
-			streamID:  int(binary.LittleEndian.Uint32(buf[0:4])),
-			increment: int(binary.LittleEndian.Uint32(buf[4:8])),
+		return pingFrame{
+			flags: hdr.Flags(),
+			value: binary.LittleEndian.Uint64(buf[0:8]),
 		}, nil
 	case openFrameID:
 		if lr.N < 12 {
@@ -293,9 +269,9 @@ func readFrame(r io.Reader) (p frame, err error) {
 			}
 		}
 		return openFrame{
+			flags:    hdr.Flags(),
 			streamID: int(binary.LittleEndian.Uint32(buf[0:4])),
 			targetID: int64(binary.LittleEndian.Uint64(buf[4:12])),
-			flags:    hdr.Flags(),
 			data:     data,
 		}, nil
 	case resetFrameID:
@@ -316,22 +292,10 @@ func readFrame(r io.Reader) (p frame, err error) {
 			}
 		}
 		return resetFrame{
+			flags:    hdr.Flags(),
 			streamID: int(binary.LittleEndian.Uint32(buf[0:4])),
 			reason:   int(binary.LittleEndian.Uint32(buf[4:8])),
 			message:  message,
-		}, nil
-	case pingFrameID:
-		if lr.N != 8 {
-			return nil, ErrInvalidFrame
-		}
-		var buf [8]byte
-		_, err = io.ReadFull(lr, buf[0:8])
-		if err != nil {
-			return
-		}
-		return pingFrame{
-			flags: hdr.Flags(),
-			value: binary.LittleEndian.Uint64(buf[0:8]),
 		}, nil
 	case fatalFrameID:
 		if lr.N < 4 {
@@ -351,8 +315,51 @@ func readFrame(r io.Reader) (p frame, err error) {
 			}
 		}
 		return fatalFrame{
+			flags:   hdr.Flags(),
 			reason:  int(binary.LittleEndian.Uint32(buf[0:4])),
 			message: message,
+		}, nil
+	case windowFrameID:
+		if lr.N != 8 {
+			return nil, ErrInvalidFrame
+		}
+		var buf [8]byte
+		_, err = io.ReadFull(lr, buf[0:8])
+		if err != nil {
+			return
+		}
+		return windowFrame{
+			flags:     hdr.Flags(),
+			streamID:  int(binary.LittleEndian.Uint32(buf[0:4])),
+			increment: int(binary.LittleEndian.Uint32(buf[4:8])),
+		}, nil
+	case settingsFrameID:
+		var values map[int]int
+		if hdr.Flags()&flagAck != 0 {
+			if lr.N != 0 {
+				return nil, ErrInvalidFrame
+			}
+		} else {
+			if lr.N > maxSettingsFramePayloadSize || (lr.N%8) != 0 {
+				return nil, ErrInvalidFrame
+			}
+			var buf [8]byte
+			count := int(lr.N / 8)
+			values = make(map[int]int, count)
+			for count > 0 {
+				_, err = io.ReadFull(lr, buf[0:8])
+				if err != nil {
+					return
+				}
+				id := int(binary.LittleEndian.Uint32(buf[0:4]))
+				value := int(binary.LittleEndian.Uint32(buf[4:8]))
+				values[id] = value
+				count--
+			}
+		}
+		return settingsFrame{
+			flags:  hdr.Flags(),
+			values: values,
 		}, nil
 	default:
 		return nil, ErrUnknownFrame
