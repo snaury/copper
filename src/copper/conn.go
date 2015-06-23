@@ -193,6 +193,7 @@ func (c *rawConn) failAllPings() {
 func (c *rawConn) readloop() {
 	r := bufio.NewReader(c.conn)
 	for {
+		c.conn.SetReadDeadline(time.Now().Add(inactivityTimeout))
 		rawFrame, err := readFrame(r)
 		if err != nil {
 			c.closeWithError(err)
