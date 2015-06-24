@@ -29,12 +29,6 @@ const (
 	flagFin uint8 = 1
 )
 
-// Returned when an unknown packet is encountered on the wire
-var ErrUnknownFrame = errors.New("unknown frame")
-
-// Returned when an invalid data is encountered in a well defined frame
-var ErrInvalidFrame = errors.New("invalid frame")
-
 type frame interface {
 	writeFrameTo(w io.Writer) error
 }
@@ -47,7 +41,7 @@ type dataFrame struct {
 
 func (p dataFrame) writeFrameTo(w io.Writer) (err error) {
 	if len(p.data) > maxFramePayloadSize {
-		return ErrInvalidFrame
+		return EINVALIDFRAME
 	}
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  uint32(p.streamID),
@@ -88,7 +82,7 @@ type openFrame struct {
 
 func (p openFrame) writeFrameTo(w io.Writer) (err error) {
 	if len(p.data) > maxOpenFramePayloadSize {
-		return ErrInvalidFrame
+		return EINVALIDFRAME
 	}
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  openFrameID,
@@ -111,13 +105,13 @@ func (p openFrame) writeFrameTo(w io.Writer) (err error) {
 type resetFrame struct {
 	flags    uint8
 	streamID int
-	reason   int
+	reason   ErrorCode
 	message  []byte
 }
 
 func (p resetFrame) writeFrameTo(w io.Writer) (err error) {
 	if len(p.message) > maxResetFrameMessageSize {
-		return ErrInvalidFrame
+		return EINVALIDFRAME
 	}
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  resetFrameID,
@@ -137,15 +131,25 @@ func (p resetFrame) writeFrameTo(w io.Writer) (err error) {
 	return
 }
 
+func (p resetFrame) toError() error {
+	if len(p.message) == 0 {
+		return p.reason
+	}
+	return &errorWithReason{
+		error:  errors.New(string(p.message)),
+		reason: p.reason,
+	}
+}
+
 type fatalFrame struct {
 	flags   uint8
-	reason  int
+	reason  ErrorCode
 	message []byte
 }
 
 func (p fatalFrame) writeFrameTo(w io.Writer) (err error) {
 	if len(p.message) > maxFatalFrameMessageSize {
-		return ErrInvalidFrame
+		return EINVALIDFRAME
 	}
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  fatalFrameID,
@@ -192,7 +196,7 @@ type settingsFrame struct {
 func (p settingsFrame) writeFrameTo(w io.Writer) (err error) {
 	size := len(p.values) * 8
 	if size > maxSettingsFramePayloadSize {
-		return ErrInvalidFrame
+		return EINVALIDFRAME
 	}
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  settingsFrameID,
@@ -240,7 +244,7 @@ func readFrame(r io.Reader) (p frame, err error) {
 	switch hdr.streamID {
 	case pingFrameID:
 		if lr.N != 8 {
-			return nil, ErrInvalidFrame
+			return nil, EINVALIDFRAME
 		}
 		var buf [8]byte
 		_, err = io.ReadFull(lr, buf[0:8])
@@ -253,7 +257,7 @@ func readFrame(r io.Reader) (p frame, err error) {
 		}, nil
 	case openFrameID:
 		if lr.N < 12 {
-			return nil, ErrInvalidFrame
+			return nil, EINVALIDFRAME
 		}
 		var buf [12]byte
 		_, err = io.ReadFull(lr, buf[0:12])
@@ -276,7 +280,7 @@ func readFrame(r io.Reader) (p frame, err error) {
 		}, nil
 	case resetFrameID:
 		if lr.N < 8 {
-			return nil, ErrInvalidFrame
+			return nil, EINVALIDFRAME
 		}
 		var buf [8]byte
 		_, err = io.ReadFull(lr, buf[0:8])
@@ -294,12 +298,12 @@ func readFrame(r io.Reader) (p frame, err error) {
 		return resetFrame{
 			flags:    hdr.Flags(),
 			streamID: int(binary.LittleEndian.Uint32(buf[0:4])),
-			reason:   int(binary.LittleEndian.Uint32(buf[4:8])),
+			reason:   ErrorCode(binary.LittleEndian.Uint32(buf[4:8])),
 			message:  message,
 		}, nil
 	case fatalFrameID:
 		if lr.N < 4 {
-			return nil, ErrInvalidFrame
+			return nil, EINVALIDFRAME
 		}
 		var buf [4]byte
 		_, err = io.ReadFull(lr, buf[0:4])
@@ -316,12 +320,12 @@ func readFrame(r io.Reader) (p frame, err error) {
 		}
 		return fatalFrame{
 			flags:   hdr.Flags(),
-			reason:  int(binary.LittleEndian.Uint32(buf[0:4])),
+			reason:  ErrorCode(binary.LittleEndian.Uint32(buf[0:4])),
 			message: message,
 		}, nil
 	case windowFrameID:
 		if lr.N != 8 {
-			return nil, ErrInvalidFrame
+			return nil, EINVALIDFRAME
 		}
 		var buf [8]byte
 		_, err = io.ReadFull(lr, buf[0:8])
@@ -337,11 +341,11 @@ func readFrame(r io.Reader) (p frame, err error) {
 		var values map[int]int
 		if hdr.Flags()&flagAck != 0 {
 			if lr.N != 0 {
-				return nil, ErrInvalidFrame
+				return nil, EINVALIDFRAME
 			}
 		} else {
 			if lr.N > maxSettingsFramePayloadSize || (lr.N%8) != 0 {
-				return nil, ErrInvalidFrame
+				return nil, EINVALIDFRAME
 			}
 			var buf [8]byte
 			count := int(lr.N / 8)
@@ -362,6 +366,6 @@ func readFrame(r io.Reader) (p frame, err error) {
 			values: values,
 		}, nil
 	default:
-		return nil, ErrUnknownFrame
+		return nil, EUNKNOWNFRAME
 	}
 }

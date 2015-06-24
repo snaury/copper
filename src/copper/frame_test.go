@@ -149,3 +149,17 @@ func TestFrameWriting(t *testing.T) {
 		t.Fatalf("Unexpected frame data:\n%#v\nExpected:\n%#v", buf, rawFrameData)
 	}
 }
+
+func TestFrameErrors(t *testing.T) {
+	r := bytes.NewReader([]byte{
+		0xff, 0x00, 0x00, 0x80,
+		0x00, 0x00, 0x00, 0x00,
+	})
+	f, err := readFrame(r)
+	if err == nil {
+		t.Fatalf("Unexpected frame: %#v", f)
+	}
+	if err != ErrUnknownFrame {
+		t.Fatalf("Got unexpected error: %#v", err)
+	}
+}

@@ -2,78 +2,89 @@ package copper
 
 import (
 	"bufio"
-	"errors"
-	"io"
+	"fmt"
 	"net"
 	"sync"
 	"time"
 )
 
 const (
-	inactivityTimeout = 60 * time.Second
-	generatePingAfter = 2 * inactivityTimeout / 3
+	defaultConnWindowSize    = 65536
+	defaultStreamWindowSize  = 65536
+	defaultInactivityTimeout = 60 * time.Second
 )
-
-// Returned when stream handler is nil
-var ErrInvalidStreamHandler = errors.New("stream handler cannot be nil")
-
-// Returned when target id is not valid or not previously registered
-var ErrInvalidTarget = errors.New("target must be greater than 0 and registered")
-
-// Returned when connection is closed with a Close() call
-var ErrConnClosed = errors.New("connection closed")
 
 // StreamHandler is used to handle incoming streams
 type StreamHandler interface {
-	HandleStream(target int64, r io.Reader, w io.Writer)
+	HandleStream(target int64, s Stream)
 }
 
 // StreamHandlerFunc wraps a function to conform with StreamHandler interface
-type StreamHandlerFunc func(target int64, r io.Reader, w io.Writer)
+type StreamHandlerFunc func(target int64, s Stream)
 
 var _ StreamHandler = StreamHandlerFunc(nil)
 
 // HandleStream calls the underlying function
-func (f StreamHandlerFunc) HandleStream(target int64, r io.Reader, w io.Writer) {
-	f(target, r, w)
+func (f StreamHandlerFunc) HandleStream(target int64, s Stream) {
+	f(target, s)
 }
 
 // Conn is a multiplexed connection implementing the copper protocol
 type Conn interface {
+	Wait() error
 	Close() error
-	OpenStream(target int64) (r io.Reader, w io.Writer, err error)
-	AddHandler(handler StreamHandler) (target int64, err error)
-	RemoveHandler(target int64) error
+	LocalAddr() net.Addr
+	RemoteAddr() net.Addr
+	OpenStream(target int64) (s Stream, err error)
 }
 
 type rawConn struct {
-	lock        sync.Mutex
-	conn        net.Conn
-	closed      bool
-	failure     error
-	signal      chan struct{}
-	pingAcks    []uint64
-	pingQueue   []uint64
-	pingResults map[uint64][]chan error
-	handlers    map[int64]StreamHandler
-	nexthandler int64
+	lock                    sync.Mutex
+	conn                    net.Conn
+	closed                  bool
+	closedcond              sync.Cond
+	failure                 error
+	signal                  chan struct{}
+	handler                 StreamHandler
+	streams                 map[int]*stream
+	freestreams             map[int]struct{}
+	nextnewstream           int
+	pingAcks                []uint64
+	pingQueue               []uint64
+	pingResults             map[uint64][]chan error
+	outgoingAcks            map[int]int
+	outgoingData            map[int]struct{}
+	writeleft               int
+	localConnWindowSize     int
+	remoteConnWindowSize    int
+	localStreamWindowSize   int
+	remoteStreamWindowSize  int
+	localInactivityTimeout  time.Duration
+	remoteInactivityTimeout time.Duration
 }
-
-var _ Conn = &rawConn{}
 
 // NewConn wraps the underlying network connection with the copper protocol
 func NewConn(conn net.Conn, handler StreamHandler) Conn {
-	handlers := map[int64]StreamHandler{
-		0: handler,
-	}
 	c := &rawConn{
-		conn:        conn,
-		closed:      false,
-		signal:      make(chan struct{}, 1),
-		pingResults: make(map[uint64][]chan error),
-		handlers:    handlers,
-		nexthandler: 1,
+		conn:                    conn,
+		closed:                  false,
+		signal:                  make(chan struct{}, 1),
+		handler:                 handler,
+		streams:                 make(map[int]*stream),
+		freestreams:             make(map[int]struct{}),
+		nextnewstream:           1,
+		pingResults:             make(map[uint64][]chan error),
+		outgoingAcks:            make(map[int]int),
+		outgoingData:            make(map[int]struct{}),
+		writeleft:               defaultConnWindowSize,
+		localConnWindowSize:     defaultConnWindowSize,
+		remoteConnWindowSize:    defaultConnWindowSize,
+		localStreamWindowSize:   defaultStreamWindowSize,
+		remoteStreamWindowSize:  defaultStreamWindowSize,
+		localInactivityTimeout:  defaultInactivityTimeout,
+		remoteInactivityTimeout: defaultInactivityTimeout,
 	}
+	c.closedcond.L = &c.lock
 	go c.readloop()
 	go c.writeloop()
 	return c
@@ -93,6 +104,7 @@ func (c *rawConn) closeWithErrorLocked(err error) error {
 		c.closed = true
 		c.failure = err
 		close(c.signal)
+		c.closedcond.Broadcast()
 		return nil
 	}
 	return c.failure
@@ -104,38 +116,30 @@ func (c *rawConn) closeWithError(err error) error {
 	return c.closeWithErrorLocked(err)
 }
 
+func (c *rawConn) Wait() error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	for !c.closed {
+		c.closedcond.Wait()
+	}
+	return c.failure
+}
+
 func (c *rawConn) Close() error {
-	return c.closeWithError(ErrConnClosed)
+	return c.closeWithError(ECONNCLOSED)
 }
 
-func (c *rawConn) OpenStream(target int64) (io.Reader, io.Writer, error) {
+func (c *rawConn) LocalAddr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+func (c *rawConn) RemoteAddr() net.Addr {
+	return c.conn.RemoteAddr()
+}
+
+func (c *rawConn) OpenStream(target int64) (Stream, error) {
 	// TODO
-	return nil, nil, nil
-}
-
-func (c *rawConn) AddHandler(handler StreamHandler) (int64, error) {
-	if handler == nil {
-		return 0, ErrInvalidStreamHandler
-	}
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	target := c.nexthandler
-	c.nexthandler++
-	c.handlers[target] = handler
-	return target, nil
-}
-
-func (c *rawConn) RemoveHandler(target int64) error {
-	if target <= 0 {
-		return ErrInvalidTarget
-	}
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	if _, ok := c.handlers[target]; !ok {
-		return ErrInvalidTarget
-	}
-	delete(c.handlers, target)
-	return nil
+	return nil, nil
 }
 
 func (c *rawConn) addPingAck(value uint64) {
@@ -190,14 +194,143 @@ func (c *rawConn) failAllPings() {
 	}
 }
 
+func (c *rawConn) addOutgoingAckLocked(streamID int, increment int) {
+	if !c.closed {
+		old := c.outgoingAcks[streamID]
+		c.outgoingAcks[streamID] = old + increment
+		if old == 0 {
+			c.wakeupLocked()
+		}
+	}
+}
+
+func (c *rawConn) addOutgoingDataLocked(streamID int) {
+	if !c.closed {
+		_, ok := c.outgoingData[streamID]
+		if !ok {
+			c.outgoingData[streamID] = struct{}{}
+			c.wakeupLocked()
+		}
+	}
+}
+
+func (c *rawConn) incrementWindowLocked(n int) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	old := c.writeleft
+	c.writeleft = old + n
+	if old == 0 {
+		c.wakeupLocked()
+	}
+}
+
+func (c *rawConn) handleStream(target int64, s *stream) {
+	//TODO
+	if c.handler != nil {
+		//defer s.Close()
+		//c.handler.HandleStream(target, s)
+	} else {
+		//s.CloseWithError(ENOTARGET)
+	}
+}
+
+func (c *rawConn) cleanupStreamLocked(s *stream) {
+	if s.isFullyClosed() {
+		// connection is fully closed and may be forgotten
+		delete(c.streams, s.streamID)
+		if s.streamID&1 == 1 {
+			// this is local stream, remember it for reuse
+			c.freestreams[s.streamID] = struct{}{}
+		}
+	}
+}
+
+func (c *rawConn) processOpenFrame(frame openFrame) error {
+	if frame.streamID <= 0 || frame.streamID&1 != 0 {
+		return EINVALIDSTREAM
+	}
+	if len(frame.data) > c.localStreamWindowSize {
+		return EWINDOWOVERFLOW
+	}
+	s := newIncomingStream(c, frame)
+	s.writeleft = c.remoteStreamWindowSize
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if len(frame.data) > 0 {
+		c.addOutgoingAckLocked(0, len(frame.data))
+	}
+	old := c.streams[frame.streamID]
+	if old != nil {
+		return &errorWithReason{
+			error:  fmt.Errorf("stream 0x%08x cannot be opened until fully closed"),
+			reason: EINVALIDSTREAM,
+		}
+	}
+	c.streams[frame.streamID] = s
+	go c.handleStream(frame.targetID, s)
+	return nil
+}
+
+func (c *rawConn) processDataFrame(frame dataFrame) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if len(frame.data) > 0 {
+		c.addOutgoingAckLocked(0, len(frame.data))
+	}
+	s := c.streams[frame.streamID]
+	if s == nil {
+		return &errorWithReason{
+			error:  fmt.Errorf("stream 0x%08x is unknown"),
+			reason: EINVALIDSTREAM,
+		}
+	}
+	err := s.processDataFrameLocked(frame)
+	if err != nil {
+		return err
+	}
+	c.cleanupStreamLocked(s)
+	return nil
+}
+
+func (c *rawConn) processResetFrame(frame resetFrame) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	s := c.streams[frame.streamID]
+	if s == nil {
+		// it's ok to receive reset frames for unknown streams
+		return nil
+	}
+	err := s.processResetFrameLocked(frame)
+	if err != nil {
+		return err
+	}
+	c.cleanupStreamLocked(s)
+	return nil
+}
+
+func (c *rawConn) processWindowFrame(frame windowFrame) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if frame.streamID == 0 {
+		c.incrementWindowLocked(frame.increment)
+		return nil
+	}
+	s := c.streams[frame.streamID]
+	if s != nil {
+		s.incrementWindowLocked(frame.increment)
+	}
+	return nil
+}
+
 func (c *rawConn) readloop() {
 	r := bufio.NewReader(c.conn)
+readloop:
 	for {
-		c.conn.SetReadDeadline(time.Now().Add(inactivityTimeout))
+		c.conn.SetReadDeadline(time.Now().Add(c.localInactivityTimeout))
 		rawFrame, err := readFrame(r)
 		if err != nil {
 			c.closeWithError(err)
-			break
+			break readloop
 		}
 		switch frame := rawFrame.(type) {
 		case pingFrame:
@@ -212,6 +345,30 @@ func (c *rawConn) readloop() {
 				}
 			} else {
 				c.addPingAck(frame.value)
+			}
+		case openFrame:
+			err = c.processOpenFrame(frame)
+			if err != nil {
+				c.closeWithError(err)
+				break readloop
+			}
+		case dataFrame:
+			err = c.processDataFrame(frame)
+			if err != nil {
+				c.closeWithError(err)
+				break readloop
+			}
+		case resetFrame:
+			err = c.processResetFrame(frame)
+			if err != nil {
+				c.closeWithError(err)
+				break readloop
+			}
+		case windowFrame:
+			err = c.processWindowFrame(frame)
+			if err != nil {
+				c.closeWithError(err)
+				break readloop
 			}
 		default:
 			panic("unhandled frame type")
@@ -235,6 +392,37 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 		c.pingQueue = c.pingQueue[:0]
 		return
 	}
+	if len(c.outgoingAcks) > 0 {
+		for streamID, increment := range c.outgoingAcks {
+			frames = append(frames, windowFrame{
+				streamID:  streamID,
+				increment: increment,
+			})
+			delete(c.outgoingAcks, streamID)
+		}
+		return
+	}
+	if len(c.outgoingData) > 0 && c.writeleft > 0 {
+		var sent int
+		var active bool
+		for streamID := range c.outgoingData {
+			s := c.streams[streamID]
+			if s == nil {
+				// the connection is already gone
+				delete(c.outgoingData, streamID)
+				continue
+			}
+			frames, sent, active = s.outgoingFramesLocked(frames, c.writeleft)
+			if !active {
+				delete(c.outgoingData, streamID)
+			}
+			c.writeleft -= sent
+			if c.writeleft == 0 {
+				break
+			}
+		}
+		return
+	}
 	if datarequired {
 		frames = append(frames, dataFrame{
 			streamID: 0,
@@ -247,7 +435,7 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 func (c *rawConn) writeloop() {
 	datarequired := false
 	w := bufio.NewWriter(c.conn)
-	t := time.NewTimer(generatePingAfter)
+	t := time.NewTimer(2 * c.remoteInactivityTimeout / 3)
 	for {
 		select {
 		case <-c.signal:
@@ -265,12 +453,8 @@ func (c *rawConn) writeloop() {
 				// Attempt to notify the other side that we have an error
 				// It's ok if any of this fails, the read side will stop
 				// when we close the connection.
-				c.conn.SetWriteDeadline(time.Now().Add(inactivityTimeout))
-				frame := fatalFrame{
-					reason:  255, // TODO: implement reason codes
-					message: []byte(err.Error()),
-				}
-				frame.writeFrameTo(w)
+				c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
+				errorToFatalFrame(err).writeFrameTo(w)
 				w.Flush()
 				c.conn.Close()
 				return
@@ -282,7 +466,7 @@ func (c *rawConn) writeloop() {
 			}
 			// send all frames that have been accumulated
 			for _, frame := range frames {
-				c.conn.SetWriteDeadline(time.Now().Add(inactivityTimeout))
+				c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
 				err = frame.writeFrameTo(w)
 				if err != nil {
 					c.closeWithError(err)
@@ -298,7 +482,7 @@ func (c *rawConn) writeloop() {
 		}
 		// we must flush all accumulated data before going to sleep
 		if w.Buffered() > 0 {
-			c.conn.SetWriteDeadline(time.Now().Add(inactivityTimeout))
+			c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
 			err := w.Flush()
 			if err != nil {
 				c.closeWithError(err)
@@ -306,6 +490,6 @@ func (c *rawConn) writeloop() {
 				return
 			}
 		}
-		t.Reset(generatePingAfter)
+		t.Reset(2 * c.remoteInactivityTimeout / 3)
 	}
 }
