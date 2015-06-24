@@ -159,7 +159,7 @@ func TestFrameErrors(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Unexpected frame: %#v", f)
 	}
-	if err != ErrUnknownFrame {
+	if err != EUNKNOWNFRAME {
 		t.Fatalf("Got unexpected error: %#v", err)
 	}
 }
