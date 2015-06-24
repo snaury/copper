@@ -14,21 +14,6 @@ const (
 	defaultInactivityTimeout = 60 * time.Second
 )
 
-// StreamHandler is used to handle incoming streams
-type StreamHandler interface {
-	HandleStream(target int64, s Stream)
-}
-
-// StreamHandlerFunc wraps a function to conform with StreamHandler interface
-type StreamHandlerFunc func(target int64, s Stream)
-
-var _ StreamHandler = StreamHandlerFunc(nil)
-
-// HandleStream calls the underlying function
-func (f StreamHandlerFunc) HandleStream(target int64, s Stream) {
-	f(target, s)
-}
-
 // Conn is a multiplexed connection implementing the copper protocol
 type Conn interface {
 	Wait() error
@@ -47,6 +32,7 @@ type rawConn struct {
 	signal                  chan struct{}
 	handler                 StreamHandler
 	streams                 map[int]*stream
+	deadstreams             map[int]struct{}
 	freestreams             map[int]struct{}
 	nextnewstream           int
 	pingAcks                []uint64
@@ -71,6 +57,7 @@ func NewConn(conn net.Conn, handler StreamHandler) Conn {
 		signal:                  make(chan struct{}, 1),
 		handler:                 handler,
 		streams:                 make(map[int]*stream),
+		deadstreams:             make(map[int]struct{}),
 		freestreams:             make(map[int]struct{}),
 		nextnewstream:           1,
 		pingResults:             make(map[uint64][]chan error),
@@ -225,12 +212,11 @@ func (c *rawConn) incrementWindowLocked(n int) {
 }
 
 func (c *rawConn) handleStream(target int64, s *stream) {
-	//TODO
 	if c.handler != nil {
-		//defer s.Close()
-		//c.handler.HandleStream(target, s)
+		defer s.Close()
+		c.handler.HandleStream(target, s)
 	} else {
-		//s.CloseWithError(ENOTARGET)
+		s.CloseWithError(ENOTARGET)
 	}
 }
 
@@ -239,8 +225,9 @@ func (c *rawConn) cleanupStreamLocked(s *stream) {
 		// connection is fully closed and may be forgotten
 		delete(c.streams, s.streamID)
 		if s.streamID&1 == 1 {
-			// this is local stream, remember it for reuse
-			c.freestreams[s.streamID] = struct{}{}
+			// this is local stream, it is no longer in use, but when
+			// confirmed might be up for reuse
+			c.deadstreams[s.streamID] = struct{}{}
 		}
 	}
 }
@@ -404,7 +391,6 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 	}
 	if len(c.outgoingData) > 0 && c.writeleft > 0 {
 		var sent int
-		var active bool
 		for streamID := range c.outgoingData {
 			s := c.streams[streamID]
 			if s == nil {
@@ -412,8 +398,8 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 				delete(c.outgoingData, streamID)
 				continue
 			}
-			frames, sent, active = s.outgoingFramesLocked(frames, c.writeleft)
-			if !active {
+			frames, sent = s.outgoingFramesLocked(frames, c.writeleft)
+			if !s.active() {
 				delete(c.outgoingData, streamID)
 			}
 			c.writeleft -= sent

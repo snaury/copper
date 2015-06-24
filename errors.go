@@ -99,10 +99,9 @@ func errorToFatalFrame(err error) fatalFrame {
 	}
 }
 
-func errorToResetFrame(flags uint8, streamID int, err error) resetFrame {
+func errorToResetFrame(streamID int, err error) resetFrame {
 	if e, ok := err.(ErrorCode); ok {
 		return resetFrame{
-			flags:    flags,
 			streamID: streamID,
 			reason:   e,
 			message:  nil,
@@ -110,14 +109,12 @@ func errorToResetFrame(flags uint8, streamID int, err error) resetFrame {
 	}
 	if e, ok := err.(ErrorWithReason); ok {
 		return resetFrame{
-			flags:    flags,
 			streamID: streamID,
 			reason:   e.Reason(),
 			message:  []byte(e.Error()),
 		}
 	}
 	return resetFrame{
-		flags:    flags,
 		streamID: streamID,
 		reason:   EUNKNOWN,
 		message:  []byte(err.Error()),

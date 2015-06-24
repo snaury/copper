@@ -168,6 +168,16 @@ func (p fatalFrame) writeFrameTo(w io.Writer) (err error) {
 	return
 }
 
+func (p fatalFrame) toError() error {
+	if len(p.message) == 0 {
+		return p.reason
+	}
+	return &errorWithReason{
+		error:  errors.New(string(p.message)),
+		reason: p.reason,
+	}
+}
+
 type windowFrame struct {
 	flags     uint8
 	streamID  int
