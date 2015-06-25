@@ -3,9 +3,15 @@ package copper
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"time"
+)
+
+const (
+	debugConnReadFrame = false
+	debugConnSendFrame = false
 )
 
 const (
@@ -34,7 +40,7 @@ type rawConn struct {
 	failure                 error
 	signal                  chan struct{}
 	handler                 StreamHandler
-	streams                 map[int]*stream
+	streams                 map[int]*rawStream
 	deadstreams             map[int]struct{}
 	freestreams             map[int]struct{}
 	nextnewstream           int
@@ -62,7 +68,7 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 		closed:                  false,
 		signal:                  make(chan struct{}, 1),
 		handler:                 handler,
-		streams:                 make(map[int]*stream),
+		streams:                 make(map[int]*rawStream),
 		deadstreams:             make(map[int]struct{}),
 		freestreams:             make(map[int]struct{}),
 		nextnewstream:           1,
@@ -87,6 +93,13 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 	go c.readloop()
 	go c.writeloop()
 	return c
+}
+
+func (c *rawConn) debugPrefix() string {
+	if c.isserver {
+		return "server"
+	}
+	return "client"
 }
 
 func (c *rawConn) wakeupLocked() {
@@ -232,7 +245,7 @@ func (c *rawConn) addOutgoingDataLocked(streamID int) {
 	}
 }
 
-func (c *rawConn) handleStream(target int64, s *stream) {
+func (c *rawConn) handleStream(target int64, s Stream) {
 	if c.handler != nil {
 		defer s.Close()
 		c.handler.HandleStream(target, s)
@@ -241,7 +254,7 @@ func (c *rawConn) handleStream(target int64, s *stream) {
 	}
 }
 
-func (c *rawConn) cleanupStreamLocked(s *stream) {
+func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 	if s.isFullyClosed() {
 		// connection is fully closed and may be forgotten
 		delete(c.streams, s.streamID)
@@ -368,8 +381,14 @@ readloop:
 		c.conn.SetReadDeadline(time.Now().Add(c.localInactivityTimeout))
 		rawFrame, err := readFrame(r)
 		if err != nil {
+			if debugConnReadFrame {
+				log.Printf("%s: read error: %v", c.debugPrefix(), err)
+			}
 			c.closeWithError(err)
 			break readloop
+		}
+		if debugConnReadFrame {
+			log.Printf("%s: read: %#v", c.debugPrefix(), rawFrame)
 		}
 		switch frame := rawFrame.(type) {
 		case pingFrame:
@@ -460,12 +479,12 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 				// should always be the case
 				delete(c.outgoingCtrl, streamID)
 			}
-			if sent > 0 && !s.activeData() {
-				// we sent all data together with control
-				delete(c.outgoingData, streamID)
-			}
 			if len(frames) > 0 {
 				c.writeleft -= sent
+				if sent > 0 && !s.activeData() {
+					// we sent all data together with control
+					delete(c.outgoingData, streamID)
+				}
 				return
 			}
 		}
@@ -499,6 +518,7 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 }
 
 func (c *rawConn) writeloop() {
+	defer c.conn.Close()
 	datarequired := false
 	w := bufio.NewWriter(c.conn)
 	t := time.NewTimer(2 * c.remoteInactivityTimeout / 3)
@@ -519,10 +539,20 @@ func (c *rawConn) writeloop() {
 				// Attempt to notify the other side that we have an error
 				// It's ok if any of this fails, the read side will stop
 				// when we close the connection.
+				frame := errorToFatalFrame(err)
+				if debugConnSendFrame {
+					log.Printf("%s: send: %#v", c.debugPrefix(), frame)
+				}
 				c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
-				errorToFatalFrame(err).writeFrameTo(w)
-				w.Flush()
-				c.conn.Close()
+				err = frame.writeFrameTo(w)
+				if debugConnSendFrame && err != nil {
+					log.Printf("%s: send error: %v", c.debugPrefix(), err)
+					return
+				}
+				err = w.Flush()
+				if debugConnSendFrame && err != nil {
+					log.Printf("%s: send error: %v", c.debugPrefix(), err)
+				}
 				return
 			}
 			// if there are no frames to send we may go to sleep
@@ -532,11 +562,16 @@ func (c *rawConn) writeloop() {
 			}
 			// send all frames that have been accumulated
 			for _, frame := range frames {
+				if debugConnSendFrame {
+					log.Printf("%s: send: %#v", c.debugPrefix(), frame)
+				}
 				c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
 				err = frame.writeFrameTo(w)
 				if err != nil {
+					if debugConnSendFrame {
+						log.Printf("%s: send error: %v", c.debugPrefix(), err)
+					}
 					c.closeWithError(err)
-					c.conn.Close()
 					return
 				}
 			}
@@ -551,8 +586,10 @@ func (c *rawConn) writeloop() {
 			c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
 			err := w.Flush()
 			if err != nil {
+				if debugConnSendFrame {
+					log.Printf("%s: send error: %v", c.debugPrefix(), err)
+				}
 				c.closeWithError(err)
-				c.conn.Close()
 				return
 			}
 		}

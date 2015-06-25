@@ -27,7 +27,7 @@ type Stream interface {
 	Flush() error
 }
 
-var _ Stream = &stream{}
+var _ Stream = &rawStream{}
 
 const (
 	flagStreamSentEOF   = 1
@@ -36,11 +36,12 @@ const (
 	flagStreamSentReset = 4
 	flagStreamSeenReset = 8
 	flagStreamNeedOpen  = 16
-	flagStreamNeedReset = 32
-	flagStreamNeedEOF   = 64
+	flagStreamNeedEOF   = 32
+	flagStreamNeedReset = 64
+	flagStreamDiscard   = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
 )
 
-type stream struct {
+type rawStream struct {
 	flags      int
 	streamID   int
 	targetID   int64
@@ -54,14 +55,11 @@ type stream struct {
 	writeleft  int
 	reseterror error
 	flushed    sync.Cond
+	delayerror error
 }
 
-func (s *stream) isFullyClosed() bool {
-	return s.flags&flagStreamBothEOF == flagStreamBothEOF
-}
-
-func newIncomingStream(owner *rawConn, frame openFrame, maxwrite int) *stream {
-	s := &stream{
+func newIncomingStream(owner *rawConn, frame openFrame, maxwrite int) *rawStream {
+	s := &rawStream{
 		streamID:  frame.streamID,
 		targetID:  frame.targetID,
 		owner:     owner,
@@ -78,8 +76,8 @@ func newIncomingStream(owner *rawConn, frame openFrame, maxwrite int) *stream {
 	return s
 }
 
-func newOutgoingStream(owner *rawConn, streamID int, targetID int64, maxwrite int) *stream {
-	s := &stream{
+func newOutgoingStream(owner *rawConn, streamID int, targetID int64, maxwrite int) *rawStream {
+	s := &rawStream{
 		streamID:  streamID,
 		targetID:  targetID,
 		owner:     owner,
@@ -92,7 +90,11 @@ func newOutgoingStream(owner *rawConn, streamID int, targetID int64, maxwrite in
 	return s
 }
 
-func (s *stream) Read(b []byte) (n int, err error) {
+func (s *rawStream) isFullyClosed() bool {
+	return s.flags&flagStreamBothEOF == flagStreamBothEOF
+}
+
+func (s *rawStream) Read(b []byte) (n int, err error) {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	for n < len(b) {
@@ -116,36 +118,35 @@ func (s *stream) Read(b []byte) (n int, err error) {
 	return
 }
 
-func (s *stream) processDataFrameLocked(frame dataFrame) error {
+func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 	if s.flags&flagStreamSeenEOF != 0 {
 		return &errorWithReason{
 			error:  fmt.Errorf("stream 0x%08x cannot have DATA after EOF"),
 			reason: EINVALIDSTREAM,
 		}
 	}
-	wakeup := false
 	if s.readerror == nil && len(frame.data) > 0 {
 		if s.readbuf.len() == 0 {
-			wakeup = true
+			s.mayread.Broadcast()
 		}
 		s.readbuf.write(frame.data)
 	}
 	if frame.flags&flagFin != 0 {
 		s.flags |= flagStreamSeenEOF
+		if s.delayerror == nil {
+			s.delayerror = io.EOF
+		}
 		if s.readerror == nil {
-			s.readerror = io.EOF
+			s.readerror = s.delayerror
 			if s.readbuf.len() == 0 {
-				wakeup = true
+				s.mayread.Broadcast()
 			}
 		}
-	}
-	if wakeup {
-		s.mayread.Broadcast()
 	}
 	return nil
 }
 
-func (s *stream) Write(b []byte) (n int, err error) {
+func (s *rawStream) Write(b []byte) (n int, err error) {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	for n < len(b) {
@@ -169,18 +170,23 @@ func (s *stream) Write(b []byte) (n int, err error) {
 	return
 }
 
-func (s *stream) processResetFrameLocked(frame resetFrame) error {
-	// RESET frame is an implicit EOF and destroys all unprocessed data
-	s.flags |= flagStreamSeenEOF | flagStreamSeenReset
-	if s.readerror == nil {
-		s.readerror = frame.toError()
-		if e, ok := s.readerror.(ErrorReason); ok && e.Reason() == ECLOSED {
-			s.readerror = io.EOF
+func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
+	s.flags |= flagStreamSeenReset
+	if s.delayerror == nil {
+		s.delayerror = frame.toError()
+		if s.delayerror == ECLOSED {
+			// ECLOSED is special, it translated to a normal EOF
+			s.delayerror = io.EOF
 		}
-		if s.readbuf.len() == 0 {
-			s.mayread.Broadcast()
+	}
+	if frame.flags&flagFin != 0 {
+		s.flags |= flagStreamSeenEOF
+		if s.readerror == nil {
+			s.readerror = s.delayerror
+			if s.readbuf.len() == 0 {
+				s.mayread.Broadcast()
+			}
 		}
-		s.readbuf.clear()
 	}
 	if s.writeerror == nil {
 		s.writeerror = frame.toError()
@@ -198,7 +204,7 @@ func (s *stream) processResetFrameLocked(frame resetFrame) error {
 	return nil
 }
 
-func (s *stream) processWindowFrameLocked(frame windowFrame) error {
+func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 	old := s.writeleft
 	s.writeleft = old + frame.increment
 	if old == 0 && s.writeleft > 0 {
@@ -207,27 +213,16 @@ func (s *stream) processWindowFrameLocked(frame windowFrame) error {
 	return nil
 }
 
-func (s *stream) outgoingFramesLocked(inframes []frame, maxsize int) (frames []frame, total int) {
+func (s *rawStream) outgoingFramesLocked(inframes []frame, maxsize int) (frames []frame, total int) {
 	frames = inframes
 	for {
-		if s.flags&flagStreamNeedReset != 0 {
-			if s.flags&flagStreamNeedOpen != 0 {
-				// if stream has been closed before we could send OPEN we may
-				// as well discard everything and pretent it's been fully
-				// closed as if we sent RESET and received a EOF.
-				s.flags = flagStreamSeenEOF | flagStreamSentEOF | flagStreamSentReset
-			} else {
-				// sending RESET implicitly sends EOF as well
-				s.flags &^= flagStreamNeedEOF | flagStreamNeedReset
-				s.flags |= flagStreamSentEOF | flagStreamSentReset
-				frames = append(frames, errorToResetFrame(
-					0,
-					s.streamID,
-					s.reseterror,
-				))
-			}
+		if s.flags&flagStreamDiscard == flagStreamDiscard && s.writebuf.len() == 0 {
+			// If stream was opened, and then immediately closed, then we don't
+			// have to send any frames at all, just pretend it all happened
+			// already and move on.
+			s.flags = flagStreamSentEOF | flagStreamSeenEOF | flagStreamSentReset
 			break
-		} else if s.flags&flagStreamNeedOpen != 0 {
+		} else if s.outgoingSendOpen() {
 			s.flags &^= flagStreamNeedOpen
 			n := s.writebuf.len()
 			if n > maxOpenFramePayloadSize {
@@ -252,6 +247,14 @@ func (s *stream) outgoingFramesLocked(inframes []frame, maxsize int) (frames []f
 			})
 			maxsize -= len(data)
 			total += len(data)
+		} else if s.outgoingSendReset() {
+			s.flags &^= flagStreamNeedReset
+			s.flags |= flagStreamSentReset
+			frames = append(frames, errorToResetFrame(
+				s.outgoingFlags(),
+				s.streamID,
+				s.reseterror,
+			))
 		} else if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
 			s.flags &^= flagStreamNeedEOF
 			s.flags |= flagStreamSentEOF
@@ -289,10 +292,53 @@ func (s *stream) outgoingFramesLocked(inframes []frame, maxsize int) (frames []f
 	return
 }
 
-func (s *stream) outgoingFlags() uint8 {
+func (s *rawStream) outgoingSendOpen() bool {
+	return s.flags&flagStreamNeedOpen != 0
+}
+
+func (s *rawStream) outgoingSendReset() bool {
+	if s.flags&flagStreamNeedReset != 0 {
+		// we have a RESET frame pending
+		if s.flags&flagStreamSeenEOF != 0 {
+			// we have seen EOF: the other side cannot send us any data
+			if s.reseterror == ECLOSED {
+				// if the error was ECLOSED we don't need RESET at all
+				s.flags &^= flagStreamNeedReset
+				return false
+			}
+			if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
+				// since we are about to EOF we might as well do it with RESET
+				return true
+			}
+			// we may delay RESET until we need to send EOF
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func (s *rawStream) outgoingSendEOF() bool {
+	if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
+		// we have no data and need to send EOF
+		if s.flags&flagStreamNeedReset != 0 {
+			// however there's an active reset as well
+			if s.reseterror == ECLOSED {
+				// errors like ECLOSED are translated into io.EOF, so it's ok
+				// to send EOF even if we have a pending RESET.
+				return true
+			}
+			// must send RESET before sending EOF
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func (s *rawStream) outgoingFlags() uint8 {
 	var flags uint8
-	if s.flags&flagStreamNeedEOF != 0 && s.writebuf.len() == 0 {
-		// need to send eof and no buffered data
+	if s.outgoingSendEOF() {
 		s.flags &^= flagStreamNeedEOF
 		s.flags |= flagStreamSentEOF
 		flags |= flagFin
@@ -300,21 +346,24 @@ func (s *stream) outgoingFlags() uint8 {
 	return flags
 }
 
-func (s *stream) activeCtrl() bool {
-	if s.flags&(flagStreamNeedOpen|flagStreamNeedReset) != 0 {
+func (s *rawStream) activeCtrl() bool {
+	if s.outgoingSendOpen() {
 		return true
 	}
-	if s.writebuf.len() == 0 && s.flags&(flagStreamNeedEOF) != 0 {
+	if s.outgoingSendReset() {
 		return true
 	}
-	return false
+	return s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0
 }
 
-func (s *stream) activeData() bool {
+func (s *rawStream) activeData() bool {
 	return s.writebuf.len() > 0
 }
 
-func (s *stream) closeWithErrorLocked(err error) error {
+func (s *rawStream) closeWithErrorLocked(err error) error {
+	if err == nil {
+		err = ECLOSED
+	}
 	preverror := s.reseterror
 	if preverror == nil {
 		s.reseterror = err
@@ -330,11 +379,8 @@ func (s *stream) closeWithErrorLocked(err error) error {
 			if s.writeleft == 0 {
 				s.maywrite.Broadcast()
 			}
-		}
-		if s.writebuf.len() > 0 {
-			s.writeleft += s.writebuf.len()
-			s.writebuf.clear()
-			s.flushed.Broadcast()
+			s.flags |= flagStreamNeedEOF
+			s.owner.addOutgoingCtrlLocked(s.streamID)
 		}
 		if !s.isFullyClosed() {
 			s.flags |= flagStreamNeedReset
@@ -344,13 +390,13 @@ func (s *stream) closeWithErrorLocked(err error) error {
 	return preverror
 }
 
-func (s *stream) Close() error {
+func (s *rawStream) Close() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
-	return s.closeWithErrorLocked(ECLOSED)
+	return s.closeWithErrorLocked(nil)
 }
 
-func (s *stream) CloseWrite() error {
+func (s *rawStream) CloseWrite() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	preverror := s.writeerror
@@ -365,13 +411,13 @@ func (s *stream) CloseWrite() error {
 	return preverror
 }
 
-func (s *stream) CloseWithError(err error) error {
+func (s *rawStream) CloseWithError(err error) error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	return s.closeWithErrorLocked(err)
 }
 
-func (s *stream) Flush() error {
+func (s *rawStream) Flush() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	for s.writebuf.len() > 0 {
