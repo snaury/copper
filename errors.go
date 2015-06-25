@@ -1,8 +1,12 @@
 package copper
 
 import (
+	"errors"
 	"fmt"
 )
+
+// ErrNoFreeStreamID is returned when all possible stream ids have been allocated
+var ErrNoFreeStreamID = errors.New("there are no free stream ids available")
 
 // ErrorCode represents a copper error code
 type ErrorCode int
@@ -57,8 +61,8 @@ func (e ErrorCode) Reason() ErrorCode {
 	return e
 }
 
-// ErrorWithReason is used to detect a copper error codes
-type ErrorWithReason interface {
+// ErrorReason is used to detect a copper error codes
+type ErrorReason interface {
 	error
 	Reason() ErrorCode
 }
@@ -87,7 +91,7 @@ func errorToFatalFrame(err error) fatalFrame {
 			message: nil,
 		}
 	}
-	if e, ok := err.(ErrorWithReason); ok {
+	if e, ok := err.(ErrorReason); ok {
 		return fatalFrame{
 			reason:  e.Reason(),
 			message: []byte(e.Error()),
@@ -99,22 +103,25 @@ func errorToFatalFrame(err error) fatalFrame {
 	}
 }
 
-func errorToResetFrame(streamID int, err error) resetFrame {
+func errorToResetFrame(flags uint8, streamID int, err error) resetFrame {
 	if e, ok := err.(ErrorCode); ok {
 		return resetFrame{
+			flags:    flags,
 			streamID: streamID,
 			reason:   e,
 			message:  nil,
 		}
 	}
-	if e, ok := err.(ErrorWithReason); ok {
+	if e, ok := err.(ErrorReason); ok {
 		return resetFrame{
+			flags:    flags,
 			streamID: streamID,
 			reason:   e.Reason(),
 			message:  []byte(e.Error()),
 		}
 	}
 	return resetFrame{
+		flags:    flags,
 		streamID: streamID,
 		reason:   EUNKNOWN,
 		message:  []byte(err.Error()),

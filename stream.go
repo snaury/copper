@@ -27,55 +27,7 @@ type Stream interface {
 	Flush() error
 }
 
-type buffer struct {
-	buf []byte
-	off int
-}
-
-func (b *buffer) len() int {
-	return len(b.buf) - b.off
-}
-
-func (b *buffer) peek() []byte {
-	if b.off != 0 {
-		m := copy(b.buf, b.buf[b.off:])
-		b.buf = b.buf[:m]
-		b.off = 0
-	}
-	return b.buf
-}
-
-func (b *buffer) grow(n int) []byte {
-	m := b.len()
-	if len(b.buf)+n > cap(b.buf) {
-		if m+n <= cap(b.buf)/2 {
-			copy(b.buf, b.buf[b.off:])
-			b.buf = b.buf[:m]
-		} else {
-			buf := make([]byte, 2*cap(b.buf)+n)
-			copy(buf, b.buf[b.off:])
-			b.buf = buf
-		}
-		b.off = 0
-	}
-	b.buf = b.buf[:b.off+m+n]
-	return b.buf[b.off+m:]
-}
-
-func (b *buffer) take(dst []byte) int {
-	n := copy(dst, b.buf[b.off:])
-	b.off += n
-	if b.off == len(b.buf) {
-		b.buf = b.buf[:0]
-		b.off = 0
-	}
-	return n
-}
-
-func (b *buffer) clear() {
-	b.buf = nil
-	b.off = 0
-}
+var _ Stream = &stream{}
 
 const (
 	flagStreamSentEOF   = 1
@@ -108,12 +60,12 @@ func (s *stream) isFullyClosed() bool {
 	return s.flags&flagStreamBothEOF == flagStreamBothEOF
 }
 
-func newIncomingStream(owner *rawConn, frame openFrame) *stream {
+func newIncomingStream(owner *rawConn, frame openFrame, maxwrite int) *stream {
 	s := &stream{
 		streamID:  frame.streamID,
 		targetID:  frame.targetID,
 		owner:     owner,
-		writeleft: 0,
+		writeleft: maxwrite,
 	}
 	s.mayread.L = &owner.lock
 	s.maywrite.L = &owner.lock
@@ -123,6 +75,20 @@ func newIncomingStream(owner *rawConn, frame openFrame) *stream {
 		s.flags |= flagStreamSeenEOF
 		s.readerror = io.EOF
 	}
+	return s
+}
+
+func newOutgoingStream(owner *rawConn, streamID int, targetID int64, maxwrite int) *stream {
+	s := &stream{
+		streamID:  streamID,
+		targetID:  targetID,
+		owner:     owner,
+		writeleft: maxwrite,
+	}
+	s.mayread.L = &owner.lock
+	s.maywrite.L = &owner.lock
+	s.flushed.L = &owner.lock
+	s.flags |= flagStreamNeedOpen
 	return s
 }
 
@@ -137,8 +103,10 @@ func (s *stream) Read(b []byte) (n int, err error) {
 			}
 			s.mayread.Wait()
 		}
-		taken := s.readbuf.take(b[n:])
-		s.owner.addOutgoingAckLocked(s.streamID, taken)
+		taken := s.readbuf.read(b[n:])
+		if s.flags&flagStreamSeenEOF == 0 {
+			s.owner.addOutgoingAckLocked(s.streamID, taken)
+		}
 		n += taken
 	}
 	if s.readerror != nil && s.readbuf.len() == 0 {
@@ -151,7 +119,7 @@ func (s *stream) Read(b []byte) (n int, err error) {
 func (s *stream) processDataFrameLocked(frame dataFrame) error {
 	if s.flags&flagStreamSeenEOF != 0 {
 		return &errorWithReason{
-			error:  fmt.Errorf("stream 0x%08x cannot have data after a EOF"),
+			error:  fmt.Errorf("stream 0x%08x cannot have DATA after EOF"),
 			reason: EINVALIDSTREAM,
 		}
 	}
@@ -160,13 +128,15 @@ func (s *stream) processDataFrameLocked(frame dataFrame) error {
 		if s.readbuf.len() == 0 {
 			wakeup = true
 		}
-		copy(s.readbuf.grow(len(frame.data)), frame.data)
+		s.readbuf.write(frame.data)
 	}
 	if frame.flags&flagFin != 0 {
 		s.flags |= flagStreamSeenEOF
 		if s.readerror == nil {
 			s.readerror = io.EOF
-			wakeup = true
+			if s.readbuf.len() == 0 {
+				wakeup = true
+			}
 		}
 	}
 	if wakeup {
@@ -191,7 +161,7 @@ func (s *stream) Write(b []byte) (n int, err error) {
 		if taken > s.writeleft {
 			taken = s.writeleft
 		}
-		copy(s.writebuf.grow(taken), b[n:])
+		s.writebuf.write(b[n:])
 		s.writeleft -= taken
 		s.owner.addOutgoingDataLocked(s.streamID)
 		n += taken
@@ -204,6 +174,9 @@ func (s *stream) processResetFrameLocked(frame resetFrame) error {
 	s.flags |= flagStreamSeenEOF | flagStreamSeenReset
 	if s.readerror == nil {
 		s.readerror = frame.toError()
+		if e, ok := s.readerror.(ErrorReason); ok && e.Reason() == ECLOSED {
+			s.readerror = io.EOF
+		}
 		if s.readbuf.len() == 0 {
 			s.mayread.Broadcast()
 		}
@@ -215,21 +188,23 @@ func (s *stream) processResetFrameLocked(frame resetFrame) error {
 			s.maywrite.Broadcast()
 		}
 		if s.writebuf.len() > 0 {
+			s.writeleft += s.writebuf.len()
 			s.writebuf.clear()
 			s.flushed.Broadcast()
 		}
 		s.flags |= flagStreamNeedEOF
-		s.owner.addOutgoingDataLocked(s.streamID)
+		s.owner.addOutgoingCtrlLocked(s.streamID)
 	}
 	return nil
 }
 
-func (s *stream) incrementWindowLocked(increment int) {
+func (s *stream) processWindowFrameLocked(frame windowFrame) error {
 	old := s.writeleft
-	s.writeleft = old + increment
-	if old == 0 {
+	s.writeleft = old + frame.increment
+	if old == 0 && s.writeleft > 0 {
 		s.maywrite.Broadcast()
 	}
+	return nil
 }
 
 func (s *stream) outgoingFramesLocked(inframes []frame, maxsize int) (frames []frame, total int) {
@@ -242,9 +217,11 @@ func (s *stream) outgoingFramesLocked(inframes []frame, maxsize int) (frames []f
 				// closed as if we sent RESET and received a EOF.
 				s.flags = flagStreamSeenEOF | flagStreamSentEOF | flagStreamSentReset
 			} else {
+				// sending RESET implicitly sends EOF as well
 				s.flags &^= flagStreamNeedEOF | flagStreamNeedReset
 				s.flags |= flagStreamSentEOF | flagStreamSentReset
 				frames = append(frames, errorToResetFrame(
+					0,
 					s.streamID,
 					s.reseterror,
 				))
@@ -262,7 +239,7 @@ func (s *stream) outgoingFramesLocked(inframes []frame, maxsize int) (frames []f
 			var data []byte
 			if n > 0 {
 				data = make([]byte, n)
-				s.writebuf.take(data)
+				s.writebuf.read(data)
 				if s.writebuf.len() == 0 {
 					s.flushed.Broadcast()
 				}
@@ -275,6 +252,14 @@ func (s *stream) outgoingFramesLocked(inframes []frame, maxsize int) (frames []f
 			})
 			maxsize -= len(data)
 			total += len(data)
+		} else if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
+			s.flags &^= flagStreamNeedEOF
+			s.flags |= flagStreamSentEOF
+			frames = append(frames, dataFrame{
+				flags:    flagFin,
+				streamID: s.streamID,
+			})
+			break
 		} else {
 			n := s.writebuf.len()
 			if n > maxFramePayloadSize {
@@ -283,19 +268,17 @@ func (s *stream) outgoingFramesLocked(inframes []frame, maxsize int) (frames []f
 			if n > maxsize {
 				n = maxsize
 			}
-			var data []byte
-			if n > 0 {
-				data = make([]byte, n)
-				s.writebuf.take(data)
-				s.flushed.Broadcast()
-			}
-			flags := s.outgoingFlags()
-			if len(data) == 0 && flags == 0 {
-				// there's actually nothing to send
+			if n == 0 {
+				// there's nothing we can send
 				break
 			}
+			data := make([]byte, n)
+			s.writebuf.read(data)
+			if s.writebuf.len() == 0 {
+				s.flushed.Broadcast()
+			}
 			frames = append(frames, dataFrame{
-				flags:    flags,
+				flags:    s.outgoingFlags(),
 				streamID: s.streamID,
 				data:     data,
 			})
@@ -317,8 +300,18 @@ func (s *stream) outgoingFlags() uint8 {
 	return flags
 }
 
-func (s *stream) active() bool {
-	return s.writebuf.len() > 0 || s.flags&(flagStreamNeedOpen|flagStreamNeedEOF|flagStreamNeedReset) != 0
+func (s *stream) activeCtrl() bool {
+	if s.flags&(flagStreamNeedOpen|flagStreamNeedReset) != 0 {
+		return true
+	}
+	if s.writebuf.len() == 0 && s.flags&(flagStreamNeedEOF) != 0 {
+		return true
+	}
+	return false
+}
+
+func (s *stream) activeData() bool {
+	return s.writebuf.len() > 0
 }
 
 func (s *stream) closeWithErrorLocked(err error) error {
@@ -337,14 +330,15 @@ func (s *stream) closeWithErrorLocked(err error) error {
 			if s.writeleft == 0 {
 				s.maywrite.Broadcast()
 			}
-			if s.writebuf.len() > 0 {
-				s.writebuf.clear()
-				s.flushed.Broadcast()
-			}
+		}
+		if s.writebuf.len() > 0 {
+			s.writeleft += s.writebuf.len()
+			s.writebuf.clear()
+			s.flushed.Broadcast()
 		}
 		if !s.isFullyClosed() {
 			s.flags |= flagStreamNeedReset
-			s.owner.addOutgoingDataLocked(s.streamID)
+			s.owner.addOutgoingCtrlLocked(s.streamID)
 		}
 	}
 	return preverror
@@ -366,7 +360,7 @@ func (s *stream) CloseWrite() error {
 			s.maywrite.Broadcast()
 		}
 		s.flags |= flagStreamNeedEOF
-		s.owner.addOutgoingDataLocked(s.streamID)
+		s.owner.addOutgoingCtrlLocked(s.streamID)
 	}
 	return preverror
 }
@@ -384,4 +378,12 @@ func (s *stream) Flush() error {
 		s.flushed.Wait()
 	}
 	return s.writeerror
+}
+
+func isClientStreamID(streamID int) bool {
+	return streamID&1 == 1
+}
+
+func isServerStreamID(streamID int) bool {
+	return streamID&1 == 0
 }
