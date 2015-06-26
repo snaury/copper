@@ -27,6 +27,7 @@ type Conn interface {
 	Close() error
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
+	Sync() <-chan error
 	Ping(value int64) <-chan error
 	Open(target int64) (stream Stream, err error)
 }
@@ -158,6 +159,45 @@ func (c *rawConn) RemoteAddr() net.Addr {
 	return c.conn.RemoteAddr()
 }
 
+func (c *rawConn) Sync() <-chan error {
+	result := make(chan error, 1)
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.closed {
+		result <- c.failure
+		close(result)
+		return result
+	}
+	deadstreams := c.deadstreams
+	c.deadstreams = make(map[int]struct{})
+	go c.syncDeadStreams(deadstreams, result)
+	return result
+}
+
+func (c *rawConn) syncDeadStreams(deadstreams map[int]struct{}, result chan<- error) {
+	err := <-c.Ping(time.Now().UnixNano())
+	if err == nil {
+		// receiving a successful response to ping proves than all frames
+		// before our outgoing ping have been processed by the other side
+		// which means we have a proof dead streams are free for reuse
+		c.lock.Lock()
+		defer c.lock.Unlock()
+		if !c.closed {
+			for streamID := range deadstreams {
+				c.freestreams[streamID] = struct{}{}
+			}
+		}
+		err = c.failure
+	}
+	if result != nil {
+		select {
+		case result <- c.failure:
+		default:
+		}
+		close(result)
+	}
+}
+
 func (c *rawConn) Ping(value int64) <-chan error {
 	result := make(chan error, 1)
 	c.lock.Lock()
@@ -226,23 +266,6 @@ func (c *rawConn) takePingResult(value int64) chan error {
 	return nil
 }
 
-func (c *rawConn) doCausalConfirmation(deadstreams map[int]struct{}) {
-	err := <-c.Ping(time.Now().UnixNano())
-	if err != nil {
-		return
-	}
-	// receiving a successful response to ping proves than all frames
-	// before our outgoing ping have been processed by the other side
-	// which means we have a proof dead streams are free for reuse
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	if !c.closed {
-		for streamID := range deadstreams {
-			c.freestreams[streamID] = struct{}{}
-		}
-	}
-}
-
 func (c *rawConn) addOutgoingAckLocked(streamID int, increment int) {
 	if !c.closed && increment > 0 {
 		wakeup := len(c.outgoingAcks) == 0
@@ -303,7 +326,7 @@ func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 			if len(c.deadstreams) >= maxDeadStreams {
 				deadstreams := c.deadstreams
 				c.deadstreams = make(map[int]struct{})
-				go c.doCausalConfirmation(deadstreams)
+				go c.syncDeadStreams(deadstreams, nil)
 			}
 		}
 	}

@@ -172,6 +172,43 @@ func TestConnPing(t *testing.T) {
 	})
 }
 
+func TestConnSync(t *testing.T) {
+	runClientServer(nil, func(client Conn) {
+		stream, err := client.Open(42)
+		if err != nil {
+			t.Fatalf("client: Open: %s", err)
+		}
+		defer stream.Close()
+		if stream.StreamID() != 1 {
+			t.Fatalf("client: unexpected stream id: %d (expected 1)", stream.StreamID())
+		}
+		_, err = stream.Write([]byte("foobar"))
+		if err != nil {
+			t.Fatalf("client: Write: %s", err)
+		}
+		stream.CloseWrite()
+		_, err = stream.Read(make([]byte, 256))
+		if err != ENOTARGET {
+			t.Fatalf("client: Read: %s (expected ENOTARGET)", err)
+		}
+		stream.Close()
+
+		err = <-client.Sync()
+		if err != nil {
+			t.Fatalf("client: Sync: %s", err)
+		}
+
+		stream, err = client.Open(43)
+		if err != nil {
+			t.Fatalf("client: Open: %s", err)
+		}
+		defer stream.Close()
+		if stream.StreamID() != 1 {
+			t.Fatalf("client: unexpected stream id: %d (expected to reuse 1)", stream.StreamID())
+		}
+	})
+}
+
 func TestStreamBigWrite(t *testing.T) {
 	runClientServer(StreamHandlerFunc(func(stream Stream) {
 		time.Sleep(50 * time.Millisecond)
