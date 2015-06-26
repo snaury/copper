@@ -352,6 +352,16 @@ func (c *rawConn) processDataFrame(frame dataFrame) error {
 	defer c.lock.Unlock()
 	s := c.streams[frame.streamID]
 	if s == nil {
+		if frame.streamID == 0 {
+			// this is a reserved stream id
+			if frame.flags != 0 || len(frame.data) != 0 {
+				return &errorWithReason{
+					error:  fmt.Errorf("stream 0 cannot be used to send data"),
+					reason: EINVALIDSTREAM,
+				}
+			}
+			return nil
+		}
 		return &errorWithReason{
 			error:  fmt.Errorf("stream 0x%08x cannot be found", frame.streamID),
 			reason: EINVALIDSTREAM,
@@ -378,13 +388,22 @@ func (c *rawConn) processResetFrame(frame resetFrame) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	s := c.streams[frame.streamID]
-	if s != nil {
-		err := s.processResetFrameLocked(frame)
-		if err != nil {
-			return err
+	if s == nil {
+		if frame.streamID == 0 {
+			// this is a reserved stream id
+			return &errorWithReason{
+				error:  fmt.Errorf("stream 0 cannot be reset"),
+				reason: EINVALIDSTREAM,
+			}
 		}
-		c.cleanupStreamLocked(s)
+		// it's ok to receive RESET for a dead stream
+		return nil
 	}
+	err := s.processResetFrameLocked(frame)
+	if err != nil {
+		return err
+	}
+	c.cleanupStreamLocked(s)
 	return nil
 }
 

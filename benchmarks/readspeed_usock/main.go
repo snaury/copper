@@ -8,9 +8,8 @@ import (
 )
 
 const (
-	dialAddr         = "../listen_usock/listen_usock.sock"
-	GB               = 1024 * 1024 * 1024
-	reportEveryBytes = 1024 * 1024 * 1024
+	dialAddr = "../listen_usock/listen_usock.sock"
+	gb       = 1024 * 1024 * 1024
 )
 
 func process(conn net.Conn) {
@@ -25,9 +24,10 @@ func process(conn net.Conn) {
 	for {
 		n, err := r.Read(buf[:])
 		current += int64(n)
-		if current >= reportEveryBytes {
-			tnow := time.Now()
-			log.Printf("reading from %s: %.3fGB/s", addr, float64(current)/float64(GB)/tnow.Sub(tstart).Seconds())
+		tnow := time.Now()
+		elapsed := tnow.Sub(tstart)
+		if elapsed >= time.Second {
+			log.Printf("reading from %s: %.3fGB/s", addr, float64(current)/float64(gb)/elapsed.Seconds())
 			total += current
 			current = 0
 			tstart = tnow

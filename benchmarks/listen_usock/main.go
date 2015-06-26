@@ -39,6 +39,6 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		go handle(conn)
+		go process(conn)
 	}
 }
