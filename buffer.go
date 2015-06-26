@@ -1,5 +1,18 @@
 package copper
 
+// minpow2 returns the minimum power of 2 greater than or equal to n
+func minpow2(n int) int {
+	n--
+	n |= n >> 1
+	n |= n >> 2
+	n |= n >> 4
+	n |= n >> 8
+	n |= n >> 16
+	n |= n >> 32
+	n++
+	return n
+}
+
 // buffer represents a very simple dynamic ring buffer for data
 type buffer struct {
 	buf []byte
@@ -49,7 +62,7 @@ func (b *buffer) write(src []byte) {
 	n := len(src)
 	end := b.off + m
 	if m+n > cap(b.buf) {
-		dst := make([]byte, 2*cap(b.buf)+n)
+		dst := make([]byte, minpow2(m+n))
 		if end <= cap(b.buf) {
 			// data does not wrap, need simple copy
 			copy(dst, b.buf[b.off:end])
