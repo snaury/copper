@@ -87,29 +87,35 @@ func TestConn(t *testing.T) {
 			3: "3: 'some unexpected message'",
 			4: "",
 		}
+		var wgnested sync.WaitGroup
 		for target := range messages {
-			stream, err := client.OpenStream(target)
-			if err != nil {
-				t.Fatalf("client: OpenStream(%d): unexpected error: %v", target, err)
-			}
-			_, err = stream.Write([]byte(messages[target]))
-			if err != nil {
-				t.Fatalf("client: Write(%d): unexpected error: %v", target, err)
-			}
-			err = stream.CloseWrite()
-			if err != nil {
-				t.Fatalf("client: CloseWrite(%d): unexpected error: %v", target, err)
-			}
-			r := bufio.NewReader(stream)
-			line, err := r.ReadString('\n')
-			if err != expectedError[target] {
-				t.Fatalf("client: ReadString(%d): expected %v, got: %v", target, expectedError[target], err)
-			}
-			if line != expectedResponse[target] {
-				t.Fatalf("client: ReadString(%d): unexpected response: %q", target, line)
-			}
-			stream.Close()
+			wgnested.Add(1)
+			go func(target int64) {
+				defer wgnested.Done()
+				stream, err := client.OpenStream(target)
+				if err != nil {
+					t.Fatalf("client: OpenStream(%d): unexpected error: %v", target, err)
+				}
+				defer stream.Close()
+				_, err = stream.Write([]byte(messages[target]))
+				if err != nil {
+					t.Fatalf("client: Write(%d): unexpected error: %v", target, err)
+				}
+				err = stream.CloseWrite()
+				if err != nil {
+					t.Fatalf("client: CloseWrite(%d): unexpected error: %v", target, err)
+				}
+				r := bufio.NewReader(stream)
+				line, err := r.ReadString('\n')
+				if err != expectedError[target] {
+					t.Fatalf("client: ReadString(%d): expected %v, got: %v", target, expectedError[target], err)
+				}
+				if line != expectedResponse[target] {
+					t.Fatalf("client: ReadString(%d): unexpected response: %q", target, line)
+				}
+			}(target)
 		}
+		wgnested.Wait()
 	}()
 	wg.Wait()
 }
