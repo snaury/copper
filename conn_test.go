@@ -156,6 +156,8 @@ func TestConnPing(t *testing.T) {
 			t.Fatalf("client: Ping: unexpected error: %v", err)
 		}
 		// two simultaneous pings that fail before getting response
+		// TODO: sometimes this fails with GOMAXPROCS>1, need to find a way
+		// to freeze the connection, so that ping isn't sent prematurely.
 		ch1 = client.Ping(51)
 		ch2 = client.Ping(51)
 		client.Close()

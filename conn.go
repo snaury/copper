@@ -41,16 +41,16 @@ type rawConn struct {
 	failure                 error
 	signal                  chan struct{}
 	handler                 StreamHandler
-	streams                 map[int]*rawStream
-	deadstreams             map[int]struct{}
-	freestreams             map[int]struct{}
-	nextnewstream           int
+	streams                 map[uint32]*rawStream
+	deadstreams             map[uint32]struct{}
+	freestreams             map[uint32]struct{}
+	nextnewstream           uint32
 	pingAcks                []int64
 	pingQueue               []int64
 	pingResults             map[int64][]chan error
-	outgoingAcks            map[int]int
-	outgoingCtrl            map[int]struct{}
-	outgoingData            map[int]struct{}
+	outgoingAcks            map[uint32]int
+	outgoingCtrl            map[uint32]struct{}
+	outgoingData            map[uint32]struct{}
 	outgoingFailure         error
 	writeleft               int
 	localConnWindowSize     int
@@ -71,14 +71,14 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 		closed:                  false,
 		signal:                  make(chan struct{}, 1),
 		handler:                 handler,
-		streams:                 make(map[int]*rawStream),
-		deadstreams:             make(map[int]struct{}),
-		freestreams:             make(map[int]struct{}),
+		streams:                 make(map[uint32]*rawStream),
+		deadstreams:             make(map[uint32]struct{}),
+		freestreams:             make(map[uint32]struct{}),
 		nextnewstream:           1,
 		pingResults:             make(map[int64][]chan error),
-		outgoingAcks:            make(map[int]int),
-		outgoingCtrl:            make(map[int]struct{}),
-		outgoingData:            make(map[int]struct{}),
+		outgoingAcks:            make(map[uint32]int),
+		outgoingCtrl:            make(map[uint32]struct{}),
+		outgoingData:            make(map[uint32]struct{}),
 		writeleft:               defaultConnWindowSize,
 		localConnWindowSize:     defaultConnWindowSize,
 		remoteConnWindowSize:    defaultConnWindowSize,
@@ -165,12 +165,12 @@ func (c *rawConn) Sync() <-chan error {
 		return result
 	}
 	deadstreams := c.deadstreams
-	c.deadstreams = make(map[int]struct{})
+	c.deadstreams = make(map[uint32]struct{})
 	go c.syncDeadStreams(deadstreams, result)
 	return result
 }
 
-func (c *rawConn) syncDeadStreams(deadstreams map[int]struct{}, result chan<- error) {
+func (c *rawConn) syncDeadStreams(deadstreams map[uint32]struct{}, result chan<- error) {
 	err := <-c.Ping(time.Now().UnixNano())
 	if err == nil {
 		// receiving a successful response to ping proves than all frames
@@ -217,7 +217,7 @@ func (c *rawConn) Open(target int64) (Stream, error) {
 	if c.closed {
 		return nil, c.failure
 	}
-	var streamID int
+	var streamID uint32
 	for freeID := range c.freestreams {
 		streamID = freeID
 		delete(c.freestreams, freeID)
@@ -262,7 +262,7 @@ func (c *rawConn) takePingResult(value int64) chan error {
 	return nil
 }
 
-func (c *rawConn) addOutgoingAckLocked(streamID int, increment int) {
+func (c *rawConn) addOutgoingAckLocked(streamID uint32, increment int) {
 	if !c.closed && increment > 0 {
 		wakeup := len(c.outgoingAcks) == 0
 		c.outgoingAcks[streamID] += increment
@@ -272,13 +272,13 @@ func (c *rawConn) addOutgoingAckLocked(streamID int, increment int) {
 	}
 }
 
-func (c *rawConn) clearOutgoingAckLocked(streamID int) {
+func (c *rawConn) clearOutgoingAckLocked(streamID uint32) {
 	if !c.closed {
 		delete(c.outgoingAcks, streamID)
 	}
 }
 
-func (c *rawConn) addOutgoingCtrlLocked(streamID int) {
+func (c *rawConn) addOutgoingCtrlLocked(streamID uint32) {
 	if !c.closed {
 		wakeup := len(c.outgoingCtrl) == 0
 		c.outgoingCtrl[streamID] = struct{}{}
@@ -288,7 +288,7 @@ func (c *rawConn) addOutgoingCtrlLocked(streamID int) {
 	}
 }
 
-func (c *rawConn) addOutgoingDataLocked(streamID int) {
+func (c *rawConn) addOutgoingDataLocked(streamID uint32) {
 	if !c.closed {
 		wakeup := len(c.outgoingData) == 0 && c.writeleft > 0
 		c.outgoingData[streamID] = struct{}{}
@@ -321,7 +321,7 @@ func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 			c.deadstreams[s.streamID] = struct{}{}
 			if len(c.deadstreams) >= maxDeadStreams {
 				deadstreams := c.deadstreams
-				c.deadstreams = make(map[int]struct{})
+				c.deadstreams = make(map[uint32]struct{})
 				go c.syncDeadStreams(deadstreams, nil)
 			}
 		}

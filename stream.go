@@ -41,7 +41,7 @@ type Stream interface {
 	SetWriteDeadline(t time.Time) error
 
 	// StreamID returns the stream id
-	StreamID() int
+	StreamID() uint32
 
 	// TargetID returns the target id
 	TargetID() int64
@@ -100,7 +100,7 @@ func (e *expiration) stop() bool {
 }
 
 type rawStreamAddr struct {
-	streamID int
+	streamID uint32
 	targetID int64
 	netaddr  net.Addr
 }
@@ -118,7 +118,7 @@ func (addr *rawStreamAddr) String() string {
 
 type rawStream struct {
 	outgoing   bool
-	streamID   int
+	streamID   uint32
 	targetID   int64
 	owner      *rawConn
 	flags      int
@@ -160,7 +160,7 @@ func newIncomingStream(owner *rawConn, frame openFrame, maxwrite int) *rawStream
 	return s
 }
 
-func newOutgoingStream(owner *rawConn, streamID int, targetID int64, maxwrite int) *rawStream {
+func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64, maxwrite int) *rawStream {
 	s := &rawStream{
 		outgoing:  true,
 		streamID:  streamID,
@@ -628,7 +628,7 @@ func (s *rawStream) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-func (s *rawStream) StreamID() int {
+func (s *rawStream) StreamID() uint32 {
 	return s.streamID
 }
 
@@ -658,10 +658,10 @@ func (s *rawStream) RemoteAddr() net.Addr {
 	return addr
 }
 
-func isClientStreamID(streamID int) bool {
+func isClientStreamID(streamID uint32) bool {
 	return streamID&1 == 1
 }
 
-func isServerStreamID(streamID int) bool {
+func isServerStreamID(streamID uint32) bool {
 	return streamID&1 == 0
 }

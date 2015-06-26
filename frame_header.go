@@ -8,28 +8,27 @@ import (
 type frameHeader struct {
 	streamID  uint32
 	flagsSize uint32
+	frameType uint8
 }
 
 func readFrameHeader(r io.Reader) (hdr frameHeader, err error) {
-	var buf [8]byte
-	_, err = io.ReadFull(r, buf[0:8])
+	var buf [9]byte
+	_, err = io.ReadFull(r, buf[0:9])
 	if err == nil {
 		hdr.streamID = binary.LittleEndian.Uint32(buf[0:4])
 		hdr.flagsSize = binary.LittleEndian.Uint32(buf[4:8])
+		hdr.frameType = buf[8]
 	}
 	return
 }
 
 func writeFrameHeader(w io.Writer, hdr frameHeader) (err error) {
-	var buf [8]byte
+	var buf [9]byte
 	binary.LittleEndian.PutUint32(buf[0:4], hdr.streamID)
 	binary.LittleEndian.PutUint32(buf[4:8], hdr.flagsSize)
-	_, err = w.Write(buf[0:8])
+	buf[8] = hdr.frameType
+	_, err = w.Write(buf[0:9])
 	return
-}
-
-func (hdr frameHeader) IsDataFrame() bool {
-	return (hdr.streamID & 0x80000000) == 0
 }
 
 func (hdr frameHeader) Flags() uint8 {

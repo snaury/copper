@@ -86,12 +86,12 @@ var _ Error = &copperError{}
 func (e *copperError) ErrorCode() ErrorCode { return e.code }
 
 type unknownFrameError struct {
-	streamID uint32
+	frameType uint8
 }
 
 var _ Error = &unknownFrameError{}
 
-func (e unknownFrameError) Error() string        { return fmt.Sprintf("unknown frame 0x%08x", e.streamID) }
+func (e unknownFrameError) Error() string        { return fmt.Sprintf("unknown frame 0x%02x", e.frameType) }
 func (e unknownFrameError) ErrorCode() ErrorCode { return EUNKNOWNFRAME }
 
 type timeoutError struct{}
@@ -104,12 +104,12 @@ func (e *timeoutError) Timeout() bool        { return true }
 func (e *timeoutError) Temporary() bool      { return true }
 func (e *timeoutError) ErrorCode() ErrorCode { return ETIMEOUT }
 
-func errorToResetFrame(flags uint8, streamID int, err error) resetFrame {
+func errorToResetFrame(flags uint8, streamID uint32, err error) resetFrame {
 	if e, ok := err.(ErrorCode); ok {
 		return resetFrame{
 			flags:    flags,
 			streamID: streamID,
-			reason:   e,
+			code:     e,
 			message:  nil,
 		}
 	}
@@ -117,14 +117,14 @@ func errorToResetFrame(flags uint8, streamID int, err error) resetFrame {
 		return resetFrame{
 			flags:    flags,
 			streamID: streamID,
-			reason:   e.ErrorCode(),
+			code:     e.ErrorCode(),
 			message:  []byte(e.Error()),
 		}
 	}
 	return resetFrame{
 		flags:    flags,
 		streamID: streamID,
-		reason:   EUNKNOWN,
+		code:     EUNKNOWN,
 		message:  []byte(err.Error()),
 	}
 }
