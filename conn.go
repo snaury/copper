@@ -28,7 +28,7 @@ type Conn interface {
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
 	Ping(value int64) <-chan error
-	OpenStream(target int64) (s Stream, err error)
+	Open(target int64) (stream Stream, err error)
 }
 
 var _ Conn = &rawConn{}
@@ -175,7 +175,7 @@ func (c *rawConn) Ping(value int64) <-chan error {
 	return result
 }
 
-func (c *rawConn) OpenStream(target int64) (Stream, error) {
+func (c *rawConn) Open(target int64) (Stream, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if c.closed {

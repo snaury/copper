@@ -47,9 +47,9 @@ func TestConnStreams(t *testing.T) {
 		server := NewConn(serverconn, hmap, true)
 		defer server.Close()
 
-		stream, err := server.OpenStream(51)
+		stream, err := server.Open(51)
 		if err != nil {
-			t.Fatalf("server: OpenStream: unexpected error: %v", err)
+			t.Fatalf("server: Open: unexpected error: %v", err)
 		}
 		_, err = stream.Read(make([]byte, 256))
 		if err != ENOTARGET {
@@ -92,9 +92,9 @@ func TestConnStreams(t *testing.T) {
 			wgnested.Add(1)
 			go func(target int64) {
 				defer wgnested.Done()
-				stream, err := client.OpenStream(target)
+				stream, err := client.Open(target)
 				if err != nil {
-					t.Fatalf("client: OpenStream(%d): unexpected error: %v", target, err)
+					t.Fatalf("client: Open(%d): unexpected error: %v", target, err)
 				}
 				defer stream.Close()
 				_, err = stream.Write([]byte(messages[target]))
@@ -144,7 +144,7 @@ func TestStreamBigWrite(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		stream.CloseWithError(ENOROUTE)
 	}), func(client Conn) {
-		stream, err := client.OpenStream(0)
+		stream, err := client.Open(0)
 		if err != nil {
 			t.Fatalf("client: Open: %s", err)
 		}
@@ -197,7 +197,7 @@ func TestStreamFlush(t *testing.T) {
 		}
 	}), func(client Conn) {
 		for target := int64(1); target <= 3; target++ {
-			stream, err := client.OpenStream(target)
+			stream, err := client.Open(target)
 			if err != nil {
 				t.Fatalf("client: Open: %s", err)
 			}

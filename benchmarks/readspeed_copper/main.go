@@ -79,7 +79,7 @@ func measurePing(conn copper.Conn) {
 func measureLatency(conn copper.Conn) {
 	var err error
 	defer conn.Close()
-	stream, err := conn.OpenStream(1)
+	stream, err := conn.Open(1)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func measureLatencyOneShots(conn copper.Conn) {
 	tstart := time.Now()
 	for {
 		t0 := time.Now()
-		stream, err := conn.OpenStream(1)
+		stream, err := conn.Open(1)
 		if err != nil {
 			log.Printf("cannot open stream: %s", err)
 			return
@@ -198,14 +198,14 @@ func main() {
 	}
 
 	for i := 0; i < *extra; i++ {
-		stream, err := conn.OpenStream(0)
+		stream, err := conn.Open(0)
 		if err != nil {
 			log.Fatal(err)
 		}
 		go process(stream, 0)
 	}
 
-	stream, err := conn.OpenStream(0)
+	stream, err := conn.Open(0)
 	if err != nil {
 		log.Fatal(err)
 	}
