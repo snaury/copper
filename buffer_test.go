@@ -61,15 +61,31 @@ func TestBufferRead(t *testing.T) {
 	for index, c := range bufferReadTestCases {
 		b = makebuffer(c.data, c.off, c.size)
 		data := make([]byte, c.readsize)
-		taken := b.read(data)
-		if taken != len(c.expected) {
-			t.Errorf("read case %d: read returned %d (expected %d)", index, taken, len(c.expected))
-			continue
+		// call peek() first
+		{
+			taken := b.peek(data)
+			if taken != len(c.expected) {
+				t.Errorf("read case %d: read returned %d (expected %d)", index, taken, len(c.expected))
+				continue
+			}
+			result := data[:taken]
+			if !reflect.DeepEqual(result, c.expected) {
+				t.Errorf("read case %d: read returned %v (expected %v)", index, result, c.expected)
+				continue
+			}
 		}
-		data = data[:taken]
-		if !reflect.DeepEqual(data, c.expected) {
-			t.Errorf("read case %d: read returned %v (expected %v)", index, data, c.expected)
-			continue
+		// call read() to consume the data
+		{
+			taken := b.read(data)
+			if taken != len(c.expected) {
+				t.Errorf("read case %d: read returned %d (expected %d)", index, taken, len(c.expected))
+				continue
+			}
+			result := data[:taken]
+			if !reflect.DeepEqual(result, c.expected) {
+				t.Errorf("read case %d: read returned %v (expected %v)", index, result, c.expected)
+				continue
+			}
 		}
 		if b.off != c.newoff {
 			t.Errorf("read case %d: new offset = %d (expected %d)", index, b.off, c.newoff)
