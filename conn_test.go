@@ -139,6 +139,39 @@ func runClientServer(handler StreamHandler, clientfunc func(client Conn)) {
 	wg.Wait()
 }
 
+func TestConnPing(t *testing.T) {
+	runClientServer(nil, func(client Conn) {
+		var ch1, ch2 <-chan error
+		// simple ping
+		if err := <-client.Ping(123); err != nil {
+			t.Fatalf("client: Ping: unexpected error: %v", err)
+		}
+		// two simultaneous pings, same id
+		ch1 = client.Ping(42)
+		ch2 = client.Ping(42)
+		if err := <-ch1; err != nil {
+			t.Fatalf("client: Ping: unexpected error: %v", err)
+		}
+		if err := <-ch2; err != nil {
+			t.Fatalf("client: Ping: unexpected error: %v", err)
+		}
+		// two simultaneous pings that fail before getting response
+		ch1 = client.Ping(51)
+		ch2 = client.Ping(51)
+		client.Close()
+		if err := <-ch1; err != ECONNCLOSED {
+			t.Fatalf("client: Ping: expected ECONNCLOSED, not %v", err)
+		}
+		if err := <-ch2; err != ECONNCLOSED {
+			t.Fatalf("client: Ping: expected ECONNCLOSED, not %v", err)
+		}
+		// simple ping on closed connection should immediately fail
+		if err := <-client.Ping(321); err != ECONNCLOSED {
+			t.Fatalf("client: Ping: expected ECONNCLOSED, not %v", err)
+		}
+	})
+}
+
 func TestStreamBigWrite(t *testing.T) {
 	runClientServer(StreamHandlerFunc(func(stream Stream) {
 		time.Sleep(50 * time.Millisecond)
