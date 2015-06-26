@@ -121,10 +121,58 @@ func measureLatency(conn copper.Conn) {
 	}
 }
 
+func measureLatencyOneShots(conn copper.Conn) {
+	defer conn.Close()
+	var buf [8]byte
+	var maxlatency int64
+	var sumlatency int64
+	var count int64
+	tstart := time.Now()
+	for {
+		t0 := time.Now()
+		stream, err := conn.OpenStream(1)
+		if err != nil {
+			log.Printf("cannot open stream: %s", err)
+			return
+		}
+		_, err = stream.Write(buf[0:8])
+		if err != nil {
+			log.Printf("error writing to %s: %s", stream.RemoteAddr(), err)
+			stream.Close()
+			return
+		}
+		_, err = io.ReadFull(stream, buf[0:8])
+		if err != nil {
+			log.Printf("error reading from %s: %s", stream.RemoteAddr(), err)
+			stream.Close()
+			return
+		}
+		stream.Close()
+		t1 := time.Now()
+
+		latency := t1.Sub(t0).Nanoseconds()
+		if maxlatency < latency {
+			maxlatency = latency
+		}
+		sumlatency += latency
+		count++
+
+		elapsed := t1.Sub(tstart)
+		if elapsed > time.Second {
+			log.Printf("measured latency: %dns (%dns avg over %d) @ %s", maxlatency, sumlatency/count, count, stream.LocalAddr())
+			maxlatency = 0
+			sumlatency = 0
+			count = 0
+			tstart = t1
+		}
+	}
+}
+
 var delay = flag.Int("delay", 0, "delay between first stream reads in seconds ")
 var extra = flag.Int("extra", 0, "number of extra streams without delay")
 var ping = flag.Bool("ping", false, "measure latency using ping frames")
 var latency = flag.Bool("latency", false, "measure latency using normal streams")
+var oneshots = flag.Bool("oneshots", false, "measure latency using oneshot streams")
 
 func main() {
 	flag.Parse()
@@ -141,7 +189,11 @@ func main() {
 	}
 
 	if *latency {
-		measureLatency(conn)
+		if *oneshots {
+			measureLatencyOneShots(conn)
+		} else {
+			measureLatency(conn)
+		}
 		return
 	}
 

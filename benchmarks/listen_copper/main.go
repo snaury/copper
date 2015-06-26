@@ -31,12 +31,13 @@ func provideLatency(stream copper.Stream) {
 	var err error
 	defer stream.Close()
 	addr := stream.RemoteAddr()
-	log.Printf("accepted stream from %s", addr)
 	var buf [8]byte
 	for {
 		_, err = io.ReadFull(stream, buf[0:8])
 		if err != nil {
-			log.Printf("error reading from %s: %s", addr, err)
+			if err != io.EOF {
+				log.Printf("error reading from %s: %s", addr, err)
+			}
 			return
 		}
 		_, err = stream.Write(buf[0:8])
