@@ -57,7 +57,7 @@ func (p dataFrame) writeFrameTo(w io.Writer) (err error) {
 
 type pingFrame struct {
 	flags uint8
-	value uint64
+	value int64
 }
 
 func (p pingFrame) writeFrameTo(w io.Writer) (err error) {
@@ -67,7 +67,7 @@ func (p pingFrame) writeFrameTo(w io.Writer) (err error) {
 	})
 	if err == nil {
 		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[0:8], p.value)
+		binary.LittleEndian.PutUint64(buf[0:8], uint64(p.value))
 		_, err = w.Write(buf[0:8])
 	}
 	return
@@ -263,7 +263,7 @@ func readFrame(r io.Reader) (p frame, err error) {
 		}
 		return pingFrame{
 			flags: hdr.Flags(),
-			value: binary.LittleEndian.Uint64(buf[0:8]),
+			value: int64(binary.LittleEndian.Uint64(buf[0:8])),
 		}, nil
 	case openFrameID:
 		if lr.N < 12 {

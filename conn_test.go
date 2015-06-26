@@ -17,11 +17,11 @@ func TestConn(t *testing.T) {
 		var err error
 		defer wg.Done()
 		closeErrors := map[int64]error{
-			42: nil,
-			43: ENOROUTE,
-			44: ENOTARGET,
+			1: nil,
+			2: ENOROUTE,
+			3: ENOTARGET,
 		}
-		handler := func(target int64, stream Stream) {
+		handler := StreamHandlerFunc(func(target int64, stream Stream) {
 			defer func() {
 				stream.CloseWithError(closeErrors[target])
 			}()
@@ -39,8 +39,12 @@ func TestConn(t *testing.T) {
 			}
 			// Common sense dictates, that data from Fprintf should reach
 			// the other side when we close the stream!
-		}
-		server := NewConn(serverconn, StreamHandlerFunc(handler), true)
+		})
+		hmap := NewStreamHandlerMap(nil)
+		hmap.Add(handler)
+		hmap.Add(handler)
+		hmap.Add(handler)
+		server := NewConn(serverconn, hmap, true)
 		defer server.Close()
 
 		stream, err := server.OpenStream(51)
@@ -62,23 +66,28 @@ func TestConn(t *testing.T) {
 		client := NewConn(clientconn, nil, false)
 		defer client.Close()
 
-		targets := []int64{42, 43, 44}
 		messages := map[int64]string{
-			42: "hello",
-			43: "world stuff",
-			44: "some unexpected message",
+			0: "foo",
+			1: "hello",
+			2: "world stuff",
+			3: "some unexpected message",
+			4: "not registered yet",
 		}
 		expectedError := map[int64]error{
-			42: io.EOF,
-			43: ENOROUTE,
-			44: ENOTARGET,
+			0: ENOTARGET,
+			1: io.EOF,
+			2: ENOROUTE,
+			3: ENOTARGET,
+			4: ENOTARGET,
 		}
 		expectedResponse := map[int64]string{
-			42: "42: 'hello'",
-			43: "43: 'world stuff'",
-			44: "44: 'some unexpected message'",
+			0: "",
+			1: "1: 'hello'",
+			2: "2: 'world stuff'",
+			3: "3: 'some unexpected message'",
+			4: "",
 		}
-		for _, target := range targets {
+		for target := range messages {
 			stream, err := client.OpenStream(target)
 			if err != nil {
 				t.Fatalf("client: OpenStream(%d): unexpected error: %v", target, err)

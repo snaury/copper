@@ -172,12 +172,10 @@ func (s *rawStream) Write(b []byte) (n int, err error) {
 
 func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
 	s.flags |= flagStreamSeenReset
-	if s.delayerror == nil {
-		s.delayerror = frame.toError()
-		if s.delayerror == ECLOSED {
-			// ECLOSED is special, it translated to a normal EOF
-			s.delayerror = io.EOF
-		}
+	s.delayerror = frame.toError()
+	if s.delayerror == ECLOSED {
+		// ECLOSED is special, it translated to a normal EOF
+		s.delayerror = io.EOF
 	}
 	if frame.flags&flagFin != 0 {
 		s.flags |= flagStreamSeenEOF

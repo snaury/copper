@@ -15,6 +15,7 @@ const (
 )
 
 const (
+	maxDeadStreams           = 4096
 	defaultConnWindowSize    = 65536
 	defaultStreamWindowSize  = 65536
 	defaultInactivityTimeout = 60 * time.Second
@@ -26,6 +27,7 @@ type Conn interface {
 	Close() error
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
+	Ping(value int64) <-chan error
 	OpenStream(target int64) (s Stream, err error)
 }
 
@@ -44,9 +46,9 @@ type rawConn struct {
 	deadstreams             map[int]struct{}
 	freestreams             map[int]struct{}
 	nextnewstream           int
-	pingAcks                []uint64
-	pingQueue               []uint64
-	pingResults             map[uint64][]chan error
+	pingAcks                []int64
+	pingQueue               []int64
+	pingResults             map[int64][]chan error
 	outgoingAcks            map[int]int
 	outgoingCtrl            map[int]struct{}
 	outgoingData            map[int]struct{}
@@ -72,7 +74,7 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 		deadstreams:             make(map[int]struct{}),
 		freestreams:             make(map[int]struct{}),
 		nextnewstream:           1,
-		pingResults:             make(map[uint64][]chan error),
+		pingResults:             make(map[int64][]chan error),
 		outgoingAcks:            make(map[int]int),
 		outgoingCtrl:            make(map[int]struct{}),
 		outgoingData:            make(map[int]struct{}),
@@ -156,6 +158,23 @@ func (c *rawConn) RemoteAddr() net.Addr {
 	return c.conn.RemoteAddr()
 }
 
+func (c *rawConn) Ping(value int64) <-chan error {
+	result := make(chan error, 1)
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.closed {
+		result <- c.failure
+		close(result)
+		return result
+	}
+	if len(c.pingQueue) == 0 {
+		c.wakeupLocked()
+	}
+	c.pingResults[value] = append(c.pingResults[value], result)
+	c.pingQueue = append(c.pingQueue, value)
+	return result
+}
+
 func (c *rawConn) OpenStream(target int64) (Stream, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -180,14 +199,16 @@ func (c *rawConn) OpenStream(target int64) (Stream, error) {
 	return s, nil
 }
 
-func (c *rawConn) addPingAck(value uint64) {
+func (c *rawConn) addPingAck(value int64) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	if len(c.pingAcks) == 0 {
+		c.wakeupLocked()
+	}
 	c.pingAcks = append(c.pingAcks, value)
-	c.wakeupLocked()
 }
 
-func (c *rawConn) takePingResult(value uint64) chan error {
+func (c *rawConn) takePingResult(value int64) chan error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if results, ok := c.pingResults[value]; ok {
@@ -204,15 +225,20 @@ func (c *rawConn) takePingResult(value uint64) chan error {
 	return nil
 }
 
-func (c *rawConn) addPingRequest(value uint64, result chan error) error {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	if c.closed {
-		return c.failure
+func (c *rawConn) doCausalConfirmation(deadstreams map[int]struct{}) {
+	err := <-c.Ping(time.Now().UnixNano())
+	if err == nil {
+		// receiving a successful response to ping proves than all frames
+		// before our outgoing ping have been processed by the other side
+		// which means we have a proof dead streams are free for reuse
+		c.lock.Lock()
+		defer c.lock.Unlock()
+		if !c.closed {
+			for streamID := range deadstreams {
+				c.freestreams[streamID] = struct{}{}
+			}
+		}
 	}
-	c.pingResults[value] = append(c.pingResults[value], result)
-	c.pingQueue = append(c.pingQueue, value)
-	return nil
 }
 
 func (c *rawConn) addOutgoingAckLocked(streamID int, increment int) {
@@ -256,16 +282,38 @@ func (c *rawConn) handleStream(target int64, s Stream) {
 
 func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 	if s.isFullyClosed() {
-		// connection is fully closed and may be forgotten
+		// connection is fully closed and must be forgotten
 		delete(c.streams, s.streamID)
 		delete(c.outgoingAcks, s.streamID)
+		delete(c.outgoingCtrl, s.streamID)
 		delete(c.outgoingData, s.streamID)
 		if isServerStreamID(s.streamID) == c.isserver {
 			// this is our stream id, it is no longer in use, but must wait
 			// for confirmation first before we may reuse it
 			c.deadstreams[s.streamID] = struct{}{}
+			if len(c.deadstreams) >= maxDeadStreams {
+				deadstreams := c.deadstreams
+				c.deadstreams = make(map[int]struct{})
+				go c.doCausalConfirmation(deadstreams)
+			}
 		}
 	}
+}
+
+func (c *rawConn) processPingFrame(frame pingFrame) error {
+	if (frame.flags & flagAck) == 0 {
+		c.addPingAck(frame.value)
+		return nil
+	}
+	result := c.takePingResult(frame.value)
+	if result != nil {
+		select {
+		case result <- nil:
+		default:
+		}
+		close(result)
+	}
+	return nil
 }
 
 func (c *rawConn) processOpenFrame(frame openFrame) error {
@@ -307,6 +355,12 @@ func (c *rawConn) processDataFrame(frame dataFrame) error {
 		return &errorWithReason{
 			error:  fmt.Errorf("stream 0x%08x cannot be found", frame.streamID),
 			reason: EINVALIDSTREAM,
+		}
+	}
+	if s.readbuf.len()+len(frame.data) > c.localStreamWindowSize {
+		return &errorWithReason{
+			error:  fmt.Errorf("stream 0x%08x received %d bytes is more than %d bytes window", frame.streamID, len(frame.data), c.localStreamWindowSize),
+			reason: EWINDOWOVERFLOW,
 		}
 	}
 	err := s.processDataFrameLocked(frame)
@@ -392,49 +446,26 @@ readloop:
 		}
 		switch frame := rawFrame.(type) {
 		case pingFrame:
-			if (frame.flags & flagAck) != 0 {
-				result := c.takePingResult(frame.value)
-				if result != nil {
-					select {
-					case result <- nil:
-					default:
-					}
-					close(result)
-				}
-			} else {
-				c.addPingAck(frame.value)
-			}
+			err = c.processPingFrame(frame)
 		case openFrame:
 			err = c.processOpenFrame(frame)
-			if err != nil {
-				c.closeWithError(err)
-				break readloop
-			}
 		case dataFrame:
 			err = c.processDataFrame(frame)
-			if err != nil {
-				c.closeWithError(err)
-				break readloop
-			}
 		case resetFrame:
 			err = c.processResetFrame(frame)
-			if err != nil {
-				c.closeWithError(err)
-				break readloop
-			}
 		case fatalFrame:
 			c.closeWithErrorAck(frame.toError())
 			break readloop
 		case windowFrame:
 			err = c.processWindowFrame(frame)
-			if err != nil {
-				c.closeWithError(err)
-				break readloop
-			}
 		case settingsFrame:
 			panic("unhandled settings frame")
 		default:
 			panic("unhandled frame type")
+		}
+		if err != nil {
+			c.closeWithError(err)
+			break readloop
 		}
 	}
 	c.failEverything()
@@ -446,12 +477,19 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 	if c.closed {
 		return nil, c.outgoingFailure
 	}
-	if len(c.pingQueue) > 0 {
+	if len(c.pingAcks) > 0 || len(c.pingQueue) > 0 {
+		for _, value := range c.pingAcks {
+			frames = append(frames, pingFrame{
+				flags: flagAck,
+				value: value,
+			})
+		}
 		for _, value := range c.pingQueue {
 			frames = append(frames, pingFrame{
 				value: value,
 			})
 		}
+		c.pingAcks = c.pingAcks[:0]
 		c.pingQueue = c.pingQueue[:0]
 		return
 	}
@@ -485,6 +523,7 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 					// we sent all data together with control
 					delete(c.outgoingData, streamID)
 				}
+				c.cleanupStreamLocked(s)
 				return
 			}
 		}
@@ -504,6 +543,7 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 			}
 			if len(frames) > 0 {
 				c.writeleft -= sent
+				c.cleanupStreamLocked(s)
 				return
 			}
 		}
