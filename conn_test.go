@@ -156,6 +156,69 @@ func TestStreamBigWrite(t *testing.T) {
 	})
 }
 
+func isTimeout(err error) bool {
+	if e, ok := err.(net.Error); ok {
+		return e.Timeout()
+	}
+	return false
+}
+
+func TestStreamReadDeadline(t *testing.T) {
+	runClientServer(StreamHandlerFunc(func(stream Stream) {
+		stream.Read(make([]byte, 256))
+	}), func(client Conn) {
+		var deadline time.Time
+		stream, err := client.Open(0)
+		if err != nil {
+			t.Fatalf("client: Open: %s", err)
+		}
+		defer stream.Close()
+
+		deadline = time.Now().Add(50 * time.Millisecond)
+		stream.SetReadDeadline(deadline)
+		n, err := stream.Read(make([]byte, 256))
+		if n != 0 || !isTimeout(err) {
+			t.Fatalf("client: Read: expected timeout, got: %d, %v", n, err)
+		}
+		if deadline.After(time.Now()) {
+			t.Fatalf("client: Read: expected to timeout after the deadline, not before")
+		}
+	})
+}
+
+func TestStreamWriteDeadline(t *testing.T) {
+	runClientServer(StreamHandlerFunc(func(stream Stream) {
+		stream.Write(make([]byte, 65536+16))
+	}), func(client Conn) {
+		var deadline time.Time
+		stream, err := client.Open(0)
+		if err != nil {
+			t.Fatalf("client: Open: %s", err)
+		}
+		defer stream.Close()
+
+		deadline = time.Now().Add(50 * time.Millisecond)
+		stream.SetWriteDeadline(deadline)
+		n, err := stream.Write(make([]byte, 65536+16))
+		if n != 65536 || !isTimeout(err) {
+			t.Fatalf("client: Write: expected timeout, got: %d, %v", n, err)
+		}
+		if deadline.After(time.Now()) {
+			t.Fatalf("client: Write: expected to timeout after the deadline, not before")
+		}
+
+		deadline = time.Now().Add(50 * time.Millisecond)
+		stream.SetWriteDeadline(deadline)
+		err = stream.Flush()
+		if !isTimeout(err) {
+			t.Fatalf("client: Flush: expected timeout, got: %v", err)
+		}
+		if deadline.After(time.Now()) {
+			t.Fatalf("client: Flush: expected to timeout after the deadline, not before")
+		}
+	})
+}
+
 func TestStreamFlush(t *testing.T) {
 	var sleepfinished uint32
 	runClientServer(StreamHandlerFunc(func(stream Stream) {
@@ -209,8 +272,8 @@ func TestStreamFlush(t *testing.T) {
 			err = stream.Flush()
 			switch target {
 			case 1:
-				if err != ECLOSED {
-					t.Fatalf("client: Flush(%d): %v (expected ECLOSED)", target, err)
+				if err != ESTREAMCLOSED {
+					t.Fatalf("client: Flush(%d): %v (expected ESTREAMCLOSED)", target, err)
 				}
 			case 2:
 				if err != ENOROUTE {

@@ -135,9 +135,9 @@ func (p resetFrame) toError() error {
 	if len(p.message) == 0 {
 		return p.reason
 	}
-	return &errorWithReason{
-		error:  errors.New(string(p.message)),
-		reason: p.reason,
+	return &copperError{
+		error: errors.New(string(p.message)),
+		code:  p.reason,
 	}
 }
 
@@ -172,9 +172,9 @@ func (p fatalFrame) toError() error {
 	if len(p.message) == 0 {
 		return p.reason
 	}
-	return &errorWithReason{
-		error:  errors.New(string(p.message)),
-		reason: p.reason,
+	return &copperError{
+		error: errors.New(string(p.message)),
+		code:  p.reason,
 	}
 }
 

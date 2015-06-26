@@ -8,8 +8,16 @@ import (
 // ErrNoFreeStreamID is returned when all possible stream ids have been allocated
 var ErrNoFreeStreamID = errors.New("there are no free stream ids available")
 
+// Error is used to detect copper error codes
+type Error interface {
+	error
+	ErrorCode() ErrorCode
+}
+
 // ErrorCode represents a copper error code
 type ErrorCode int
+
+var _ Error = EOK
 
 const (
 	// EOK is returned when operation finishes normally
@@ -20,12 +28,12 @@ const (
 	EINVALIDFRAME
 	// EWINDOWOVERFLOW is returned when receive window overflows
 	EWINDOWOVERFLOW
-	// ECONNCLOSED is returned when connection is gracefully closed
+	// ECONNCLOSED is returned when connection is closed normally
 	ECONNCLOSED
-	// ECLOSED is returned when the stream is closed normally
-	ECLOSED
-	// EINVALID is returned when data is invalid
-	EINVALID
+	// ESTREAMCLOSED is returned when stream is closed normally
+	ESTREAMCLOSED
+	// EINVALIDDATA is returned when incoming data is invalid
+	EINVALIDDATA
 	// EINVALIDSTREAM is returned when incoming stream id is invalid
 	EINVALIDSTREAM
 	// ENOTARGET is returned when target does not exist
@@ -34,6 +42,8 @@ const (
 	ENOSTREAM
 	// ENOROUTE is returned when there's no route to the target
 	ENOROUTE
+	// ETIMEOUT is returned when operation has timed out
+	ETIMEOUT
 	// EUNKNOWN is used for unknown errors
 	EUNKNOWN = -1
 )
@@ -44,45 +54,55 @@ var errorMessages = map[ErrorCode]string{
 	EINVALIDFRAME:   "invalid frame",
 	EWINDOWOVERFLOW: "receive window overflow",
 	ECONNCLOSED:     "connection closed",
-	ECLOSED:         "stream closed",
-	EINVALID:        "invalid data",
+	ESTREAMCLOSED:   "stream closed",
+	EINVALIDDATA:    "invalid data",
 	EINVALIDSTREAM:  "invalid stream",
 	ENOTARGET:       "no such target",
 	ENOSTREAM:       "no such stream",
 	ENOROUTE:        "no route to target",
+	ETIMEOUT:        "operation timed out",
 }
 
 func (e ErrorCode) Error() string {
-	return errorMessages[e]
+	text := errorMessages[e]
+	if len(text) == 0 {
+		return fmt.Sprintf("copper error %d", e)
+	}
+	return text
 }
 
-// Reason returns the error code itself
-func (e ErrorCode) Reason() ErrorCode {
+// ErrorCode returns the error code itself
+func (e ErrorCode) ErrorCode() ErrorCode {
 	return e
 }
 
-// ErrorReason is used to detect a copper error codes
-type ErrorReason interface {
+type copperError struct {
 	error
-	Reason() ErrorCode
+	code ErrorCode
 }
 
-type errorWithReason struct {
-	error
-	reason ErrorCode
-}
+var _ Error = &copperError{}
+
+func (e *copperError) ErrorCode() ErrorCode { return e.code }
 
 type unknownFrameError struct {
 	streamID uint32
 }
 
-func (e unknownFrameError) Error() string {
-	return fmt.Sprintf("unknown frame 0x%08x", e.streamID)
-}
+var _ Error = &unknownFrameError{}
 
-func (e unknownFrameError) Reason() ErrorCode {
-	return EUNKNOWNFRAME
-}
+func (e unknownFrameError) Error() string        { return fmt.Sprintf("unknown frame 0x%08x", e.streamID) }
+func (e unknownFrameError) ErrorCode() ErrorCode { return EUNKNOWNFRAME }
+
+type timeoutError struct{}
+
+var _ Error = errTimeout
+var errTimeout = &timeoutError{}
+
+func (e *timeoutError) Error() string        { return "i/o timeout" }
+func (e *timeoutError) Timeout() bool        { return true }
+func (e *timeoutError) Temporary() bool      { return true }
+func (e *timeoutError) ErrorCode() ErrorCode { return ETIMEOUT }
 
 func errorToFatalFrame(err error) fatalFrame {
 	if e, ok := err.(ErrorCode); ok {
@@ -91,9 +111,9 @@ func errorToFatalFrame(err error) fatalFrame {
 			message: nil,
 		}
 	}
-	if e, ok := err.(ErrorReason); ok {
+	if e, ok := err.(Error); ok {
 		return fatalFrame{
-			reason:  e.Reason(),
+			reason:  e.ErrorCode(),
 			message: []byte(e.Error()),
 		}
 	}
@@ -112,11 +132,11 @@ func errorToResetFrame(flags uint8, streamID int, err error) resetFrame {
 			message:  nil,
 		}
 	}
-	if e, ok := err.(ErrorReason); ok {
+	if e, ok := err.(Error); ok {
 		return resetFrame{
 			flags:    flags,
 			streamID: streamID,
-			reason:   e.Reason(),
+			reason:   e.ErrorCode(),
 			message:  []byte(e.Error()),
 		}
 	}

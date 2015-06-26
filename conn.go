@@ -31,8 +31,6 @@ type Conn interface {
 	Open(target int64) (stream Stream, err error)
 }
 
-var _ Conn = &rawConn{}
-
 type rawConn struct {
 	lock                    sync.Mutex
 	waitready               sync.Cond
@@ -61,6 +59,8 @@ type rawConn struct {
 	localInactivityTimeout  time.Duration
 	remoteInactivityTimeout time.Duration
 }
+
+var _ Conn = &rawConn{}
 
 // NewConn wraps the underlying network connection with the copper protocol
 func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
@@ -327,15 +327,15 @@ func (c *rawConn) processPingFrame(frame pingFrame) error {
 
 func (c *rawConn) processOpenFrame(frame openFrame) error {
 	if frame.streamID <= 0 || isServerStreamID(frame.streamID) == c.isserver {
-		return &errorWithReason{
-			error:  fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.streamID),
-			reason: EINVALIDSTREAM,
+		return &copperError{
+			error: fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.streamID),
+			code:  EINVALIDSTREAM,
 		}
 	}
 	if len(frame.data) > c.localStreamWindowSize {
-		return &errorWithReason{
-			error:  fmt.Errorf("stream 0x%08x initial %d bytes, which is more than %d bytes window", frame.streamID, len(frame.data), c.localStreamWindowSize),
-			reason: EWINDOWOVERFLOW,
+		return &copperError{
+			error: fmt.Errorf("stream 0x%08x initial %d bytes, which is more than %d bytes window", frame.streamID, len(frame.data), c.localStreamWindowSize),
+			code:  EWINDOWOVERFLOW,
 		}
 	}
 	stream := newIncomingStream(c, frame, c.remoteStreamWindowSize)
@@ -343,9 +343,9 @@ func (c *rawConn) processOpenFrame(frame openFrame) error {
 	defer c.lock.Unlock()
 	old := c.streams[frame.streamID]
 	if old != nil {
-		return &errorWithReason{
-			error:  fmt.Errorf("stream 0x%08x cannot be opened until fully closed", frame.streamID),
-			reason: EINVALIDSTREAM,
+		return &copperError{
+			error: fmt.Errorf("stream 0x%08x cannot be opened until fully closed", frame.streamID),
+			code:  EINVALIDSTREAM,
 		}
 	}
 	c.streams[frame.streamID] = stream
@@ -364,22 +364,22 @@ func (c *rawConn) processDataFrame(frame dataFrame) error {
 		if frame.streamID == 0 {
 			// this is a reserved stream id
 			if frame.flags != 0 || len(frame.data) != 0 {
-				return &errorWithReason{
-					error:  fmt.Errorf("stream 0 cannot be used to send data"),
-					reason: EINVALIDSTREAM,
+				return &copperError{
+					error: fmt.Errorf("stream 0 cannot be used to send data"),
+					code:  EINVALIDSTREAM,
 				}
 			}
 			return nil
 		}
-		return &errorWithReason{
-			error:  fmt.Errorf("stream 0x%08x cannot be found", frame.streamID),
-			reason: EINVALIDSTREAM,
+		return &copperError{
+			error: fmt.Errorf("stream 0x%08x cannot be found", frame.streamID),
+			code:  EINVALIDSTREAM,
 		}
 	}
 	if s.readbuf.len()+len(frame.data) > c.localStreamWindowSize {
-		return &errorWithReason{
-			error:  fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len(), len(frame.data), c.localStreamWindowSize),
-			reason: EWINDOWOVERFLOW,
+		return &copperError{
+			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len(), len(frame.data), c.localStreamWindowSize),
+			code:  EWINDOWOVERFLOW,
 		}
 	}
 	err := s.processDataFrameLocked(frame)
@@ -400,9 +400,9 @@ func (c *rawConn) processResetFrame(frame resetFrame) error {
 	if s == nil {
 		if frame.streamID == 0 {
 			// this is a reserved stream id
-			return &errorWithReason{
-				error:  fmt.Errorf("stream 0 cannot be reset"),
-				reason: EINVALIDSTREAM,
+			return &copperError{
+				error: fmt.Errorf("stream 0 cannot be reset"),
+				code:  EINVALIDSTREAM,
 			}
 		}
 		// it's ok to receive RESET for a dead stream
