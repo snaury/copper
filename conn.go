@@ -185,6 +185,7 @@ func (c *rawConn) OpenStream(target int64) (Stream, error) {
 	for freeID := range c.freestreams {
 		streamID = freeID
 		delete(c.freestreams, freeID)
+		break
 	}
 	if streamID == 0 {
 		streamID = c.nextnewstream
@@ -227,16 +228,17 @@ func (c *rawConn) takePingResult(value int64) chan error {
 
 func (c *rawConn) doCausalConfirmation(deadstreams map[int]struct{}) {
 	err := <-c.Ping(time.Now().UnixNano())
-	if err == nil {
-		// receiving a successful response to ping proves than all frames
-		// before our outgoing ping have been processed by the other side
-		// which means we have a proof dead streams are free for reuse
-		c.lock.Lock()
-		defer c.lock.Unlock()
-		if !c.closed {
-			for streamID := range deadstreams {
-				c.freestreams[streamID] = struct{}{}
-			}
+	if err != nil {
+		return
+	}
+	// receiving a successful response to ping proves than all frames
+	// before our outgoing ping have been processed by the other side
+	// which means we have a proof dead streams are free for reuse
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if !c.closed {
+		for streamID := range deadstreams {
+			c.freestreams[streamID] = struct{}{}
 		}
 	}
 }
