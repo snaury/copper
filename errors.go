@@ -104,25 +104,6 @@ func (e *timeoutError) Timeout() bool        { return true }
 func (e *timeoutError) Temporary() bool      { return true }
 func (e *timeoutError) ErrorCode() ErrorCode { return ETIMEOUT }
 
-func errorToFatalFrame(err error) fatalFrame {
-	if e, ok := err.(ErrorCode); ok {
-		return fatalFrame{
-			reason:  e,
-			message: nil,
-		}
-	}
-	if e, ok := err.(Error); ok {
-		return fatalFrame{
-			reason:  e.ErrorCode(),
-			message: []byte(e.Error()),
-		}
-	}
-	return fatalFrame{
-		reason:  EUNKNOWN,
-		message: []byte(err.Error()),
-	}
-}
-
 func errorToResetFrame(flags uint8, streamID int, err error) resetFrame {
 	if e, ok := err.(ErrorCode); ok {
 		return resetFrame{

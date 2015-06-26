@@ -10,7 +10,6 @@ const (
 	pingFrameID uint32 = 0x80000000 + iota
 	openFrameID
 	resetFrameID
-	fatalFrameID
 	windowFrameID
 	settingsFrameID
 )
@@ -19,7 +18,6 @@ const (
 	maxFramePayloadSize         = 0xffffff
 	maxOpenFramePayloadSize     = maxFramePayloadSize - 12
 	maxResetFrameMessageSize    = maxFramePayloadSize - 8
-	maxFatalFrameMessageSize    = maxFramePayloadSize - 4
 	maxSettingsFramePayloadSize = 8 * 256
 )
 
@@ -132,43 +130,6 @@ func (p resetFrame) writeFrameTo(w io.Writer) (err error) {
 }
 
 func (p resetFrame) toError() error {
-	if len(p.message) == 0 {
-		return p.reason
-	}
-	return &copperError{
-		error: errors.New(string(p.message)),
-		code:  p.reason,
-	}
-}
-
-type fatalFrame struct {
-	flags   uint8
-	reason  ErrorCode
-	message []byte
-}
-
-func (p fatalFrame) writeFrameTo(w io.Writer) (err error) {
-	if len(p.message) > maxFatalFrameMessageSize {
-		return EINVALIDFRAME
-	}
-	err = writeFrameHeader(w, frameHeader{
-		streamID:  fatalFrameID,
-		flagsSize: uint32(p.flags)<<24 | uint32(len(p.message)+4),
-	})
-	if err == nil {
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[0:4], uint32(p.reason))
-		_, err = w.Write(buf[0:4])
-		if err == nil {
-			if len(p.message) > 0 {
-				_, err = w.Write(p.message)
-			}
-		}
-	}
-	return
-}
-
-func (p fatalFrame) toError() error {
 	if len(p.message) == 0 {
 		return p.reason
 	}
@@ -310,28 +271,6 @@ func readFrame(r io.Reader) (p frame, err error) {
 			streamID: int(binary.LittleEndian.Uint32(buf[0:4])),
 			reason:   ErrorCode(binary.LittleEndian.Uint32(buf[4:8])),
 			message:  message,
-		}, nil
-	case fatalFrameID:
-		if lr.N < 4 {
-			return nil, EINVALIDFRAME
-		}
-		var buf [4]byte
-		_, err = io.ReadFull(lr, buf[0:4])
-		if err != nil {
-			return
-		}
-		var message []byte
-		if lr.N > 0 {
-			message = make([]byte, int(lr.N))
-			_, err = io.ReadFull(lr, message)
-			if err != nil {
-				return
-			}
-		}
-		return fatalFrame{
-			flags:   hdr.Flags(),
-			reason:  ErrorCode(binary.LittleEndian.Uint32(buf[0:4])),
-			message: message,
 		}, nil
 	case windowFrameID:
 		if lr.N != 8 {

@@ -114,11 +114,13 @@ func (c *rawConn) wakeupLocked() {
 	}
 }
 
-func (c *rawConn) closeWithErrorLocked(err error, outerr error) error {
+func (c *rawConn) closeWithErrorLocked(err error) error {
 	if !c.closed {
 		c.closed = true
 		c.failure = err
-		c.outgoingFailure = outerr
+		if c.outgoingFailure == nil {
+			c.outgoingFailure = err
+		}
 		close(c.signal)
 		c.waitready.Broadcast()
 		return nil
@@ -129,13 +131,7 @@ func (c *rawConn) closeWithErrorLocked(err error, outerr error) error {
 func (c *rawConn) closeWithError(err error) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	return c.closeWithErrorLocked(err, err)
-}
-
-func (c *rawConn) closeWithErrorAck(err error) error {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	return c.closeWithErrorLocked(err, ECONNCLOSED)
+	return c.closeWithErrorLocked(err)
 }
 
 func (c *rawConn) Wait() error {
@@ -423,10 +419,11 @@ func (c *rawConn) processResetFrame(frame resetFrame) error {
 	if s == nil {
 		if frame.streamID == 0 {
 			// this is a reserved stream id
-			return &copperError{
-				error: fmt.Errorf("stream 0 cannot be reset"),
-				code:  EINVALIDSTREAM,
+			if c.outgoingFailure == nil {
+				// send ECONNCLOSED unless other error is pending
+				c.outgoingFailure = ECONNCLOSED
 			}
+			return frame.toError()
 		}
 		// it's ok to receive RESET for a dead stream
 		return nil
@@ -504,9 +501,6 @@ readloop:
 			err = c.processDataFrame(frame)
 		case resetFrame:
 			err = c.processResetFrame(frame)
-		case fatalFrame:
-			c.closeWithErrorAck(frame.toError())
-			break readloop
 		case windowFrame:
 			err = c.processWindowFrame(frame)
 		case settingsFrame:
@@ -630,7 +624,7 @@ func (c *rawConn) writeloop() {
 				// Attempt to notify the other side that we have an error
 				// It's ok if any of this fails, the read side will stop
 				// when we close the connection.
-				frame := errorToFatalFrame(err)
+				frame := errorToResetFrame(flagFin, 0, err)
 				if debugConnSendFrame {
 					log.Printf("%s: send: %#v", c.debugPrefix(), frame)
 				}
