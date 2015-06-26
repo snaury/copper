@@ -17,31 +17,31 @@ var expectedFrames = []frame{
 		value: 0x1122334455667788,
 	},
 	openFrame{
-		flags:    0x25,
 		streamID: 0x42,
+		flags:    0x25,
 		targetID: 0x1122334455667788,
 		data:     []byte{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},
 	},
 	dataFrame{
-		flags:    0x25,
 		streamID: 0x42,
+		flags:    0x25,
 		data:     []byte{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},
 	},
 	resetFrame{
-		flags:    0x25,
 		streamID: 0x42,
+		flags:    0x25,
 		code:     0x55,
 		message:  nil,
 	},
 	resetFrame{
-		flags:    0x25,
 		streamID: 0x42,
+		flags:    0x25,
 		code:     0x55,
 		message:  []byte{'t', 'e', 's', 't'},
 	},
 	windowFrame{
-		flags:     0x25,
 		streamID:  0x42,
+		flags:     0x25,
 		increment: 0x11223344,
 	},
 	settingsFrame{

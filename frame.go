@@ -51,8 +51,8 @@ func (p pingFrame) writeFrameTo(w io.Writer) (err error) {
 }
 
 type openFrame struct {
-	flags    uint8
 	streamID uint32
+	flags    uint8
 	targetID int64
 	data     []byte
 }
@@ -80,8 +80,8 @@ func (p openFrame) writeFrameTo(w io.Writer) (err error) {
 }
 
 type dataFrame struct {
-	flags    uint8
 	streamID uint32
+	flags    uint8
 	data     []byte
 }
 
@@ -103,8 +103,8 @@ func (p dataFrame) writeFrameTo(w io.Writer) (err error) {
 }
 
 type resetFrame struct {
-	flags    uint8
 	streamID uint32
+	flags    uint8
 	code     ErrorCode
 	message  []byte
 }
@@ -142,9 +142,9 @@ func (p resetFrame) toError() error {
 }
 
 type windowFrame struct {
-	flags     uint8
 	streamID  uint32
-	increment int
+	flags     uint8
+	increment uint32
 }
 
 func (p windowFrame) writeFrameTo(w io.Writer) (err error) {
@@ -155,7 +155,7 @@ func (p windowFrame) writeFrameTo(w io.Writer) (err error) {
 	})
 	if err == nil {
 		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[0:4], uint32(p.increment))
+		binary.LittleEndian.PutUint32(buf[0:4], p.increment)
 		_, err = w.Write(buf[0:4])
 	}
 	return
@@ -288,7 +288,7 @@ func readFrame(r io.Reader) (p frame, err error) {
 		return windowFrame{
 			flags:     hdr.Flags(),
 			streamID:  hdr.streamID,
-			increment: int(binary.LittleEndian.Uint32(buf[0:4])),
+			increment: binary.LittleEndian.Uint32(buf[0:4]),
 		}, nil
 	case settingsFrameID:
 		if hdr.streamID != 0 {

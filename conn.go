@@ -48,7 +48,7 @@ type rawConn struct {
 	pingAcks                []int64
 	pingQueue               []int64
 	pingResults             map[int64][]chan error
-	outgoingAcks            map[uint32]int
+	outgoingAcks            map[uint32]uint32
 	outgoingCtrl            map[uint32]struct{}
 	outgoingData            map[uint32]struct{}
 	outgoingFailure         error
@@ -76,7 +76,7 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 		freestreams:             make(map[uint32]struct{}),
 		nextnewstream:           1,
 		pingResults:             make(map[int64][]chan error),
-		outgoingAcks:            make(map[uint32]int),
+		outgoingAcks:            make(map[uint32]uint32),
 		outgoingCtrl:            make(map[uint32]struct{}),
 		outgoingData:            make(map[uint32]struct{}),
 		writeleft:               defaultConnWindowSize,
@@ -265,7 +265,7 @@ func (c *rawConn) takePingResult(value int64) chan error {
 func (c *rawConn) addOutgoingAckLocked(streamID uint32, increment int) {
 	if !c.closed && increment > 0 {
 		wakeup := len(c.outgoingAcks) == 0
-		c.outgoingAcks[streamID] += increment
+		c.outgoingAcks[streamID] += uint32(increment)
 		if wakeup {
 			c.wakeupLocked()
 		}
@@ -441,7 +441,7 @@ func (c *rawConn) processWindowFrame(frame windowFrame) error {
 	defer c.lock.Unlock()
 	if frame.streamID == 0 {
 		wakeup := c.writeleft == 0 && len(c.outgoingData) > 0
-		c.writeleft += frame.increment
+		c.writeleft += int(frame.increment)
 		if wakeup {
 			c.wakeupLocked()
 		}

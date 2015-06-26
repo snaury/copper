@@ -324,10 +324,10 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 		if s.writeleft == 0 {
 			s.maywrite.Broadcast()
 		}
-		s.writeleft += frame.increment
+		s.writeleft += int(frame.increment)
 	}
 	if s.flags&flagStreamNoIncomingAcks == 0 {
-		s.writenack -= frame.increment
+		s.writenack -= int(frame.increment)
 		if s.writebuf.len() == 0 && s.writenack <= 0 {
 			s.flushed.Broadcast()
 		}
@@ -362,8 +362,8 @@ func (s *rawStream) outgoingFramesLocked(inframes []frame, maxsize int) (frames 
 				}
 			}
 			frames = append(frames, openFrame{
-				flags:    s.outgoingFlags(),
 				streamID: s.streamID,
+				flags:    s.outgoingFlags(),
 				targetID: s.targetID,
 				data:     data,
 			})
@@ -381,8 +381,8 @@ func (s *rawStream) outgoingFramesLocked(inframes []frame, maxsize int) (frames 
 			s.flags &^= flagStreamNeedEOF
 			s.flags |= flagStreamSentEOF
 			frames = append(frames, dataFrame{
-				flags:    flagFin,
 				streamID: s.streamID,
+				flags:    flagFin,
 			})
 			break
 		} else {
@@ -403,8 +403,8 @@ func (s *rawStream) outgoingFramesLocked(inframes []frame, maxsize int) (frames 
 				s.writenack += len(data)
 			}
 			frames = append(frames, dataFrame{
-				flags:    s.outgoingFlags(),
 				streamID: s.streamID,
+				flags:    s.outgoingFlags(),
 				data:     data,
 			})
 			maxsize -= len(data)
