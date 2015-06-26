@@ -3,6 +3,7 @@ package copper
 import (
 	"fmt"
 	"io"
+	"net"
 	"sync"
 )
 
@@ -25,6 +26,12 @@ type Stream interface {
 
 	// Flush returns when all writes have been prepared for the wire
 	Flush() error
+
+	// LocalAddr returns the local network address
+	LocalAddr() net.Addr
+
+	// RemoteAddr returns the remote network address
+	RemoteAddr() net.Addr
 }
 
 var _ Stream = &rawStream{}
@@ -41,11 +48,29 @@ const (
 	flagStreamDiscard   = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
 )
 
+type rawStreamAddr struct {
+	streamID int
+	targetID int64
+	netaddr  net.Addr
+}
+
+func (addr *rawStreamAddr) Network() string {
+	return "copper"
+}
+
+func (addr *rawStreamAddr) String() string {
+	if addr.streamID != 0 {
+		return fmt.Sprintf("stream %d @ %s", addr.streamID, addr.netaddr.String())
+	}
+	return fmt.Sprintf("target %d @ %s", addr.targetID, addr.netaddr.String())
+}
+
 type rawStream struct {
-	flags      int
+	outgoing   bool
 	streamID   int
 	targetID   int64
 	owner      *rawConn
+	flags      int
 	mayread    sync.Cond
 	readbuf    buffer
 	readerror  error
@@ -78,6 +103,7 @@ func newIncomingStream(owner *rawConn, frame openFrame, maxwrite int) *rawStream
 
 func newOutgoingStream(owner *rawConn, streamID int, targetID int64, maxwrite int) *rawStream {
 	s := &rawStream{
+		outgoing:  true,
 		streamID:  streamID,
 		targetID:  targetID,
 		owner:     owner,
@@ -422,6 +448,28 @@ func (s *rawStream) Flush() error {
 		s.flushed.Wait()
 	}
 	return s.writeerror
+}
+
+func (s *rawStream) LocalAddr() net.Addr {
+	addr := &rawStreamAddr{
+		targetID: s.targetID,
+		netaddr:  s.owner.conn.LocalAddr(),
+	}
+	if s.outgoing {
+		addr.streamID = s.streamID
+	}
+	return addr
+}
+
+func (s *rawStream) RemoteAddr() net.Addr {
+	addr := &rawStreamAddr{
+		targetID: s.targetID,
+		netaddr:  s.owner.conn.RemoteAddr(),
+	}
+	if !s.outgoing {
+		addr.streamID = s.streamID
+	}
+	return addr
 }
 
 func isClientStreamID(streamID int) bool {
