@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"flag"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -12,13 +14,14 @@ const (
 )
 
 func process(conn net.Conn) {
+	var err error
 	defer conn.Close()
 	addr := conn.RemoteAddr()
 	log.Printf("accepted connection from %s", addr)
 	var buf [65536]byte
 	w := bufio.NewWriter(conn)
 	for {
-		_, err := w.Write(buf[:])
+		_, err = w.Write(buf[:])
 		if err != nil {
 			log.Printf("error writing to %s: %s", addr, err)
 			return
@@ -26,7 +29,30 @@ func process(conn net.Conn) {
 	}
 }
 
+func provideLatency(conn net.Conn) {
+	var err error
+	defer conn.Close()
+	addr := conn.RemoteAddr()
+	log.Printf("accepted connection from %s", addr)
+	var buf [8]byte
+	r := bufio.NewReader(conn)
+	for {
+		_, err = io.ReadFull(r, buf[0:8])
+		if err != nil {
+			log.Printf("error reading from %s: %s", addr, err)
+			return
+		}
+		_, err = conn.Write(buf[0:8])
+		if err != nil {
+			log.Printf("error writing to %s: %s", addr, err)
+		}
+	}
+}
+
+var latency = flag.Bool("latency", false, "write data suitable for latency calculation")
+
 func main() {
+	flag.Parse()
 	os.Remove(listenAddr)
 	l, err := net.Listen("unix", listenAddr)
 	if err != nil {
@@ -39,6 +65,10 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		go process(conn)
+		if *latency {
+			go provideLatency(conn)
+		} else {
+			go process(conn)
+		}
 	}
 }

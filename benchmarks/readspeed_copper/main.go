@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"github.com/snaury/copper"
+	"io"
 	"log"
 	"net"
 	"time"
@@ -42,8 +43,88 @@ func process(stream copper.Stream, delay int) {
 	}
 }
 
+func measurePing(conn copper.Conn) {
+	defer conn.Close()
+	var maxlatency int64
+	var sumlatency int64
+	var count int64
+	tstart := time.Now()
+	for {
+		t0 := time.Now()
+		err := <-conn.Ping(123)
+		if err != nil {
+			log.Printf("ping failed: %s", err)
+			return
+		}
+		t1 := time.Now()
+
+		latency := t1.Sub(t0).Nanoseconds()
+		if maxlatency < latency {
+			maxlatency = latency
+		}
+		sumlatency += latency
+		count++
+
+		elapsed := t1.Sub(tstart)
+		if elapsed > time.Second {
+			log.Printf("measured latency: %dns (%dns avg over %d)", maxlatency, sumlatency/count, count)
+			maxlatency = 0
+			sumlatency = 0
+			count = 0
+			tstart = t1
+		}
+	}
+}
+
+func measureLatency(conn copper.Conn) {
+	var err error
+	defer conn.Close()
+	stream, err := conn.OpenStream(1)
+	if err != nil {
+		log.Fatal(err)
+	}
+	addr := stream.RemoteAddr()
+	log.Printf("connected to %s", addr)
+	var buf [8]byte
+	var maxlatency int64
+	var sumlatency int64
+	var count int64
+	tstart := time.Now()
+	for {
+		t0 := time.Now()
+		_, err = stream.Write(buf[0:8])
+		if err != nil {
+			log.Printf("error writing to %s: %s", addr, err)
+			return
+		}
+		_, err = io.ReadFull(stream, buf[0:8])
+		if err != nil {
+			log.Printf("error reading from %s: %s", addr, err)
+		}
+		t1 := time.Now()
+
+		latency := t1.Sub(t0).Nanoseconds()
+		if maxlatency < latency {
+			maxlatency = latency
+		}
+		sumlatency += latency
+		count++
+
+		elapsed := t1.Sub(tstart)
+		if elapsed > time.Second {
+			log.Printf("measured latency: %dns (%dns avg over %d)", maxlatency, sumlatency/count, count)
+			maxlatency = 0
+			sumlatency = 0
+			count = 0
+			tstart = t1
+		}
+	}
+}
+
 var delay = flag.Int("delay", 0, "delay between first stream reads in seconds ")
 var extra = flag.Int("extra", 0, "number of extra streams without delay")
+var ping = flag.Bool("ping", false, "measure latency using ping frames")
+var latency = flag.Bool("latency", false, "measure latency using normal streams")
 
 func main() {
 	flag.Parse()
@@ -53,6 +134,16 @@ func main() {
 	}
 	conn := copper.NewConn(rawconn, nil, false)
 	defer conn.Close()
+
+	if *ping {
+		measurePing(conn)
+		return
+	}
+
+	if *latency {
+		measureLatency(conn)
+		return
+	}
 
 	for i := 0; i < *extra; i++ {
 		stream, err := conn.OpenStream(0)

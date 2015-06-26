@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/snaury/copper"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -12,12 +13,13 @@ const (
 )
 
 func process(stream copper.Stream) {
+	var err error
 	defer stream.Close()
 	addr := stream.RemoteAddr()
 	log.Printf("accepted stream from %s", addr)
 	var buf [65536]byte
 	for {
-		_, err := stream.Write(buf[:])
+		_, err = stream.Write(buf[:])
 		if err != nil {
 			log.Printf("error writing to %s: %s", addr, err)
 			return
@@ -25,8 +27,35 @@ func process(stream copper.Stream) {
 	}
 }
 
-func handleStream(_ int64, stream copper.Stream) {
-	process(stream)
+func provideLatency(stream copper.Stream) {
+	var err error
+	defer stream.Close()
+	addr := stream.RemoteAddr()
+	log.Printf("accepted stream from %s", addr)
+	var buf [8]byte
+	for {
+		_, err = io.ReadFull(stream, buf[0:8])
+		if err != nil {
+			log.Printf("error reading from %s: %s", addr, err)
+			return
+		}
+		_, err = stream.Write(buf[0:8])
+		if err != nil {
+			log.Printf("error writing to %s: %s", addr, err)
+			return
+		}
+	}
+}
+
+func handleStream(target int64, stream copper.Stream) {
+	switch target {
+	case 0:
+		process(stream)
+	case 1:
+		provideLatency(stream)
+	default:
+		stream.CloseWithError(copper.ENOTARGET)
+	}
 }
 
 func handleConn(rawconn net.Conn) {
