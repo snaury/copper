@@ -253,6 +253,12 @@ func (c *rawConn) addOutgoingAckLocked(streamID int, increment int) {
 	}
 }
 
+func (c *rawConn) clearOutgoingAckLocked(streamID int) {
+	if !c.closed {
+		delete(c.outgoingAcks, streamID)
+	}
+}
+
 func (c *rawConn) addOutgoingCtrlLocked(streamID int) {
 	if !c.closed {
 		wakeup := len(c.outgoingCtrl) == 0
@@ -273,13 +279,14 @@ func (c *rawConn) addOutgoingDataLocked(streamID int) {
 	}
 }
 
-func (c *rawConn) handleStream(target int64, s Stream) {
-	if c.handler != nil {
-		defer s.Close()
-		c.handler.HandleStream(target, s)
-	} else {
-		s.CloseWithError(ENOTARGET)
+func (c *rawConn) handleStream(stream Stream) {
+	if c.handler == nil {
+		// This connection does not support incoming streams
+		stream.CloseWithError(ENOTARGET)
+		return
 	}
+	defer stream.Close()
+	c.handler.HandleStream(stream)
 }
 
 func (c *rawConn) cleanupStreamLocked(s *rawStream) {
@@ -327,11 +334,11 @@ func (c *rawConn) processOpenFrame(frame openFrame) error {
 	}
 	if len(frame.data) > c.localStreamWindowSize {
 		return &errorWithReason{
-			error:  fmt.Errorf("stream 0x%08x initial %d bytes is more than %d bytes window", frame.streamID, len(frame.data), c.localStreamWindowSize),
+			error:  fmt.Errorf("stream 0x%08x initial %d bytes, which is more than %d bytes window", frame.streamID, len(frame.data), c.localStreamWindowSize),
 			reason: EWINDOWOVERFLOW,
 		}
 	}
-	s := newIncomingStream(c, frame, c.remoteStreamWindowSize)
+	stream := newIncomingStream(c, frame, c.remoteStreamWindowSize)
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	old := c.streams[frame.streamID]
@@ -341,8 +348,8 @@ func (c *rawConn) processOpenFrame(frame openFrame) error {
 			reason: EINVALIDSTREAM,
 		}
 	}
-	c.streams[frame.streamID] = s
-	go c.handleStream(frame.targetID, s)
+	c.streams[frame.streamID] = stream
+	go c.handleStream(stream)
 	if len(frame.data) > 0 {
 		c.addOutgoingAckLocked(0, len(frame.data))
 	}
@@ -371,7 +378,7 @@ func (c *rawConn) processDataFrame(frame dataFrame) error {
 	}
 	if s.readbuf.len()+len(frame.data) > c.localStreamWindowSize {
 		return &errorWithReason{
-			error:  fmt.Errorf("stream 0x%08x received %d bytes is more than %d bytes window", frame.streamID, len(frame.data), c.localStreamWindowSize),
+			error:  fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len(), len(frame.data), c.localStreamWindowSize),
 			reason: EWINDOWOVERFLOW,
 		}
 	}

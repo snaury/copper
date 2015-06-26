@@ -6,17 +6,17 @@ import (
 
 // StreamHandler is used to handle incoming streams
 type StreamHandler interface {
-	HandleStream(target int64, stream Stream)
+	HandleStream(stream Stream)
 }
 
 // StreamHandlerFunc wraps a function to conform with StreamHandler interface
-type StreamHandlerFunc func(target int64, stream Stream)
+type StreamHandlerFunc func(stream Stream)
 
 var _ StreamHandler = StreamHandlerFunc(nil)
 
 // HandleStream calls the underlying function
-func (f StreamHandlerFunc) HandleStream(target int64, stream Stream) {
-	f(target, stream)
+func (f StreamHandlerFunc) HandleStream(stream Stream) {
+	f(stream)
 }
 
 // StreamHandlerMap allows dynamic dispatching and allocation of targets
@@ -45,10 +45,11 @@ func (h *StreamHandlerMap) find(target int64) StreamHandler {
 }
 
 // HandleStream dispatches to a registered handler
-func (h *StreamHandlerMap) HandleStream(target int64, stream Stream) {
+func (h *StreamHandlerMap) HandleStream(stream Stream) {
+	target := stream.TargetID()
 	handler := h.find(target)
 	if handler != nil {
-		handler.HandleStream(target, stream)
+		handler.HandleStream(stream)
 	} else {
 		stream.CloseWithError(ENOTARGET)
 	}

@@ -12,6 +12,9 @@ type Stream interface {
 	// Read reads data from the stream
 	Read(b []byte) (n int, err error)
 
+	// Peek is like Read, but does not consume data
+	Peek(b []byte) (n int, err error)
+
 	// Write writes data to the stream
 	Write(b []byte) (n int, err error)
 
@@ -24,8 +27,14 @@ type Stream interface {
 	// CloseWithError closes the stream with the specified error
 	CloseWithError(err error) error
 
-	// Flush returns when all writes have been prepared for the wire
+	// Flush returns when data has been processed by the remote side
 	Flush() error
+
+	// StreamID returns the stream id
+	StreamID() int
+
+	// TargetID returns the target id
+	TargetID() int64
 
 	// LocalAddr returns the local network address
 	LocalAddr() net.Addr
@@ -37,15 +46,17 @@ type Stream interface {
 var _ Stream = &rawStream{}
 
 const (
-	flagStreamSentEOF   = 1
-	flagStreamSeenEOF   = 2
-	flagStreamBothEOF   = flagStreamSentEOF | flagStreamSeenEOF
-	flagStreamSentReset = 4
-	flagStreamSeenReset = 8
-	flagStreamNeedOpen  = 16
-	flagStreamNeedEOF   = 32
-	flagStreamNeedReset = 64
-	flagStreamDiscard   = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
+	flagStreamSentEOF        = 1
+	flagStreamSeenEOF        = 2
+	flagStreamBothEOF        = flagStreamSentEOF | flagStreamSeenEOF
+	flagStreamSentReset      = 4
+	flagStreamSeenReset      = 8
+	flagStreamNeedOpen       = 16
+	flagStreamNeedEOF        = 32
+	flagStreamNeedReset      = 64
+	flagStreamDiscard        = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
+	flagStreamNoOutgoingAcks = flagStreamSeenEOF | flagStreamSentReset
+	flagStreamNoIncomingAcks = flagStreamSentEOF | flagStreamSeenReset
 )
 
 type rawStreamAddr struct {
@@ -78,6 +89,7 @@ type rawStream struct {
 	writebuf   buffer
 	writeerror error
 	writeleft  int
+	writenack  int
 	reseterror error
 	flushed    sync.Cond
 	delayerror error
@@ -123,23 +135,62 @@ func (s *rawStream) isFullyClosed() bool {
 func (s *rawStream) Read(b []byte) (n int, err error) {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
-	for n < len(b) {
-		for s.readbuf.len() == 0 {
-			if s.readerror != nil {
-				err = s.readerror
-				return
-			}
-			s.mayread.Wait()
+	for s.readbuf.len() == 0 {
+		if s.readerror != nil {
+			err = s.readerror
+			return
 		}
-		taken := s.readbuf.read(b[n:])
-		if s.flags&flagStreamSeenEOF == 0 {
-			s.owner.addOutgoingAckLocked(s.streamID, taken)
-		}
-		n += taken
+		s.mayread.Wait()
 	}
-	if s.readerror != nil && s.readbuf.len() == 0 {
-		// there will be no more data, return the error
-		err = s.readerror
+	if len(b) > 0 {
+		n = s.readbuf.read(b)
+		if s.readerror != nil && s.readbuf.len() == 0 {
+			// there will be no more data, return the error
+			err = s.readerror
+		}
+		if s.flags&flagStreamNoOutgoingAcks == 0 {
+			s.owner.addOutgoingAckLocked(s.streamID, n)
+		}
+	}
+	return
+}
+
+func (s *rawStream) Peek(b []byte) (n int, err error) {
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	for s.readbuf.len() == 0 {
+		if s.readerror != nil {
+			err = s.readerror
+			return
+		}
+		s.mayread.Wait()
+	}
+	if len(b) > 0 {
+		n = s.readbuf.peek(b)
+	}
+	return
+}
+
+func (s *rawStream) Write(b []byte) (n int, err error) {
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	for n < len(b) {
+		if s.writeerror != nil {
+			err = s.writeerror
+			return
+		}
+		if s.writeleft == 0 {
+			s.maywrite.Wait()
+			continue
+		}
+		taken := len(b) - n
+		if taken > s.writeleft {
+			taken = s.writeleft
+		}
+		s.writebuf.write(b[n : n+taken])
+		s.writeleft -= taken
+		s.owner.addOutgoingDataLocked(s.streamID)
+		n += taken
 	}
 	return
 }
@@ -162,38 +213,10 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 		if s.delayerror == nil {
 			s.delayerror = io.EOF
 		}
-		if s.readerror == nil {
-			s.readerror = s.delayerror
-			if s.readbuf.len() == 0 {
-				s.mayread.Broadcast()
-			}
-		}
+		s.setReadError(s.delayerror)
+		s.owner.clearOutgoingAckLocked(s.streamID)
 	}
 	return nil
-}
-
-func (s *rawStream) Write(b []byte) (n int, err error) {
-	s.owner.lock.Lock()
-	defer s.owner.lock.Unlock()
-	for n < len(b) {
-		if s.writeerror != nil {
-			err = s.writeerror
-			return
-		}
-		if s.writeleft == 0 {
-			s.maywrite.Wait()
-			continue
-		}
-		taken := len(b) - n
-		if taken > s.writeleft {
-			taken = s.writeleft
-		}
-		s.writebuf.write(b[n:])
-		s.writeleft -= taken
-		s.owner.addOutgoingDataLocked(s.streamID)
-		n += taken
-	}
-	return
 }
 
 func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
@@ -205,34 +228,38 @@ func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
 	}
 	if frame.flags&flagFin != 0 {
 		s.flags |= flagStreamSeenEOF
-		if s.readerror == nil {
-			s.readerror = s.delayerror
-			if s.readbuf.len() == 0 {
-				s.mayread.Broadcast()
-			}
-		}
+		s.setReadError(s.delayerror)
+		s.owner.clearOutgoingAckLocked(s.streamID)
 	}
-	if s.writeerror == nil {
-		s.writeerror = frame.toError()
-		if s.writeleft == 0 {
-			s.maywrite.Broadcast()
-		}
-		if s.writebuf.len() > 0 {
-			s.writeleft += s.writebuf.len()
-			s.writebuf.clear()
-			s.flushed.Broadcast()
-		}
-		s.flags |= flagStreamNeedEOF
-		s.owner.addOutgoingCtrlLocked(s.streamID)
+	s.setWriteError(frame.toError())
+	// After sending RESET the remote will no longer accept data and won't send
+	// acknowledgements, so we have to stop sending and wake up from Flush()
+	if s.writebuf.len() > 0 || s.writenack > 0 {
+		s.flushed.Broadcast()
 	}
+	s.writebuf.clear()
+	s.writenack = 0
 	return nil
 }
 
 func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
-	old := s.writeleft
-	s.writeleft = old + frame.increment
-	if old == 0 && s.writeleft > 0 {
-		s.maywrite.Broadcast()
+	if frame.increment <= 0 {
+		return &errorWithReason{
+			error:  fmt.Errorf("stream 0x%08x received invalid increment %d", s.streamID, frame.increment),
+			reason: EINVALIDFRAME,
+		}
+	}
+	if s.writeerror == nil {
+		if s.writeleft == 0 {
+			s.maywrite.Broadcast()
+		}
+		s.writeleft += frame.increment
+	}
+	if s.flags&flagStreamNoIncomingAcks == 0 {
+		s.writenack -= frame.increment
+		if s.writebuf.len() == 0 && s.writenack <= 0 {
+			s.flushed.Broadcast()
+		}
 	}
 	return nil
 }
@@ -259,8 +286,8 @@ func (s *rawStream) outgoingFramesLocked(inframes []frame, maxsize int) (frames 
 			if n > 0 {
 				data = make([]byte, n)
 				s.writebuf.read(data)
-				if s.writebuf.len() == 0 {
-					s.flushed.Broadcast()
+				if s.flags&flagStreamNoIncomingAcks == 0 {
+					s.writenack += len(data)
 				}
 			}
 			frames = append(frames, openFrame{
@@ -301,8 +328,8 @@ func (s *rawStream) outgoingFramesLocked(inframes []frame, maxsize int) (frames 
 			}
 			data := make([]byte, n)
 			s.writebuf.read(data)
-			if s.writebuf.len() == 0 {
-				s.flushed.Broadcast()
+			if s.flags&flagStreamNoIncomingAcks == 0 {
+				s.writenack += len(data)
 			}
 			frames = append(frames, dataFrame{
 				flags:    s.outgoingFlags(),
@@ -366,6 +393,12 @@ func (s *rawStream) outgoingFlags() uint8 {
 		s.flags &^= flagStreamNeedEOF
 		s.flags |= flagStreamSentEOF
 		flags |= flagFin
+		// After sending EOF we cannot send any more data and will not
+		// receive acknowledgements for any data we have already sent
+		if s.writenack > 0 {
+			s.flushed.Broadcast()
+		}
+		s.writenack = 0
 	}
 	return flags
 }
@@ -384,6 +417,27 @@ func (s *rawStream) activeData() bool {
 	return s.writebuf.len() > 0
 }
 
+func (s *rawStream) setReadError(err error) {
+	if s.readerror == nil {
+		s.readerror = err
+		if s.readbuf.len() == 0 {
+			s.mayread.Broadcast()
+		}
+	}
+}
+
+func (s *rawStream) setWriteError(err error) {
+	if s.writeerror == nil {
+		s.writeerror = err
+		if s.writeleft == 0 {
+			s.maywrite.Broadcast()
+		}
+		s.writeleft = 0
+		s.flags |= flagStreamNeedEOF
+		s.owner.addOutgoingCtrlLocked(s.streamID)
+	}
+}
+
 func (s *rawStream) closeWithErrorLocked(err error) error {
 	if err == nil {
 		err = ECLOSED
@@ -391,25 +445,13 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 	preverror := s.reseterror
 	if preverror == nil {
 		s.reseterror = err
-		if s.readerror == nil {
-			s.readerror = err
-			if s.readbuf.len() == 0 {
-				s.mayread.Broadcast()
-			}
-			s.readbuf.clear()
-		}
-		if s.writeerror == nil {
-			s.writeerror = err
-			if s.writeleft == 0 {
-				s.maywrite.Broadcast()
-			}
-			s.flags |= flagStreamNeedEOF
-			s.owner.addOutgoingCtrlLocked(s.streamID)
-		}
+		s.setReadError(err)
+		s.setWriteError(err)
 		if !s.isFullyClosed() {
 			s.flags |= flagStreamNeedReset
 			s.owner.addOutgoingCtrlLocked(s.streamID)
 		}
+		s.readbuf.clear()
 	}
 	return preverror
 }
@@ -424,14 +466,7 @@ func (s *rawStream) CloseWrite() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	preverror := s.writeerror
-	if preverror == nil {
-		s.writeerror = ECLOSED
-		if s.writeleft == 0 {
-			s.maywrite.Broadcast()
-		}
-		s.flags |= flagStreamNeedEOF
-		s.owner.addOutgoingCtrlLocked(s.streamID)
-	}
+	s.setWriteError(ECLOSED)
 	return preverror
 }
 
@@ -444,10 +479,18 @@ func (s *rawStream) CloseWithError(err error) error {
 func (s *rawStream) Flush() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
-	for s.writebuf.len() > 0 {
+	for s.writebuf.len() > 0 || s.writenack > 0 {
 		s.flushed.Wait()
 	}
 	return s.writeerror
+}
+
+func (s *rawStream) StreamID() int {
+	return s.streamID
+}
+
+func (s *rawStream) TargetID() int64 {
+	return s.targetID
 }
 
 func (s *rawStream) LocalAddr() net.Addr {

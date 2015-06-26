@@ -48,8 +48,8 @@ func provideLatency(stream copper.Stream) {
 	}
 }
 
-func handleStream(target int64, stream copper.Stream) {
-	switch target {
+func handleStream(stream copper.Stream) {
+	switch stream.TargetID() {
 	case 0:
 		process(stream)
 	case 1:
