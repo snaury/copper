@@ -2,12 +2,13 @@ package copper
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"reflect"
 	"testing"
 )
 
-var expectedFrames = []frame{
+var decodedFrames = []frame{
 	pingFrame{
 		flags: 0,
 		value: 0x1122334455667788,
@@ -57,6 +58,19 @@ var expectedFrames = []frame{
 	},
 }
 
+var printedFrames = []string{
+	`PING[flags:0x00 value:1234605616436508552]`,
+	`PING[flags:0x01(ACK) value:1234605616436508552]`,
+	`OPEN[stream:66 flags:0x25(FIN) target:1234605616436508552 data:ff fe fd fc fb fa f9 f8]`,
+	`DATA[stream:66 flags:0x25(FIN) data:ff fe fd fc fb fa f9 f8]`,
+	`RESET[stream:66 flags:0x25(FIN) code:ERROR_85 message:""]`,
+	`RESET[stream:66 flags:0x25(FIN) code:ERROR_85 message:"test"]`,
+	`WINDOW[stream:66 flags:0x25 increment:287454020]`,
+	`SETTINGS[flags:0x00 values:map[2:3]]`,
+	`SETTINGS[flags:0x01(ACK) values:map[]]`,
+	`RESET[stream:0 flags:0x00 code:EUNKNOWN message:""]`,
+}
+
 var rawFrameData = []byte{
 	// a PING frame
 	0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
@@ -94,10 +108,10 @@ var rawFrameData = []byte{
 func TestFrameReading(t *testing.T) {
 	r := bytes.NewReader(rawFrameData)
 
-	for _, expected := range expectedFrames {
+	for _, expected := range decodedFrames {
 		f, err := readFrame(r)
 		if err != nil {
-			t.Fatalf("Unexpected error: %v\nExpected: %#v", err, expected)
+			t.Fatalf("Unexpected error: %v\nExpected: %v", err, expected)
 		}
 		if !reflect.DeepEqual(f, expected) {
 			t.Fatalf("Unexpected frame %#v\nExpected: %#v", f, expected)
@@ -116,7 +130,7 @@ func TestFrameReading(t *testing.T) {
 func TestFrameWriting(t *testing.T) {
 	w := new(bytes.Buffer)
 
-	for _, frame := range expectedFrames {
+	for _, frame := range decodedFrames {
 		err := frame.writeFrameTo(w)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -125,7 +139,17 @@ func TestFrameWriting(t *testing.T) {
 
 	buf := w.Bytes()
 	if !reflect.DeepEqual(buf, rawFrameData) {
-		t.Fatalf("Unexpected frame data:\n%#v\nExpected:\n%#v", buf, rawFrameData)
+		t.Fatalf("Unexpected frame data:\n% x\nExpected:\n% x", buf, rawFrameData)
+	}
+}
+
+func TestFramePrinting(t *testing.T) {
+	for index, frame := range decodedFrames {
+		expected := printedFrames[index]
+		printed := fmt.Sprintf("%v", frame)
+		if printed != expected {
+			t.Errorf("Unexpected result: %s (expected %s)", printed, expected)
+		}
 	}
 }
 

@@ -490,7 +490,7 @@ readloop:
 			break readloop
 		}
 		if debugConnReadFrame {
-			log.Printf("%s: read: %#v", c.debugPrefix(), rawFrame)
+			log.Printf("%s: read: %v", c.debugPrefix(), rawFrame)
 		}
 		switch frame := rawFrame.(type) {
 		case pingFrame:
@@ -626,7 +626,7 @@ func (c *rawConn) writeloop() {
 				// when we close the connection.
 				frame := errorToResetFrame(flagFin, 0, err)
 				if debugConnSendFrame {
-					log.Printf("%s: send: %#v", c.debugPrefix(), frame)
+					log.Printf("%s: send: %v", c.debugPrefix(), frame)
 				}
 				c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
 				err = frame.writeFrameTo(w)
@@ -648,7 +648,7 @@ func (c *rawConn) writeloop() {
 			// send all frames that have been accumulated
 			for _, frame := range frames {
 				if debugConnSendFrame {
-					log.Printf("%s: send: %#v", c.debugPrefix(), frame)
+					log.Printf("%s: send: %v", c.debugPrefix(), frame)
 				}
 				c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
 				err = frame.writeFrameTo(w)

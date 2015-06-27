@@ -3,6 +3,7 @@ package copper
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -37,6 +38,14 @@ type pingFrame struct {
 	value int64
 }
 
+func (p pingFrame) String() string {
+	flagstring := fmt.Sprintf("0x%02x", p.flags)
+	if p.flags&flagAck != 0 {
+		flagstring += "(ACK)"
+	}
+	return fmt.Sprintf("PING[flags:%s value:%d]", flagstring, p.value)
+}
+
 func (p pingFrame) writeFrameTo(w io.Writer) (err error) {
 	err = writeFrameHeader(w, frameHeader{
 		flagsSize: uint32(p.flags)<<24 | 8,
@@ -55,6 +64,14 @@ type openFrame struct {
 	flags    uint8
 	targetID int64
 	data     []byte
+}
+
+func (p openFrame) String() string {
+	flagstring := fmt.Sprintf("0x%02x", p.flags)
+	if p.flags&flagFin != 0 {
+		flagstring += "(FIN)"
+	}
+	return fmt.Sprintf("OPEN[stream:%d flags:%s target:%d data:% x]", p.streamID, flagstring, p.targetID, p.data)
 }
 
 func (p openFrame) writeFrameTo(w io.Writer) (err error) {
@@ -85,6 +102,14 @@ type dataFrame struct {
 	data     []byte
 }
 
+func (p dataFrame) String() string {
+	flagstring := fmt.Sprintf("0x%02x", p.flags)
+	if p.flags&flagFin != 0 {
+		flagstring += "(FIN)"
+	}
+	return fmt.Sprintf("DATA[stream:%d flags:%s data:% x]", p.streamID, flagstring, p.data)
+}
+
 func (p dataFrame) writeFrameTo(w io.Writer) (err error) {
 	if len(p.data) > maxFramePayloadSize {
 		return EINVALIDFRAME
@@ -107,6 +132,14 @@ type resetFrame struct {
 	flags    uint8
 	code     ErrorCode
 	message  []byte
+}
+
+func (p resetFrame) String() string {
+	flagstring := fmt.Sprintf("0x%02x", p.flags)
+	if p.flags&flagFin != 0 {
+		flagstring += "(FIN)"
+	}
+	return fmt.Sprintf("RESET[stream:%d flags:%s code:%s message:%q]", p.streamID, flagstring, p.code.String(), p.message)
 }
 
 func (p resetFrame) writeFrameTo(w io.Writer) (err error) {
@@ -147,6 +180,10 @@ type windowFrame struct {
 	increment uint32
 }
 
+func (p windowFrame) String() string {
+	return fmt.Sprintf("WINDOW[stream:%d flags:0x%02x increment:%d]", p.streamID, p.flags, p.increment)
+}
+
 func (p windowFrame) writeFrameTo(w io.Writer) (err error) {
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  p.streamID,
@@ -164,6 +201,14 @@ func (p windowFrame) writeFrameTo(w io.Writer) (err error) {
 type settingsFrame struct {
 	flags  uint8
 	values map[int]int
+}
+
+func (p settingsFrame) String() string {
+	flagstring := fmt.Sprintf("0x%02x", p.flags)
+	if p.flags&flagAck != 0 {
+		flagstring += "(ACK)"
+	}
+	return fmt.Sprintf("SETTINGS[flags:%s values:%v]", flagstring, p.values)
 }
 
 func (p settingsFrame) writeFrameTo(w io.Writer) (err error) {

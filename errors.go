@@ -63,6 +63,22 @@ var errorMessages = map[ErrorCode]string{
 	ETIMEOUT:        "operation timed out",
 }
 
+var errorNames = map[ErrorCode]string{
+	EOK:             "EOK",
+	EUNKNOWNFRAME:   "EUNKNOWNFRAME",
+	EINVALIDFRAME:   "EINVALIDFRAME",
+	EWINDOWOVERFLOW: "EWINDOWOVERFLOW",
+	ECONNCLOSED:     "ECONNCLOSED",
+	ESTREAMCLOSED:   "ESTREAMCLOSED",
+	EINVALIDDATA:    "EINVALIDDATA",
+	EINVALIDSTREAM:  "EINVALIDSTREAM",
+	ENOTARGET:       "ENOTARGET",
+	ENOSTREAM:       "ENOSTREAM",
+	ENOROUTE:        "ENOROUTE",
+	ETIMEOUT:        "ETIMEOUT",
+	EUNKNOWN:        "EUNKNOWN",
+}
+
 func (e ErrorCode) Error() string {
 	text := errorMessages[e]
 	if len(text) == 0 {
@@ -71,7 +87,15 @@ func (e ErrorCode) Error() string {
 	return text
 }
 
-// ErrorCode returns the error code itself
+func (e ErrorCode) String() string {
+	text := errorNames[e]
+	if len(text) == 0 {
+		return fmt.Sprintf("ERROR_%d", e)
+	}
+	return text
+}
+
+// ErrorCode returns the copper error code
 func (e ErrorCode) ErrorCode() ErrorCode {
 	return e
 }
