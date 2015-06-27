@@ -52,6 +52,9 @@ var expectedFrames = []frame{
 		flags:  flagAck,
 		values: nil,
 	},
+	resetFrame{
+		code: EUNKNOWN,
+	},
 }
 
 var rawFrameData = []byte{
@@ -83,6 +86,9 @@ var rawFrameData = []byte{
 	0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
 	// a SETTINGS ack frame
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x05,
+	// a RESET frame with a EUNKNOWN error
+	0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03,
+	0xff, 0xff, 0xff, 0xff,
 }
 
 func TestFrameReading(t *testing.T) {
@@ -91,7 +97,7 @@ func TestFrameReading(t *testing.T) {
 	for _, expected := range expectedFrames {
 		f, err := readFrame(r)
 		if err != nil {
-			t.Fatalf("Unexpected error: %#v\nExpected: %#v", err, expected)
+			t.Fatalf("Unexpected error: %v\nExpected: %#v", err, expected)
 		}
 		if !reflect.DeepEqual(f, expected) {
 			t.Fatalf("Unexpected frame %#v\nExpected: %#v", f, expected)
@@ -103,7 +109,7 @@ func TestFrameReading(t *testing.T) {
 		t.Fatalf("Unexpected frame: %#v", f)
 	}
 	if err != io.EOF {
-		t.Fatalf("Unexpected error: %#v", err)
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }
 
@@ -113,7 +119,7 @@ func TestFrameWriting(t *testing.T) {
 	for _, frame := range expectedFrames {
 		err := frame.writeFrameTo(w)
 		if err != nil {
-			t.Fatalf("Unexpected error: %#v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
 
@@ -132,6 +138,6 @@ func TestFrameErrors(t *testing.T) {
 		t.Fatalf("Unexpected frame: %#v", f)
 	}
 	if err != EUNKNOWNFRAME {
-		t.Fatalf("Got unexpected error: %#v", err)
+		t.Fatalf("Got unexpected error: %v", err)
 	}
 }

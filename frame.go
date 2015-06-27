@@ -273,7 +273,7 @@ func readFrame(r io.Reader) (p frame, err error) {
 		return resetFrame{
 			flags:    hdr.Flags(),
 			streamID: hdr.streamID,
-			code:     ErrorCode(binary.LittleEndian.Uint32(buf[0:4])),
+			code:     ErrorCode(int32(binary.LittleEndian.Uint32(buf[0:4]))),
 			message:  message,
 		}, nil
 	case windowFrameID:
