@@ -1,7 +1,6 @@
 package copper
 
 import (
-	"bufio"
 	"fmt"
 	"log"
 	"net"
@@ -36,6 +35,8 @@ type rawConn struct {
 	lock                    sync.Mutex
 	waitready               sync.Cond
 	conn                    net.Conn
+	creader                 *connReader
+	cwriter                 *connWriter
 	isserver                bool
 	closed                  bool
 	failure                 error
@@ -89,6 +90,8 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 		localInactivityTimeout:  defaultInactivityTimeout,
 		remoteInactivityTimeout: defaultInactivityTimeout,
 	}
+	c.creader = newConnReader(c)
+	c.cwriter = newConnWriter(c)
 	if isserver {
 		c.nextnewstream = 2
 	} else {
@@ -105,6 +108,29 @@ func (c *rawConn) debugPrefix() string {
 		return "server"
 	}
 	return "client"
+}
+
+func (c *rawConn) readFrame() (rawFrame frame, err error) {
+	rawFrame, err = readFrame(c.creader.buffer)
+	if debugConnReadFrame {
+		if err != nil {
+			log.Printf("%s: read error: %v", c.debugPrefix(), err)
+		} else {
+			log.Printf("%s: read: %v", c.debugPrefix(), rawFrame)
+		}
+	}
+	return
+}
+
+func (c *rawConn) writeFrameLocked(rawFrame frame) (err error) {
+	if debugConnSendFrame {
+		log.Printf("%s: send: %v", c.debugPrefix(), rawFrame)
+	}
+	err = rawFrame.writeFrameTo(c.cwriter.buffer)
+	if debugConnSendFrame && err != nil {
+		log.Printf("%s: send error: %v", c.debugPrefix(), err)
+	}
+	return
 }
 
 func (c *rawConn) wakeupLocked() {
@@ -291,8 +317,8 @@ func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 		delete(c.outgoingCtrl, s.streamID)
 		delete(c.outgoingData, s.streamID)
 		if isServerStreamID(s.streamID) == c.isserver {
-			// this is our stream id, it is no longer in use, but must wait
-			// for confirmation first before we may reuse it
+			// this is our stream id, it is no longer in use, but we must wait
+			// for confirmation first before reusing it
 			c.deadstreams[s.streamID] = struct{}{}
 			if len(c.deadstreams) >= maxDeadStreams {
 				deadstreams := c.deadstreams
@@ -525,19 +551,11 @@ func (c *rawConn) failEverything() {
 }
 
 func (c *rawConn) readloop() {
-	r := bufio.NewReader(c.conn)
 	for {
-		c.conn.SetReadDeadline(time.Now().Add(c.localInactivityTimeout))
-		rawFrame, err := readFrame(r)
+		rawFrame, err := c.readFrame()
 		if err != nil {
-			if debugConnReadFrame {
-				log.Printf("%s: read error: %v", c.debugPrefix(), err)
-			}
 			c.closeWithError(err)
 			break
-		}
-		if debugConnReadFrame {
-			log.Printf("%s: read: %v", c.debugPrefix(), rawFrame)
 		}
 		if !c.processFrame(rawFrame) {
 			break
@@ -546,106 +564,137 @@ func (c *rawConn) readloop() {
 	c.failEverything()
 }
 
-func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err error) {
+func (c *rawConn) writeOutgoingFrames(datarequired bool) (result bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	if c.closed {
-		return nil, c.outgoingFailure
-	}
-	if len(c.pingAcks) > 0 || len(c.pingQueue) > 0 {
-		for _, value := range c.pingAcks {
-			frames = append(frames, pingFrame{
-				flags: flagAck,
-				value: value,
-			})
-		}
-		for _, value := range c.pingQueue {
-			frames = append(frames, pingFrame{
-				value: value,
-			})
-		}
-		c.pingAcks = c.pingAcks[:0]
-		c.pingQueue = c.pingQueue[:0]
-		return
-	}
-	if c.settingsAcks > 0 {
-		frames = append(frames, settingsFrame{
-			flags: flagAck,
-		})
-		c.settingsAcks--
-		return
-	}
-	if len(c.outgoingAcks) > 0 {
-		for streamID, increment := range c.outgoingAcks {
-			frames = append(frames, windowFrame{
-				streamID:  streamID,
-				flags:     flagAck,
-				increment: increment,
-			})
-			delete(c.outgoingAcks, streamID)
-		}
-		return
-	}
-	if len(c.outgoingCtrl) > 0 {
-		var sent int
-		for streamID := range c.outgoingCtrl {
-			stream := c.streams[streamID]
-			if stream == nil {
-				// the connection is already gone
-				delete(c.outgoingCtrl, streamID)
-				continue
+	defer func() {
+		if datarequired && !c.cwriter.written && c.cwriter.buffer.Buffered() <= 0 {
+			err := c.writeFrameLocked(dataFrame{})
+			if err != nil {
+				c.closeWithErrorLocked(err)
+				result = false
+				return
 			}
-			frames, sent = stream.outgoingFramesLocked(frames, c.writeleft)
-			if !stream.activeCtrl() {
-				// should always be the case
-				delete(c.outgoingCtrl, streamID)
+		}
+		if c.cwriter.buffer.Buffered() > 0 {
+			err := c.cwriter.buffer.Flush()
+			if err != nil {
+				c.closeWithErrorLocked(err)
+				result = false
+				return
 			}
-			if len(frames) > 0 {
-				c.writeleft -= sent
-				if sent > 0 && !stream.activeData() {
-					// we sent all data together with control
-					delete(c.outgoingData, streamID)
+		}
+	}()
+writeloop:
+	for {
+		select {
+		case <-c.signal:
+		default:
+		}
+		if c.closed {
+			// Attempt to notify the other side that we have an error
+			// It's ok if any of this fails, the read side will stop
+			// when we close the connection.
+			c.writeFrameLocked(errorToResetFrame(flagFin, 0, c.outgoingFailure))
+			return false
+		}
+		if len(c.pingAcks) > 0 {
+			pingAcks := c.pingAcks
+			c.pingAcks = nil
+			for _, value := range pingAcks {
+				err := c.writeFrameLocked(pingFrame{
+					flags: flagAck,
+					value: value,
+				})
+				if err != nil {
+					c.closeWithErrorLocked(err)
+					return false
 				}
-				c.cleanupStreamLocked(stream)
-				return
+			}
+			continue writeloop
+		}
+		if len(c.pingQueue) > 0 {
+			pingQueue := c.pingQueue
+			c.pingQueue = nil
+			for _, value := range pingQueue {
+				err := c.writeFrameLocked(pingFrame{
+					value: value,
+				})
+				if err != nil {
+					c.closeWithErrorLocked(err)
+					return false
+				}
+			}
+			continue writeloop
+		}
+		if c.settingsAcks > 0 {
+			err := c.writeFrameLocked(settingsFrame{
+				flags: flagAck,
+			})
+			if err != nil {
+				c.closeWithErrorLocked(err)
+				return false
+			}
+			c.settingsAcks--
+			continue writeloop
+		}
+		if len(c.outgoingAcks) > 0 {
+			for streamID, increment := range c.outgoingAcks {
+				delete(c.outgoingAcks, streamID)
+				err := c.writeFrameLocked(windowFrame{
+					streamID:  streamID,
+					flags:     flagAck,
+					increment: increment,
+				})
+				if err != nil {
+					c.closeWithErrorLocked(err)
+					return false
+				}
+				continue writeloop
 			}
 		}
-	}
-	if len(c.outgoingData) > 0 && c.writeleft > 0 {
-		var sent int
-		for streamID := range c.outgoingData {
-			stream := c.streams[streamID]
-			if stream == nil {
-				// the connection is already gone
-				delete(c.outgoingData, streamID)
-				continue
-			}
-			frames, sent = stream.outgoingFramesLocked(frames, c.writeleft)
-			if !stream.activeData() {
-				delete(c.outgoingData, streamID)
-			}
-			if len(frames) > 0 {
-				c.writeleft -= sent
-				c.cleanupStreamLocked(stream)
-				return
+		if len(c.outgoingCtrl) > 0 {
+			for streamID := range c.outgoingCtrl {
+				delete(c.outgoingCtrl, streamID)
+				stream := c.streams[streamID]
+				if stream == nil {
+					// the connection is already gone
+					continue
+				}
+				err := stream.writeOutgoingControlLocked()
+				if err != nil {
+					c.closeWithErrorLocked(err)
+					return false
+				}
+				continue writeloop
 			}
 		}
+		if len(c.outgoingData) > 0 && c.writeleft > 0 {
+			for streamID := range c.outgoingData {
+				delete(c.outgoingData, streamID)
+				stream := c.streams[streamID]
+				if stream == nil {
+					// the connection is already gone
+					continue
+				}
+				err := stream.writeOutgoingDataLocked()
+				if err != nil {
+					c.closeWithErrorLocked(err)
+					return false
+				}
+				continue writeloop
+			}
+		}
+		// if we reach here there's nothing else to send
+		return true
 	}
-	if datarequired {
-		frames = append(frames, dataFrame{
-			streamID: 0,
-			data:     nil,
-		})
-	}
-	return
 }
 
 func (c *rawConn) writeloop() {
 	defer c.conn.Close()
-	w := bufio.NewWriter(c.conn)
+	c.cwriter.written = false
 	t := time.NewTimer(2 * c.remoteInactivityTimeout / 3)
 	for {
-		datasent := false
 		datarequired := false
 		select {
 		case <-c.signal:
@@ -653,68 +702,11 @@ func (c *rawConn) writeloop() {
 		case <-t.C:
 			datarequired = true
 		}
-		for {
-			frames, err := c.prepareWriteBatch(datarequired)
-			if err != nil {
-				// Attempt to notify the other side that we have an error
-				// It's ok if any of this fails, the read side will stop
-				// when we close the connection.
-				frame := errorToResetFrame(flagFin, 0, err)
-				if debugConnSendFrame {
-					log.Printf("%s: send: %v", c.debugPrefix(), frame)
-				}
-				c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
-				err = frame.writeFrameTo(w)
-				if debugConnSendFrame && err != nil {
-					log.Printf("%s: send error: %v", c.debugPrefix(), err)
-					return
-				}
-				err = w.Flush()
-				if debugConnSendFrame && err != nil {
-					log.Printf("%s: send error: %v", c.debugPrefix(), err)
-				}
-				return
-			}
-			// if there are no frames to send we may go to sleep
-			datarequired = false
-			if len(frames) == 0 {
-				break
-			}
-			// send all frames that have been accumulated
-			for _, frame := range frames {
-				if debugConnSendFrame {
-					log.Printf("%s: send: %v", c.debugPrefix(), frame)
-				}
-				c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
-				err = frame.writeFrameTo(w)
-				if err != nil {
-					if debugConnSendFrame {
-						log.Printf("%s: send error: %v", c.debugPrefix(), err)
-					}
-					c.closeWithError(err)
-					return
-				}
-			}
-			// clear the signal flag before the next iteration
-			select {
-			case <-c.signal:
-			default:
-			}
-			datasent = true
+		if !c.writeOutgoingFrames(datarequired) {
+			break
 		}
-		// we must flush all accumulated data before going to sleep
-		if w.Buffered() > 0 {
-			c.conn.SetWriteDeadline(time.Now().Add(c.localInactivityTimeout))
-			err := w.Flush()
-			if err != nil {
-				if debugConnSendFrame {
-					log.Printf("%s: send error: %v", c.debugPrefix(), err)
-				}
-				c.closeWithError(err)
-				return
-			}
-		}
-		if datasent {
+		if c.cwriter.written {
+			c.cwriter.written = false
 			t.Reset(2 * c.remoteInactivityTimeout / 3)
 		}
 	}
