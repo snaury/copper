@@ -236,32 +236,6 @@ func (c *rawConn) Open(target int64) (Stream, error) {
 	return s, nil
 }
 
-func (c *rawConn) addPingAck(value int64) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	if len(c.pingAcks) == 0 {
-		c.wakeupLocked()
-	}
-	c.pingAcks = append(c.pingAcks, value)
-}
-
-func (c *rawConn) takePingResult(value int64) chan error {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	if results, ok := c.pingResults[value]; ok {
-		result := results[0]
-		if len(results) > 1 {
-			resultscopy := make([]chan error, len(results)-1)
-			copy(resultscopy, results[1:])
-			c.pingResults[value] = resultscopy
-		} else {
-			delete(c.pingResults, value)
-		}
-		return result
-	}
-	return nil
-}
-
 func (c *rawConn) addOutgoingAckLocked(streamID uint32, increment int) {
 	if !c.closed && increment > 0 {
 		wakeup := len(c.outgoingAcks) == 0
@@ -328,26 +302,43 @@ func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 	}
 }
 
-func (c *rawConn) processPingFrame(frame pingFrame) error {
+func (c *rawConn) processPingFrameLocked(frame pingFrame) error {
 	if (frame.flags & flagAck) == 0 {
-		c.addPingAck(frame.value)
-		return nil
-	}
-	result := c.takePingResult(frame.value)
-	if result != nil {
-		select {
-		case result <- nil:
-		default:
+		if len(c.pingAcks) == 0 {
+			c.wakeupLocked()
 		}
-		close(result)
+		c.pingAcks = append(c.pingAcks, frame.value)
+	} else if results, ok := c.pingResults[frame.value]; ok {
+		result := results[0]
+		if len(results) > 1 {
+			resultscopy := make([]chan error, len(results)-1)
+			copy(resultscopy, results[1:])
+			c.pingResults[frame.value] = resultscopy
+		} else {
+			delete(c.pingResults, frame.value)
+		}
+		if result != nil {
+			select {
+			case result <- nil:
+			default:
+			}
+			close(result)
+		}
 	}
 	return nil
 }
 
-func (c *rawConn) processOpenFrame(frame openFrame) error {
+func (c *rawConn) processOpenFrameLocked(frame openFrame) error {
 	if frame.streamID <= 0 || isServerStreamID(frame.streamID) == c.isserver {
 		return &copperError{
 			error: fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.streamID),
+			code:  EINVALIDSTREAM,
+		}
+	}
+	old := c.streams[frame.streamID]
+	if old != nil {
+		return &copperError{
+			error: fmt.Errorf("stream 0x%08x cannot be reopened until fully closed", frame.streamID),
 			code:  EINVALIDSTREAM,
 		}
 	}
@@ -358,15 +349,6 @@ func (c *rawConn) processOpenFrame(frame openFrame) error {
 		}
 	}
 	stream := newIncomingStream(c, frame, c.remoteStreamWindowSize)
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	old := c.streams[frame.streamID]
-	if old != nil {
-		return &copperError{
-			error: fmt.Errorf("stream 0x%08x cannot be opened until fully closed", frame.streamID),
-			code:  EINVALIDSTREAM,
-		}
-	}
 	c.streams[frame.streamID] = stream
 	go c.handleStream(stream)
 	if len(frame.data) > 0 {
@@ -375,11 +357,9 @@ func (c *rawConn) processOpenFrame(frame openFrame) error {
 	return nil
 }
 
-func (c *rawConn) processDataFrame(frame dataFrame) error {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	s := c.streams[frame.streamID]
-	if s == nil {
+func (c *rawConn) processDataFrameLocked(frame dataFrame) error {
+	stream := c.streams[frame.streamID]
+	if stream == nil {
 		if frame.streamID == 0 {
 			// this is a reserved stream id
 			if frame.flags != 0 || len(frame.data) != 0 {
@@ -395,28 +375,26 @@ func (c *rawConn) processDataFrame(frame dataFrame) error {
 			code:  EINVALIDSTREAM,
 		}
 	}
-	if s.readbuf.len()+len(frame.data) > c.localStreamWindowSize {
+	if stream.readbuf.len()+len(frame.data) > c.localStreamWindowSize {
 		return &copperError{
-			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len(), len(frame.data), c.localStreamWindowSize),
+			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, stream.readbuf.len(), len(frame.data), c.localStreamWindowSize),
 			code:  EWINDOWOVERFLOW,
 		}
 	}
-	err := s.processDataFrameLocked(frame)
+	err := stream.processDataFrameLocked(frame)
 	if err != nil {
 		return err
 	}
-	c.cleanupStreamLocked(s)
+	c.cleanupStreamLocked(stream)
 	if len(frame.data) > 0 {
 		c.addOutgoingAckLocked(0, len(frame.data))
 	}
 	return nil
 }
 
-func (c *rawConn) processResetFrame(frame resetFrame) error {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	s := c.streams[frame.streamID]
-	if s == nil {
+func (c *rawConn) processResetFrameLocked(frame resetFrame) error {
+	stream := c.streams[frame.streamID]
+	if stream == nil {
 		if frame.streamID == 0 {
 			// this is a reserved stream id
 			if c.outgoingFailure == nil {
@@ -428,17 +406,15 @@ func (c *rawConn) processResetFrame(frame resetFrame) error {
 		// it's ok to receive RESET for a dead stream
 		return nil
 	}
-	err := s.processResetFrameLocked(frame)
+	err := stream.processResetFrameLocked(frame)
 	if err != nil {
 		return err
 	}
-	c.cleanupStreamLocked(s)
+	c.cleanupStreamLocked(stream)
 	return nil
 }
 
-func (c *rawConn) processWindowFrame(frame windowFrame) error {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+func (c *rawConn) processWindowFrameLocked(frame windowFrame) error {
 	if frame.streamID == 0 {
 		wakeup := c.writeleft == 0 && len(c.outgoingData) > 0
 		c.writeleft += int(frame.increment)
@@ -452,6 +428,40 @@ func (c *rawConn) processWindowFrame(frame windowFrame) error {
 		return s.processWindowFrameLocked(frame)
 	}
 	return nil
+}
+
+func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
+	return &copperError{
+		error: fmt.Errorf("processing SETTINGS frames in not yet supported"),
+		code:  EUNSUPPORTED,
+	}
+}
+
+func (c *rawConn) processFrame(rawFrame frame) bool {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	var err error
+	switch frame := rawFrame.(type) {
+	case pingFrame:
+		err = c.processPingFrameLocked(frame)
+	case openFrame:
+		err = c.processOpenFrameLocked(frame)
+	case dataFrame:
+		err = c.processDataFrameLocked(frame)
+	case resetFrame:
+		err = c.processResetFrameLocked(frame)
+	case windowFrame:
+		err = c.processWindowFrameLocked(frame)
+	case settingsFrame:
+		err = c.processSettingsFrameLocked(frame)
+	default:
+		err = EUNKNOWNFRAME
+	}
+	if err != nil {
+		c.closeWithErrorLocked(err)
+		return false
+	}
+	return true
 }
 
 func (c *rawConn) failEverything() {
@@ -478,7 +488,6 @@ func (c *rawConn) failEverything() {
 
 func (c *rawConn) readloop() {
 	r := bufio.NewReader(c.conn)
-readloop:
 	for {
 		c.conn.SetReadDeadline(time.Now().Add(c.localInactivityTimeout))
 		rawFrame, err := readFrame(r)
@@ -487,30 +496,13 @@ readloop:
 				log.Printf("%s: read error: %v", c.debugPrefix(), err)
 			}
 			c.closeWithError(err)
-			break readloop
+			break
 		}
 		if debugConnReadFrame {
 			log.Printf("%s: read: %v", c.debugPrefix(), rawFrame)
 		}
-		switch frame := rawFrame.(type) {
-		case pingFrame:
-			err = c.processPingFrame(frame)
-		case openFrame:
-			err = c.processOpenFrame(frame)
-		case dataFrame:
-			err = c.processDataFrame(frame)
-		case resetFrame:
-			err = c.processResetFrame(frame)
-		case windowFrame:
-			err = c.processWindowFrame(frame)
-		case settingsFrame:
-			panic("unhandled settings frame")
-		default:
-			panic("unhandled frame type")
-		}
-		if err != nil {
-			c.closeWithError(err)
-			break readloop
+		if !c.processFrame(rawFrame) {
+			break
 		}
 	}
 	c.failEverything()
