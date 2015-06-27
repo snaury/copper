@@ -230,7 +230,7 @@ func (c *rawConn) Open(target int64) (Stream, error) {
 		}
 		c.nextnewstream += 2
 	}
-	s := newOutgoingStream(c, streamID, target, c.remoteStreamWindowSize)
+	s := newOutgoingStream(c, streamID, target, c.localStreamWindowSize, c.remoteStreamWindowSize)
 	c.streams[streamID] = s
 	c.addOutgoingCtrlLocked(s.streamID)
 	return s, nil
@@ -348,7 +348,7 @@ func (c *rawConn) processOpenFrameLocked(frame openFrame) error {
 			code:  EWINDOWOVERFLOW,
 		}
 	}
-	stream := newIncomingStream(c, frame, c.remoteStreamWindowSize)
+	stream := newIncomingStream(c, frame, c.localStreamWindowSize, c.remoteStreamWindowSize)
 	c.streams[frame.streamID] = stream
 	go c.handleStream(stream)
 	if len(frame.data) > 0 {
@@ -373,12 +373,6 @@ func (c *rawConn) processDataFrameLocked(frame dataFrame) error {
 		return &copperError{
 			error: fmt.Errorf("stream 0x%08x cannot be found", frame.streamID),
 			code:  EINVALIDSTREAM,
-		}
-	}
-	if stream.readbuf.len()+len(frame.data) > c.localStreamWindowSize {
-		return &copperError{
-			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, stream.readbuf.len(), len(frame.data), c.localStreamWindowSize),
-			code:  EWINDOWOVERFLOW,
 		}
 	}
 	err := stream.processDataFrameLocked(frame)

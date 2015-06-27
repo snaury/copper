@@ -125,6 +125,7 @@ type rawStream struct {
 	mayread    sync.Cond
 	readbuf    buffer
 	readerror  error
+	readwindow int
 	maywrite   sync.Cond
 	writebuf   buffer
 	writeerror error
@@ -142,12 +143,13 @@ type rawStream struct {
 
 var _ Stream = &rawStream{}
 
-func newIncomingStream(owner *rawConn, frame openFrame, maxwrite int) *rawStream {
+func newIncomingStream(owner *rawConn, frame openFrame, readwindow, writewindow int) *rawStream {
 	s := &rawStream{
-		streamID:  frame.streamID,
-		targetID:  frame.targetID,
-		owner:     owner,
-		writeleft: maxwrite,
+		streamID:   frame.streamID,
+		targetID:   frame.targetID,
+		owner:      owner,
+		readwindow: readwindow,
+		writeleft:  writewindow,
 	}
 	s.mayread.L = &owner.lock
 	s.maywrite.L = &owner.lock
@@ -160,13 +162,14 @@ func newIncomingStream(owner *rawConn, frame openFrame, maxwrite int) *rawStream
 	return s
 }
 
-func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64, maxwrite int) *rawStream {
+func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64, readwindow, writewindow int) *rawStream {
 	s := &rawStream{
-		outgoing:  true,
-		streamID:  streamID,
-		targetID:  targetID,
-		owner:     owner,
-		writeleft: maxwrite,
+		outgoing:   true,
+		streamID:   streamID,
+		targetID:   targetID,
+		owner:      owner,
+		readwindow: readwindow,
+		writeleft:  writewindow,
 	}
 	s.mayread.L = &owner.lock
 	s.maywrite.L = &owner.lock
@@ -271,6 +274,12 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 		return &copperError{
 			error: fmt.Errorf("stream 0x%08x cannot have DATA after EOF"),
 			code:  EINVALIDSTREAM,
+		}
+	}
+	if s.readbuf.len()+len(frame.data) > s.readwindow {
+		return &copperError{
+			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len(), len(frame.data), s.readwindow),
+			code:  EWINDOWOVERFLOW,
 		}
 	}
 	if s.readerror == nil && len(frame.data) > 0 {
