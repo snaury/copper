@@ -19,6 +19,7 @@ const (
 const (
 	maxFramePayloadSize         = 0xffffff
 	maxOpenFramePayloadSize     = maxFramePayloadSize - 8
+	maxDataFramePayloadSize     = maxFramePayloadSize
 	maxResetFrameMessageSize    = maxFramePayloadSize - 4
 	maxSettingsFramePayloadSize = 8 * 256
 )
@@ -111,7 +112,7 @@ func (p dataFrame) String() string {
 }
 
 func (p dataFrame) writeFrameTo(w io.Writer) (err error) {
-	if len(p.data) > maxFramePayloadSize {
+	if len(p.data) > maxDataFramePayloadSize {
 		return EINVALIDFRAME
 	}
 	err = writeFrameHeader(w, frameHeader{

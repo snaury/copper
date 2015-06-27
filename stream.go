@@ -233,7 +233,7 @@ func (s *rawStream) waitReadLocked() error {
 }
 
 func (s *rawStream) waitWriteLocked() error {
-	for s.writeerror == nil && s.writeleft == 0 {
+	for s.writeerror == nil && s.writeleft <= 0 {
 		if s.writeexp == nil && !s.wdeadline.IsZero() {
 			d := s.wdeadline.Sub(time.Now())
 			if d <= 0 {
@@ -321,7 +321,7 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 		}
 	}
 	if s.writeerror == nil {
-		if s.writeleft == 0 {
+		if s.writeleft <= 0 {
 			s.maywrite.Broadcast()
 		}
 		s.writeleft += int(frame.increment)
@@ -331,6 +331,31 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 		if s.writebuf.len() == 0 && s.writenack <= 0 {
 			s.flushed.Broadcast()
 		}
+	}
+	return nil
+}
+
+func (s *rawStream) prepareDataLocked(maxpayload int, maxsize int) []byte {
+	n := s.writebuf.len()
+	if s.writeleft < 0 {
+		// Incoming SETTINGS reduced our window and we have extra data in our
+		// buffer, however we cannot send that extra data until there's a
+		// window on the remote side.
+		n += s.writeleft
+	}
+	if n > maxpayload {
+		n = maxpayload
+	}
+	if n > maxsize {
+		n = maxsize
+	}
+	if n > 0 {
+		data := make([]byte, n)
+		s.writebuf.read(data)
+		if s.flags&flagStreamNoIncomingAcks == 0 {
+			s.writenack += len(data)
+		}
+		return data
 	}
 	return nil
 }
@@ -346,21 +371,7 @@ func (s *rawStream) outgoingFramesLocked(inframes []frame, maxsize int) (frames 
 			break
 		} else if s.outgoingSendOpen() {
 			s.flags &^= flagStreamNeedOpen
-			n := s.writebuf.len()
-			if n > maxOpenFramePayloadSize {
-				n = maxOpenFramePayloadSize
-			}
-			if n > maxsize {
-				n = maxsize
-			}
-			var data []byte
-			if n > 0 {
-				data = make([]byte, n)
-				s.writebuf.read(data)
-				if s.flags&flagStreamNoIncomingAcks == 0 {
-					s.writenack += len(data)
-				}
-			}
+			data := s.prepareDataLocked(maxOpenFramePayloadSize, maxsize)
 			frames = append(frames, openFrame{
 				streamID: s.streamID,
 				flags:    s.outgoingFlags(),
@@ -386,21 +397,10 @@ func (s *rawStream) outgoingFramesLocked(inframes []frame, maxsize int) (frames 
 			})
 			break
 		} else {
-			n := s.writebuf.len()
-			if n > maxFramePayloadSize {
-				n = maxFramePayloadSize
-			}
-			if n > maxsize {
-				n = maxsize
-			}
-			if n == 0 {
+			data := s.prepareDataLocked(maxDataFramePayloadSize, maxsize)
+			if len(data) == 0 {
 				// there's nothing we can send
 				break
-			}
-			data := make([]byte, n)
-			s.writebuf.read(data)
-			if s.flags&flagStreamNoIncomingAcks == 0 {
-				s.writenack += len(data)
 			}
 			frames = append(frames, dataFrame{
 				streamID: s.streamID,
@@ -485,7 +485,10 @@ func (s *rawStream) activeCtrl() bool {
 }
 
 func (s *rawStream) activeData() bool {
-	return s.writebuf.len() > 0
+	if s.writeleft >= 0 {
+		return s.writebuf.len() > 0
+	}
+	return s.writebuf.len()+s.writeleft > 0
 }
 
 func (s *rawStream) setReadError(err error) {
@@ -500,7 +503,7 @@ func (s *rawStream) setReadError(err error) {
 func (s *rawStream) setWriteError(err error) {
 	if s.writeerror == nil {
 		s.writeerror = err
-		if s.writeleft == 0 {
+		if s.writeleft <= 0 {
 			s.maywrite.Broadcast()
 		}
 		s.writeleft = 0
