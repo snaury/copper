@@ -115,3 +115,43 @@ func (b *buffer) clear() {
 	b.buf = nil
 	b.off = 0
 }
+
+// current returns data as a contiguous slice, moving it when necessary
+func (b *buffer) current() []byte {
+	end := b.off + len(b.buf)
+	if end > cap(b.buf) {
+		// data is not contiguous
+		end -= cap(b.buf)
+		if len(b.buf)*2 > cap(b.buf) {
+			// there's not enough space to move data around
+			buf := make([]byte, cap(b.buf))
+			n := copy(buf, b.buf[b.off:cap(b.buf)])
+			copy(buf[n:], b.buf[:end])
+			b.buf = buf[:len(b.buf)]
+			b.off = 0
+		} else {
+			// there's enough space to move data in the middle
+			n := copy(b.buf[end:], b.buf[b.off:cap(b.buf)])
+			copy(b.buf[end+n:b.off], b.buf[:end])
+			b.off = end
+		}
+		end = b.off + len(b.buf)
+	}
+	return b.buf[b.off:end]
+}
+
+// discard throws away up to n bytes of data as if done by a read call
+func (b *buffer) discard(n int) int {
+	if n > len(b.buf) {
+		n = len(b.buf)
+		b.buf = b.buf[:0]
+		b.off = 0
+		return n
+	}
+	b.buf = b.buf[:len(b.buf)-n]
+	b.off += n
+	if b.off >= cap(b.buf) {
+		b.off -= cap(b.buf)
+	}
+	return n
+}
