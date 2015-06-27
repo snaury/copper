@@ -567,8 +567,11 @@ func (c *rawConn) readloop() {
 func (c *rawConn) writeOutgoingFrames(datarequired bool) (result bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
+	writesInitial := c.cwriter.writes
 	defer func() {
-		if datarequired && !c.cwriter.written && c.cwriter.buffer.Buffered() <= 0 {
+		if result && datarequired && writesInitial == c.cwriter.writes && c.cwriter.buffer.Buffered() <= 0 {
+			// we haven't written anything on the wire, but it is required
 			err := c.writeFrameLocked(dataFrame{})
 			if err != nil {
 				c.closeWithErrorLocked(err)
@@ -577,6 +580,7 @@ func (c *rawConn) writeOutgoingFrames(datarequired bool) (result bool) {
 			}
 		}
 		if c.cwriter.buffer.Buffered() > 0 {
+			// we use buffer for coalescing, must flush at the end
 			err := c.cwriter.buffer.Flush()
 			if err != nil {
 				c.closeWithErrorLocked(err)
@@ -585,12 +589,9 @@ func (c *rawConn) writeOutgoingFrames(datarequired bool) (result bool) {
 			}
 		}
 	}()
+
 writeloop:
 	for {
-		select {
-		case <-c.signal:
-		default:
-		}
 		if c.closed {
 			// Attempt to notify the other side that we have an error
 			// It's ok if any of this fails, the read side will stop
@@ -598,6 +599,7 @@ writeloop:
 			c.writeFrameLocked(errorToResetFrame(flagFin, 0, c.outgoingFailure))
 			return false
 		}
+		writes := c.cwriter.writes
 		if len(c.pingAcks) > 0 {
 			pingAcks := c.pingAcks
 			c.pingAcks = nil
@@ -611,7 +613,10 @@ writeloop:
 					return false
 				}
 			}
-			continue writeloop
+			if writes != c.cwriter.writes {
+				// data flush detected, restart
+				continue writeloop
+			}
 		}
 		if len(c.pingQueue) > 0 {
 			pingQueue := c.pingQueue
@@ -625,9 +630,13 @@ writeloop:
 					return false
 				}
 			}
-			continue writeloop
+			if writes != c.cwriter.writes {
+				// data flush detected, restart
+				continue writeloop
+			}
 		}
 		if c.settingsAcks > 0 {
+			c.settingsAcks--
 			err := c.writeFrameLocked(settingsFrame{
 				flags: flagAck,
 			})
@@ -635,8 +644,10 @@ writeloop:
 				c.closeWithErrorLocked(err)
 				return false
 			}
-			c.settingsAcks--
-			continue writeloop
+			if writes != c.cwriter.writes {
+				// data flush detected, restart
+				continue writeloop
+			}
 		}
 		if len(c.outgoingAcks) > 0 {
 			for streamID, increment := range c.outgoingAcks {
@@ -650,63 +661,74 @@ writeloop:
 					c.closeWithErrorLocked(err)
 					return false
 				}
-				continue writeloop
+				if writes != c.cwriter.writes {
+					// data flush detected, restart
+					continue writeloop
+				}
 			}
 		}
 		if len(c.outgoingCtrl) > 0 {
 			for streamID := range c.outgoingCtrl {
 				delete(c.outgoingCtrl, streamID)
 				stream := c.streams[streamID]
-				if stream == nil {
-					// the connection is already gone
-					continue
+				if stream != nil {
+					err := stream.writeOutgoingCtrlLocked()
+					if err != nil {
+						c.closeWithErrorLocked(err)
+						return false
+					}
+					if writes != c.cwriter.writes {
+						// data flush detected, restart
+						continue writeloop
+					}
 				}
-				err := stream.writeOutgoingControlLocked()
-				if err != nil {
-					c.closeWithErrorLocked(err)
-					return false
-				}
-				continue writeloop
 			}
 		}
 		if len(c.outgoingData) > 0 && c.writeleft > 0 {
 			for streamID := range c.outgoingData {
 				delete(c.outgoingData, streamID)
 				stream := c.streams[streamID]
-				if stream == nil {
-					// the connection is already gone
-					continue
+				if stream != nil {
+					err := stream.writeOutgoingDataLocked()
+					if err != nil {
+						c.closeWithErrorLocked(err)
+						return false
+					}
+					if writes != c.cwriter.writes {
+						// data flush detected, restart
+						continue writeloop
+					}
 				}
-				err := stream.writeOutgoingDataLocked()
-				if err != nil {
-					c.closeWithErrorLocked(err)
-					return false
-				}
-				continue writeloop
 			}
 		}
-		// if we reach here there's nothing else to send
-		return true
+		select {
+		case <-c.signal:
+			// the signal channel is active, must try again!
+			continue writeloop
+		default:
+			// if we reach here there's nothing else to send
+			return true
+		}
 	}
 }
 
 func (c *rawConn) writeloop() {
 	defer c.conn.Close()
-	c.cwriter.written = false
 	t := time.NewTimer(2 * c.remoteInactivityTimeout / 3)
 	for {
 		datarequired := false
 		select {
 		case <-c.signal:
-			// this might be a spurious activation!
+			// we might have something to send
 		case <-t.C:
 			datarequired = true
 		}
+		writes := c.cwriter.writes
 		if !c.writeOutgoingFrames(datarequired) {
 			break
 		}
-		if c.cwriter.written {
-			c.cwriter.written = false
+		if writes != c.cwriter.writes {
+			// data flush detected, reset the timer
 			t.Reset(2 * c.remoteInactivityTimeout / 3)
 		}
 	}

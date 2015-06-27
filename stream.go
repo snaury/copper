@@ -388,7 +388,7 @@ func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 	return nil
 }
 
-func (s *rawStream) writeOutgoingControlLocked() error {
+func (s *rawStream) writeOutgoingCtrlLocked() error {
 	if s.flags&flagStreamDiscard == flagStreamDiscard && s.writebuf.len() == 0 {
 		// If stream was opened, and then immediately closed, then we don't
 		// have to send any frames at all, just pretend it all happened
