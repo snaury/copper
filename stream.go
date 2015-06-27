@@ -322,6 +322,20 @@ func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
 	return nil
 }
 
+func (s *rawStream) changeWindowLocked(diff int) {
+	if s.writeerror == nil {
+		if diff > 0 {
+			if s.writeleft <= 0 && s.writeleft+diff > 0 {
+				s.maywrite.Broadcast()
+			}
+			if s.writeleft < 0 && s.writebuf.len() > 0 {
+				s.owner.addOutgoingDataLocked(s.streamID)
+			}
+		}
+		s.writeleft += diff
+	}
+}
+
 func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 	if frame.increment <= 0 {
 		return &copperError{
@@ -329,13 +343,8 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 			code:  EINVALIDFRAME,
 		}
 	}
-	if s.writeerror == nil {
-		if s.writeleft <= 0 {
-			s.maywrite.Broadcast()
-		}
-		s.writeleft += int(frame.increment)
-	}
-	if s.flags&flagStreamNoIncomingAcks == 0 {
+	s.changeWindowLocked(int(frame.increment))
+	if frame.flags&flagAck != 0 && s.flags&flagStreamNoIncomingAcks == 0 {
 		s.writenack -= int(frame.increment)
 		if s.writebuf.len() == 0 && s.writenack <= 0 {
 			s.flushed.Broadcast()

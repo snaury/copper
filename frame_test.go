@@ -65,7 +65,7 @@ var printedFrames = []string{
 	`DATA[stream:66 flags:0x25(FIN) data:ff fe fd fc fb fa f9 f8]`,
 	`RESET[stream:66 flags:0x25(FIN) code:ERROR_85 message:""]`,
 	`RESET[stream:66 flags:0x25(FIN) code:ERROR_85 message:"test"]`,
-	`WINDOW[stream:66 flags:0x25 increment:287454020]`,
+	`WINDOW[stream:66 flags:0x25(ACK) increment:287454020]`,
 	`SETTINGS[flags:0x00 values:map[2:3]]`,
 	`SETTINGS[flags:0x01(ACK) values:map[]]`,
 	`RESET[stream:0 flags:0x00 code:EUNKNOWN message:""]`,

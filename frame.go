@@ -8,6 +8,11 @@ import (
 )
 
 const (
+	settingsConnWindowID = 1 + iota
+	settingsStreamWindowID
+)
+
+const (
 	pingFrameID uint8 = iota
 	openFrameID
 	dataFrameID
@@ -25,8 +30,9 @@ const (
 )
 
 const (
-	// Used for PING and SETTINGS
+	// Used for PING, WINDOW and SETTINGS
 	flagAck uint8 = 1
+	// Used for OPEN, DATA and RESET
 	flagFin uint8 = 1
 )
 
@@ -182,7 +188,11 @@ type windowFrame struct {
 }
 
 func (p windowFrame) String() string {
-	return fmt.Sprintf("WINDOW[stream:%d flags:0x%02x increment:%d]", p.streamID, p.flags, p.increment)
+	flagstring := fmt.Sprintf("0x%02x", p.flags)
+	if p.flags&flagAck != 0 {
+		flagstring += "(ACK)"
+	}
+	return fmt.Sprintf("WINDOW[stream:%d flags:%s increment:%d]", p.streamID, flagstring, p.increment)
 }
 
 func (p windowFrame) writeFrameTo(w io.Writer) (err error) {

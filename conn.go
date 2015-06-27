@@ -47,7 +47,9 @@ type rawConn struct {
 	nextnewstream           uint32
 	pingAcks                []int64
 	pingQueue               []int64
-	pingResults             map[int64][]chan error
+	pingResults             map[int64][]chan<- error
+	settingsAcks            int
+	settingsCallbacks       []func(error)
 	outgoingAcks            map[uint32]uint32
 	outgoingCtrl            map[uint32]struct{}
 	outgoingData            map[uint32]struct{}
@@ -75,7 +77,7 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 		deadstreams:             make(map[uint32]struct{}),
 		freestreams:             make(map[uint32]struct{}),
 		nextnewstream:           1,
-		pingResults:             make(map[int64][]chan error),
+		pingResults:             make(map[int64][]chan<- error),
 		outgoingAcks:            make(map[uint32]uint32),
 		outgoingCtrl:            make(map[uint32]struct{}),
 		outgoingData:            make(map[uint32]struct{}),
@@ -230,10 +232,10 @@ func (c *rawConn) Open(target int64) (Stream, error) {
 		}
 		c.nextnewstream += 2
 	}
-	s := newOutgoingStream(c, streamID, target, c.localStreamWindowSize, c.remoteStreamWindowSize)
-	c.streams[streamID] = s
-	c.addOutgoingCtrlLocked(s.streamID)
-	return s, nil
+	stream := newOutgoingStream(c, streamID, target, c.localStreamWindowSize, c.remoteStreamWindowSize)
+	c.streams[streamID] = stream
+	c.addOutgoingCtrlLocked(stream.streamID)
+	return stream, nil
 }
 
 func (c *rawConn) addOutgoingAckLocked(streamID uint32, increment int) {
@@ -264,11 +266,10 @@ func (c *rawConn) addOutgoingCtrlLocked(streamID uint32) {
 
 func (c *rawConn) addOutgoingDataLocked(streamID uint32) {
 	if !c.closed {
-		wakeup := len(c.outgoingData) == 0 && c.writeleft > 0
-		c.outgoingData[streamID] = struct{}{}
-		if wakeup {
+		if len(c.outgoingData) == 0 && c.writeleft > 0 {
 			c.wakeupLocked()
 		}
+		c.outgoingData[streamID] = struct{}{}
 	}
 }
 
@@ -311,17 +312,13 @@ func (c *rawConn) processPingFrameLocked(frame pingFrame) error {
 	} else if results, ok := c.pingResults[frame.value]; ok {
 		result := results[0]
 		if len(results) > 1 {
-			resultscopy := make([]chan error, len(results)-1)
-			copy(resultscopy, results[1:])
-			c.pingResults[frame.value] = resultscopy
+			copy(results, results[1:])
+			results[len(results)-1] = nil
+			c.pingResults[frame.value] = results[:len(results)-1]
 		} else {
 			delete(c.pingResults, frame.value)
 		}
 		if result != nil {
-			select {
-			case result <- nil:
-			default:
-			}
 			close(result)
 		}
 	}
@@ -410,25 +407,65 @@ func (c *rawConn) processResetFrameLocked(frame resetFrame) error {
 
 func (c *rawConn) processWindowFrameLocked(frame windowFrame) error {
 	if frame.streamID == 0 {
-		wakeup := c.writeleft == 0 && len(c.outgoingData) > 0
-		c.writeleft += int(frame.increment)
-		if wakeup {
+		if len(c.outgoingData) > 0 && c.writeleft <= 0 {
 			c.wakeupLocked()
 		}
+		c.writeleft += int(frame.increment)
 		return nil
 	}
-	s := c.streams[frame.streamID]
-	if s != nil {
-		return s.processWindowFrameLocked(frame)
+	stream := c.streams[frame.streamID]
+	if stream != nil {
+		return stream.processWindowFrameLocked(frame)
 	}
 	return nil
 }
 
 func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
-	return &copperError{
-		error: fmt.Errorf("processing SETTINGS frames in not yet supported"),
-		code:  EUNSUPPORTED,
+	if frame.flags&flagAck != 0 {
+		l := len(c.settingsCallbacks)
+		if l > 0 {
+			callback := c.settingsCallbacks[0]
+			copy(c.settingsCallbacks, c.settingsCallbacks[1:])
+			c.settingsCallbacks[l-1] = nil
+			c.settingsCallbacks = c.settingsCallbacks[:l-1]
+			callback(nil)
+		}
+		return nil
 	}
+	for key, value := range frame.values {
+		switch key {
+		case settingsConnWindowID:
+			if value < 1024 {
+				return &copperError{
+					error: fmt.Errorf("cannot set connection window to %d bytes", value),
+					code:  EUNSUPPORTED,
+				}
+			}
+			diff := value - c.remoteConnWindowSize
+			if len(c.outgoingData) > 0 && c.writeleft <= 0 && c.writeleft+diff > 0 {
+				c.wakeupLocked()
+			}
+			c.writeleft += diff
+			c.remoteConnWindowSize = value
+		case settingsStreamWindowID:
+			if value < 1024 {
+				return &copperError{
+					error: fmt.Errorf("cannot set stream window to %d bytes", value),
+					code:  EUNSUPPORTED,
+				}
+			}
+			diff := value - c.remoteStreamWindowSize
+			for _, stream := range c.streams {
+				stream.changeWindowLocked(diff)
+			}
+		default:
+			return &copperError{
+				error: fmt.Errorf("unknown settings key %d", key),
+				code:  EUNSUPPORTED,
+			}
+		}
+	}
+	return nil
 }
 
 func (c *rawConn) processFrame(rawFrame frame) bool {
@@ -466,12 +503,19 @@ func (c *rawConn) failEverything() {
 	c.pingResults = nil
 	for _, results := range pingResults {
 		for _, result := range results {
-			select {
-			case result <- c.failure:
-			default:
+			if result != nil {
+				select {
+				case result <- c.failure:
+				default:
+				}
+				close(result)
 			}
-			close(result)
 		}
+	}
+	settingsCallbacks := c.settingsCallbacks
+	c.settingsCallbacks = nil
+	for _, callback := range settingsCallbacks {
+		callback(c.failure)
 	}
 	streams := c.streams
 	c.streams = nil
@@ -524,10 +568,18 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 		c.pingQueue = c.pingQueue[:0]
 		return
 	}
+	if c.settingsAcks > 0 {
+		frames = append(frames, settingsFrame{
+			flags: flagAck,
+		})
+		c.settingsAcks--
+		return
+	}
 	if len(c.outgoingAcks) > 0 {
 		for streamID, increment := range c.outgoingAcks {
 			frames = append(frames, windowFrame{
 				streamID:  streamID,
+				flags:     flagAck,
 				increment: increment,
 			})
 			delete(c.outgoingAcks, streamID)
@@ -537,24 +589,24 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 	if len(c.outgoingCtrl) > 0 {
 		var sent int
 		for streamID := range c.outgoingCtrl {
-			s := c.streams[streamID]
-			if s == nil {
+			stream := c.streams[streamID]
+			if stream == nil {
 				// the connection is already gone
 				delete(c.outgoingCtrl, streamID)
 				continue
 			}
-			frames, sent = s.outgoingFramesLocked(frames, c.writeleft)
-			if !s.activeCtrl() {
+			frames, sent = stream.outgoingFramesLocked(frames, c.writeleft)
+			if !stream.activeCtrl() {
 				// should always be the case
 				delete(c.outgoingCtrl, streamID)
 			}
 			if len(frames) > 0 {
 				c.writeleft -= sent
-				if sent > 0 && !s.activeData() {
+				if sent > 0 && !stream.activeData() {
 					// we sent all data together with control
 					delete(c.outgoingData, streamID)
 				}
-				c.cleanupStreamLocked(s)
+				c.cleanupStreamLocked(stream)
 				return
 			}
 		}
@@ -562,19 +614,19 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 	if len(c.outgoingData) > 0 && c.writeleft > 0 {
 		var sent int
 		for streamID := range c.outgoingData {
-			s := c.streams[streamID]
-			if s == nil {
+			stream := c.streams[streamID]
+			if stream == nil {
 				// the connection is already gone
 				delete(c.outgoingData, streamID)
 				continue
 			}
-			frames, sent = s.outgoingFramesLocked(frames, c.writeleft)
-			if !s.activeData() {
+			frames, sent = stream.outgoingFramesLocked(frames, c.writeleft)
+			if !stream.activeData() {
 				delete(c.outgoingData, streamID)
 			}
 			if len(frames) > 0 {
 				c.writeleft -= sent
-				c.cleanupStreamLocked(s)
+				c.cleanupStreamLocked(stream)
 				return
 			}
 		}
@@ -590,17 +642,14 @@ func (c *rawConn) prepareWriteBatch(datarequired bool) (frames []frame, err erro
 
 func (c *rawConn) writeloop() {
 	defer c.conn.Close()
-	datarequired := false
 	w := bufio.NewWriter(c.conn)
 	t := time.NewTimer(2 * c.remoteInactivityTimeout / 3)
 	for {
+		datasent := false
+		datarequired := false
 		select {
 		case <-c.signal:
-			if !t.Stop() {
-				// If t has expired we need to drain the channel to prevent
-				// spurios activation on the next iteration.
-				<-t.C
-			}
+			// this might be a spurious activation!
 		case <-t.C:
 			datarequired = true
 		}
@@ -651,6 +700,7 @@ func (c *rawConn) writeloop() {
 			case <-c.signal:
 			default:
 			}
+			datasent = true
 		}
 		// we must flush all accumulated data before going to sleep
 		if w.Buffered() > 0 {
@@ -664,6 +714,8 @@ func (c *rawConn) writeloop() {
 				return
 			}
 		}
-		t.Reset(2 * c.remoteInactivityTimeout / 3)
+		if datasent {
+			t.Reset(2 * c.remoteInactivityTimeout / 3)
+		}
 	}
 }
