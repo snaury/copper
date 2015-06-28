@@ -280,12 +280,6 @@ func (c *rawConn) addOutgoingAckLocked(streamID uint32, increment int) {
 	}
 }
 
-func (c *rawConn) clearOutgoingAckLocked(streamID uint32) {
-	if !c.closed {
-		delete(c.outgoingAcks, streamID)
-	}
-}
-
 func (c *rawConn) addOutgoingCtrlLocked(streamID uint32) {
 	if !c.closed {
 		wakeup := len(c.outgoingCtrl) == 0
@@ -319,7 +313,6 @@ func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 	if s.isFullyClosed() {
 		// connection is fully closed and must be forgotten
 		delete(c.streams, s.streamID)
-		delete(c.outgoingAcks, s.streamID)
 		delete(c.outgoingCtrl, s.streamID)
 		delete(c.outgoingData, s.streamID)
 		if isServerStreamID(s.streamID) == c.isserver {

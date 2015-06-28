@@ -64,17 +64,15 @@ type Stream interface {
 var _ net.Conn = Stream(nil)
 
 const (
-	flagStreamSentEOF        = 1
-	flagStreamSeenEOF        = 2
-	flagStreamBothEOF        = flagStreamSentEOF | flagStreamSeenEOF
-	flagStreamSentReset      = 4
-	flagStreamSeenReset      = 8
-	flagStreamNeedOpen       = 16
-	flagStreamNeedEOF        = 32
-	flagStreamNeedReset      = 64
-	flagStreamDiscard        = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
-	flagStreamNoOutgoingAcks = flagStreamSeenEOF | flagStreamSentReset
-	flagStreamNoIncomingAcks = flagStreamSentEOF | flagStreamSeenReset
+	flagStreamSentEOF   = 1
+	flagStreamSeenEOF   = 2
+	flagStreamBothEOF   = flagStreamSentEOF | flagStreamSeenEOF
+	flagStreamSentReset = 4
+	flagStreamSeenReset = 8
+	flagStreamNeedOpen  = 16
+	flagStreamNeedEOF   = 32
+	flagStreamNeedReset = 64
+	flagStreamDiscard   = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
 )
 
 type expiration struct {
@@ -133,7 +131,6 @@ type rawStream struct {
 	mayread    sync.Cond
 	readbuf    buffer
 	readerror  error
-	readextra  int
 	readwindow int
 	maywrite   sync.Cond
 	writebuf   buffer
@@ -193,7 +190,7 @@ func (s *rawStream) writePending() int {
 }
 
 func (s *rawStream) isFullyClosed() bool {
-	return s.flags&flagStreamBothEOF == flagStreamBothEOF
+	return s.flags&flagStreamBothEOF == flagStreamBothEOF && s.readbuf.len() == 0 && s.writenack == 0
 }
 
 func (s *rawStream) setReadDeadlineLocked(t time.Time) {
@@ -267,7 +264,10 @@ func (s *rawStream) waitWriteLocked() error {
 }
 
 func (s *rawStream) waitFlushLocked() error {
-	for s.writeerror == nil && (s.writePending() > 0 || s.writenack > 0) {
+	for s.writePending() > 0 || s.writenack > 0 {
+		if s.reseterror != nil {
+			break
+		}
 		if s.flushexp == nil && !s.wdeadline.IsZero() {
 			d := s.wdeadline.Sub(time.Now())
 			if d <= 0 {
@@ -290,9 +290,9 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 			code:  EINVALIDSTREAM,
 		}
 	}
-	if s.readbuf.len()+s.readextra+len(frame.data) > s.readwindow {
+	if s.readbuf.len()+len(frame.data) > s.readwindow {
 		return &copperError{
-			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len()+s.readextra, len(frame.data), s.readwindow),
+			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len(), len(frame.data), s.readwindow),
 			code:  EWINDOWOVERFLOW,
 		}
 	}
@@ -303,7 +303,8 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 			}
 			s.readbuf.write(frame.data)
 		} else {
-			s.readextra += len(frame.data)
+			// it's not EOF, so we are ignoring all data, just send an ack
+			s.owner.addOutgoingAckLocked(s.streamID, len(frame.data))
 		}
 	}
 	if frame.flags&flagFin != 0 {
@@ -312,7 +313,6 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 			s.delayerror = io.EOF
 		}
 		s.setReadError(s.delayerror)
-		s.owner.clearOutgoingAckLocked(s.streamID)
 	}
 	return nil
 }
@@ -327,11 +327,9 @@ func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
 	if frame.flags&flagFin != 0 {
 		s.flags |= flagStreamSeenEOF
 		s.setReadError(s.delayerror)
-		s.owner.clearOutgoingAckLocked(s.streamID)
 	}
 	s.setWriteError(frame.toError())
 	s.writebuf.clear()
-	s.writenack = 0
 	s.writewire = 0
 	return nil
 }
@@ -358,7 +356,7 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 		}
 	}
 	s.changeWindowLocked(int(frame.increment))
-	if frame.flags&flagAck != 0 && s.flags&flagStreamNoIncomingAcks == 0 {
+	if frame.flags&flagAck != 0 {
 		s.writenack -= int(frame.increment)
 		if s.writePending() == 0 && s.writenack <= 0 {
 			s.flushed.Broadcast()
@@ -386,10 +384,8 @@ func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 		if len(data) > n {
 			data = data[:n]
 		}
-		if s.flags&flagStreamNoIncomingAcks == 0 {
-			s.writenack += len(data)
-		}
 		s.owner.writeleft -= len(data)
+		s.writenack += len(data)
 		s.writewire = len(data)
 		return data
 	}
@@ -430,6 +426,15 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 		))
 		if err != nil {
 			return err
+		}
+		if s.readbuf.len() > 0 {
+			// We clear read buffer after sending RESET (instead of before), so
+			// the other side does not keep trying to fill our window with what
+			// we discard anyway. However we must acknowledge everything we
+			// received.
+			s.owner.addOutgoingAckLocked(s.streamID, s.readbuf.len())
+			s.readbuf.clear()
+			s.owner.cleanupStreamLocked(s)
 		}
 	}
 	if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
@@ -522,12 +527,6 @@ func (s *rawStream) outgoingFlags(isdata bool) uint8 {
 		s.flags &^= flagStreamNeedEOF
 		s.flags |= flagStreamSentEOF
 		flags |= flagFin
-		// After sending EOF we cannot send any more data and will not
-		// receive acknowledgements for any data we have already sent
-		if s.writenack > 0 {
-			s.flushed.Broadcast()
-		}
-		s.writenack = 0
 		s.owner.cleanupStreamLocked(s)
 	}
 	return flags
@@ -565,9 +564,6 @@ func (s *rawStream) setWriteError(err error) {
 		if s.writeleft <= 0 {
 			s.maywrite.Broadcast()
 		}
-		if s.writePending() > 0 || s.writenack > 0 {
-			s.flushed.Broadcast()
-		}
 		s.writeleft = 0
 		s.flags |= flagStreamNeedEOF
 		s.owner.addOutgoingCtrlLocked(s.streamID)
@@ -587,7 +583,9 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 			s.flags |= flagStreamNeedReset
 			s.owner.addOutgoingCtrlLocked(s.streamID)
 		}
-		s.readbuf.clear()
+		if s.writePending() > 0 || s.writenack > 0 {
+			s.flushed.Broadcast()
+		}
 	}
 	return preverror
 }
@@ -605,8 +603,9 @@ func (s *rawStream) Read(b []byte) (n int, err error) {
 			// there will be no more data, return the error too
 			err = s.readerror
 		}
-		if s.flags&flagStreamNoOutgoingAcks == 0 {
-			s.owner.addOutgoingAckLocked(s.streamID, n)
+		s.owner.addOutgoingAckLocked(s.streamID, n)
+		if s.readbuf.len() == 0 {
+			s.owner.cleanupStreamLocked(s)
 		}
 	}
 	return
@@ -626,8 +625,11 @@ func (s *rawStream) Discard(n int) int {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	n = s.readbuf.discard(n)
-	if n > 0 && s.flags&flagStreamNoOutgoingAcks == 0 {
+	if n > 0 {
 		s.owner.addOutgoingAckLocked(s.streamID, n)
+		if s.readbuf.len() == 0 {
+			s.owner.cleanupStreamLocked(s)
+		}
 	}
 	return n
 }
