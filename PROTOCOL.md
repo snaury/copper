@@ -135,8 +135,11 @@ Each stream has the following high level states:
 * HALF-CLOSED
   * READ: after receiving a frame with FIN flag set
   * WRITE: after sending a frame with FIN flag set
+* CLOSE-WAIT
+  * both READ and WRITE are HALF-CLOSED
+  * waiting for and/or sending acknowledgements
 * FULLY-CLOSED
-  * sent all acknowledgments
+  * sent all acknowledgements
   * received all acknowledgements
   * both READ and WRITE are HALF-CLOSED
 * DEAD (may not be reused until causality is proven)
@@ -155,6 +158,8 @@ Rules on what may be sent and received with a given stream id are as follows:
   * HALF-CLOSED(WRITE) must be added to stream state
   * SHOULD prefer sending RESET after all DATA frames
   * SHOULD prefer sending DATA with FIN instead of RESET with ESTREAMCLOSED
+* After reaching CLOSE-WAIT state:
+  * MUST NOT send any frames except WINDOW updates
 * After reaching FULLY-CLOSED state:
   * MUST NOT send any additional frames
   * MUST move stream to DEAD state
