@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -14,6 +13,8 @@ import (
 func TestConnStreams(t *testing.T) {
 	var wg sync.WaitGroup
 	serverconn, clientconn := net.Pipe()
+	goahead := sync.Mutex{}
+	goahead.Lock()
 	wg.Add(2)
 	go func() {
 		var err error
@@ -55,6 +56,7 @@ func TestConnStreams(t *testing.T) {
 		if err != ENOTARGET {
 			t.Fatalf("server: Read: expected ENOTARGET, got: %v", err)
 		}
+		goahead.Unlock()
 
 		err = server.Wait()
 		if err != ECONNCLOSED {
@@ -65,6 +67,7 @@ func TestConnStreams(t *testing.T) {
 		defer wg.Done()
 		client := NewConn(clientconn, nil, false)
 		defer client.Close()
+		goahead.Lock()
 
 		messages := map[int64]string{
 			0: "foo",
@@ -92,6 +95,8 @@ func TestConnStreams(t *testing.T) {
 			wgnested.Add(1)
 			go func(target int64) {
 				defer wgnested.Done()
+
+				client.(*rawConn).blockWrite()
 				stream, err := client.Open(target)
 				if err != nil {
 					t.Fatalf("client: Open(%d): unexpected error: %v", target, err)
@@ -105,6 +110,8 @@ func TestConnStreams(t *testing.T) {
 				if err != nil {
 					t.Fatalf("client: CloseWrite(%d): unexpected error: %v", target, err)
 				}
+				client.(*rawConn).unblockWrite()
+
 				r := bufio.NewReader(stream)
 				line, err := r.ReadString('\n')
 				if err != expectedError[target] {
@@ -156,11 +163,11 @@ func TestConnPing(t *testing.T) {
 			t.Fatalf("client: Ping: unexpected error: %v", err)
 		}
 		// two simultaneous pings that fail before getting response
-		// TODO: sometimes this fails with GOMAXPROCS>1, need to find a way
-		// to freeze the connection, so that ping isn't sent prematurely.
+		client.(*rawConn).blockWrite()
 		ch1 = client.Ping(51)
 		ch2 = client.Ping(51)
 		client.Close()
+		client.(*rawConn).unblockWrite()
 		if err := <-ch1; err != ECONNCLOSED {
 			t.Fatalf("client: Ping: expected ECONNCLOSED, not %v", err)
 		}
@@ -175,7 +182,10 @@ func TestConnPing(t *testing.T) {
 }
 
 func TestConnSync(t *testing.T) {
-	runClientServer(nil, func(client Conn) {
+	runClientServer(StreamHandlerFunc(func(stream Stream) {
+		stream.Read(make([]byte, 16))
+		stream.CloseWithError(ENOROUTE)
+	}), func(client Conn) {
 		stream, err := client.Open(42)
 		if err != nil {
 			t.Fatalf("client: Open: %s", err)
@@ -184,14 +194,10 @@ func TestConnSync(t *testing.T) {
 		if stream.StreamID() != 1 {
 			t.Fatalf("client: unexpected stream id: %d (expected 1)", stream.StreamID())
 		}
-		_, err = stream.Write([]byte("foobar"))
-		if err != nil {
-			t.Fatalf("client: Write: %s", err)
-		}
 		stream.CloseWrite()
 		_, err = stream.Read(make([]byte, 256))
-		if err != ENOTARGET {
-			t.Fatalf("client: Read: %s (expected ENOTARGET)", err)
+		if err != ENOROUTE {
+			t.Fatalf("client: Read: %s (expected ENOROUTE)", err)
 		}
 		stream.Close()
 
@@ -213,7 +219,7 @@ func TestConnSync(t *testing.T) {
 
 func TestStreamBigWrite(t *testing.T) {
 	runClientServer(StreamHandlerFunc(func(stream Stream) {
-		time.Sleep(50 * time.Millisecond)
+		stream.Peek()
 		stream.CloseWithError(ENOROUTE)
 	}), func(client Conn) {
 		stream, err := client.Open(0)
@@ -246,7 +252,7 @@ func TestStreamReadDeadline(t *testing.T) {
 		}
 		defer stream.Close()
 
-		deadline = time.Now().Add(50 * time.Millisecond)
+		deadline = time.Now().Add(5 * time.Millisecond)
 		stream.SetReadDeadline(deadline)
 		n, err := stream.Read(make([]byte, 256))
 		if n != 0 || !isTimeout(err) {
@@ -269,7 +275,7 @@ func TestStreamWriteDeadline(t *testing.T) {
 		}
 		defer stream.Close()
 
-		deadline = time.Now().Add(50 * time.Millisecond)
+		deadline = time.Now().Add(5 * time.Millisecond)
 		stream.SetWriteDeadline(deadline)
 		n, err := stream.Write(make([]byte, 65536+16))
 		if n != 65536 || !isTimeout(err) {
@@ -279,7 +285,7 @@ func TestStreamWriteDeadline(t *testing.T) {
 			t.Fatalf("client: Write: expected to timeout after the deadline, not before")
 		}
 
-		deadline = time.Now().Add(50 * time.Millisecond)
+		deadline = time.Now().Add(5 * time.Millisecond)
 		stream.SetWriteDeadline(deadline)
 		err = stream.Flush()
 		if !isTimeout(err) {
@@ -292,34 +298,43 @@ func TestStreamWriteDeadline(t *testing.T) {
 }
 
 func TestStreamFlush(t *testing.T) {
-	var sleepfinished uint32
+	var lock sync.Mutex
+	var dataseen bool
+	var flushdone sync.Cond
+	flushdone.L = &lock
 	runClientServer(StreamHandlerFunc(func(stream Stream) {
 		switch stream.TargetID() {
 		case 1:
 			// 1st case: close the connection
-			time.Sleep(50 * time.Millisecond)
-			atomic.StoreUint32(&sleepfinished, 1)
+			stream.Peek()
+			lock.Lock()
+			defer lock.Unlock()
+			dataseen = true
 			err := stream.Close()
 			if err != nil {
 				t.Fatalf("server: Close: %s", err)
 			}
 		case 2:
 			// 2nd case: close with ENOROUTE
-			time.Sleep(50 * time.Millisecond)
-			atomic.StoreUint32(&sleepfinished, 1)
+			stream.Peek()
+			lock.Lock()
+			defer lock.Unlock()
+			dataseen = true
 			err := stream.CloseWithError(ENOROUTE)
 			if err != nil {
 				t.Fatalf("server: CloseWithError: %s", err)
 			}
 		case 3:
 			// 3rd case: read data and sleep a little
-			time.Sleep(50 * time.Millisecond)
-			atomic.StoreUint32(&sleepfinished, 1)
+			stream.Peek()
+			lock.Lock()
+			defer lock.Unlock()
 			_, err := stream.Read(make([]byte, 16))
 			if err != nil {
 				t.Fatalf("server: Read: %s", err)
 			}
-			time.Sleep(50 * time.Millisecond)
+			dataseen = true
+			flushdone.Wait()
 			err = stream.Close()
 			if err != nil {
 				t.Fatalf("server: Close: %s", err)
@@ -342,6 +357,8 @@ func TestStreamFlush(t *testing.T) {
 				t.Fatalf("client: Write: %s", err)
 			}
 			err = stream.Flush()
+			lock.Lock()
+			flushdone.Broadcast()
 			switch target {
 			case 1:
 				if err != ESTREAMCLOSED {
@@ -356,10 +373,11 @@ func TestStreamFlush(t *testing.T) {
 					t.Fatalf("client: Flush(%d): %v (expected <nil>)", target, err)
 				}
 			}
-			if atomic.LoadUint32(&sleepfinished) != 1 {
-				t.Fatalf("client: Flush(%d): sleep did not finish before flush returned", target)
+			if !dataseen {
+				t.Fatalf("client: Flush(%d): data was not confirmed before flush returned", target)
 			}
-			atomic.StoreUint32(&sleepfinished, 0)
+			dataseen = false
+			lock.Unlock()
 		}
 	})
 }

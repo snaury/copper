@@ -62,6 +62,10 @@ type rawConn struct {
 	remoteStreamWindowSize  int
 	localInactivityTimeout  time.Duration
 	remoteInactivityTimeout time.Duration
+	readblocked             int
+	readunblocked           sync.Cond
+	writeblocked            int
+	writeunblocked          sync.Cond
 }
 
 var _ Conn = &rawConn{}
@@ -98,6 +102,8 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 		c.nextnewstream = 1
 	}
 	c.waitready.L = &c.lock
+	c.readunblocked.L = &c.lock
+	c.writeunblocked.L = &c.lock
 	go c.readloop()
 	go c.writeloop()
 	return c
@@ -504,6 +510,10 @@ func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
 func (c *rawConn) processFrame(rawFrame frame) bool {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	for c.readblocked > 0 {
+		c.readunblocked.Wait()
+	}
+
 	var err error
 	switch frame := rawFrame.(type) {
 	case pingFrame:
@@ -574,6 +584,9 @@ func (c *rawConn) readloop() {
 func (c *rawConn) writeOutgoingFrames(datarequired bool, timeout *time.Duration) (result bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	for c.writeblocked > 0 {
+		c.writeunblocked.Wait()
+	}
 
 	writesInitial := c.cwriter.writes
 	defer func() {
@@ -742,5 +755,35 @@ func (c *rawConn) writeloop() {
 			timeout = newtimeout
 			t.Reset(2 * timeout / 3)
 		}
+	}
+}
+
+func (c *rawConn) blockRead() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.readblocked++
+}
+
+func (c *rawConn) blockWrite() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.writeblocked++
+}
+
+func (c *rawConn) unblockRead() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.readblocked--
+	if c.readblocked == 0 {
+		c.readunblocked.Broadcast()
+	}
+}
+
+func (c *rawConn) unblockWrite() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.writeblocked--
+	if c.writeblocked == 0 {
+		c.writeunblocked.Broadcast()
 	}
 }
