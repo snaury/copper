@@ -13,8 +13,16 @@ type Stream interface {
 	// Read reads data from the stream
 	Read(b []byte) (n int, err error)
 
-	// Peek is like Read, but does not consume data
-	Peek(b []byte) (n int, err error)
+	// Peek is similar to Read, but returns available data without consuming
+	// it. The Returned buffer is only valid until the next Peek, Read or
+	// Discard call. When returned buffer constitutes all available data on
+	// the stream the error (e.g. io.EOF) is also returned.
+	Peek() (b []byte, err error)
+
+	// Discard throws away up to n bytes of data, as if consumed by Read, and
+	// returns the number of bytes that have been discarded. This call does not
+	// block and returns 0 if there is no data in the buffer.
+	Discard(n int) int
 
 	// Write writes data to the stream
 	Write(b []byte) (n int, err error)
@@ -601,17 +609,24 @@ func (s *rawStream) Read(b []byte) (n int, err error) {
 	return
 }
 
-func (s *rawStream) Peek(b []byte) (n int, err error) {
+func (s *rawStream) Peek() (b []byte, err error) {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	err = s.waitReadLocked()
 	if err != nil {
 		return
 	}
-	if len(b) > 0 {
-		n = s.readbuf.peek(b)
+	return s.readbuf.current(), s.readerror
+}
+
+func (s *rawStream) Discard(n int) int {
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	n = s.readbuf.discard(n)
+	if n > 0 && s.flags&flagStreamNoOutgoingAcks == 0 {
+		s.owner.addOutgoingAckLocked(s.streamID, n)
 	}
-	return
+	return n
 }
 
 func (s *rawStream) Write(b []byte) (n int, err error) {
