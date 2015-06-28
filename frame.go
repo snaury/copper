@@ -10,6 +10,7 @@ import (
 const (
 	settingsConnWindowID = 1 + iota
 	settingsStreamWindowID
+	settingsInactivityMillisecondsID
 )
 
 const (

@@ -458,6 +458,7 @@ func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
 		}
 		return nil
 	}
+	c.settingsAcks++
 	for key, value := range frame.values {
 		switch key {
 		case settingsConnWindowID:
@@ -468,9 +469,6 @@ func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
 				}
 			}
 			diff := value - c.remoteConnWindowSize
-			if len(c.outgoingData) > 0 && c.writeleft <= 0 && c.writeleft+diff > 0 {
-				c.wakeupLocked()
-			}
 			c.writeleft += diff
 			c.remoteConnWindowSize = value
 		case settingsStreamWindowID:
@@ -484,6 +482,14 @@ func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
 			for _, stream := range c.streams {
 				stream.changeWindowLocked(diff)
 			}
+		case settingsInactivityMillisecondsID:
+			if value < 1000 {
+				return &copperError{
+					error: fmt.Errorf("cannot set inactivity timeout to %dms", value),
+					code:  EUNSUPPORTED,
+				}
+			}
+			c.remoteInactivityTimeout = time.Duration(value) * time.Millisecond
 		default:
 			return &copperError{
 				error: fmt.Errorf("unknown settings key %d", key),
@@ -491,6 +497,7 @@ func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
 			}
 		}
 	}
+	c.wakeupLocked()
 	return nil
 }
 
@@ -564,7 +571,7 @@ func (c *rawConn) readloop() {
 	c.failEverything()
 }
 
-func (c *rawConn) writeOutgoingFrames(datarequired bool) (result bool) {
+func (c *rawConn) writeOutgoingFrames(datarequired bool, timeout *time.Duration) (result bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -588,6 +595,7 @@ func (c *rawConn) writeOutgoingFrames(datarequired bool) (result bool) {
 				return
 			}
 		}
+		*timeout = c.remoteInactivityTimeout
 	}()
 
 writeloop:
@@ -714,7 +722,8 @@ writeloop:
 
 func (c *rawConn) writeloop() {
 	defer c.conn.Close()
-	t := time.NewTimer(2 * c.remoteInactivityTimeout / 3)
+	timeout := c.remoteInactivityTimeout
+	t := time.NewTimer(2 * timeout / 3)
 	for {
 		datarequired := false
 		select {
@@ -724,12 +733,14 @@ func (c *rawConn) writeloop() {
 			datarequired = true
 		}
 		writes := c.cwriter.writes
-		if !c.writeOutgoingFrames(datarequired) {
+		newtimeout := timeout
+		if !c.writeOutgoingFrames(datarequired, &newtimeout) {
 			break
 		}
-		if writes != c.cwriter.writes {
+		if writes != c.cwriter.writes || timeout != newtimeout {
 			// data flush detected, reset the timer
-			t.Reset(2 * c.remoteInactivityTimeout / 3)
+			timeout = newtimeout
+			t.Reset(2 * timeout / 3)
 		}
 	}
 }
