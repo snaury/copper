@@ -266,7 +266,7 @@ func (s *rawStream) waitWriteLocked() error {
 }
 
 func (s *rawStream) waitFlushLocked() error {
-	for s.writePending() > 0 || s.writenack > 0 {
+	for s.writeerror == nil && (s.writePending() > 0 || s.writenack > 0) {
 		if s.flushexp == nil && !s.wdeadline.IsZero() {
 			d := s.wdeadline.Sub(time.Now())
 			if d <= 0 {
@@ -325,11 +325,6 @@ func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
 		s.owner.clearOutgoingAckLocked(s.streamID)
 	}
 	s.setWriteError(frame.toError())
-	// After sending RESET the remote will no longer accept data and won't send
-	// acknowledgements, so we have to stop sending and wake up from Flush()
-	if s.writePending() > 0 || s.writenack > 0 {
-		s.flushed.Broadcast()
-	}
 	s.writebuf.clear()
 	s.writenack = 0
 	s.writewire = 0
@@ -564,6 +559,9 @@ func (s *rawStream) setWriteError(err error) {
 		s.writeerror = err
 		if s.writeleft <= 0 {
 			s.maywrite.Broadcast()
+		}
+		if s.writePending() > 0 || s.writenack > 0 {
+			s.flushed.Broadcast()
 		}
 		s.writeleft = 0
 		s.flags |= flagStreamNeedEOF
