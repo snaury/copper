@@ -116,8 +116,8 @@ func (c *rawConn) debugPrefix() string {
 	return "client"
 }
 
-func (c *rawConn) readFrame() (rawFrame frame, err error) {
-	rawFrame, err = readFrame(c.creader.buffer)
+func (c *rawConn) readFrame(scratch []byte) (rawFrame frame, err error) {
+	rawFrame, err = readFrame(c.creader.buffer, scratch)
 	if debugConnReadFrame {
 		if err != nil {
 			log.Printf("%s: read error: %v", c.debugPrefix(), err)
@@ -498,7 +498,7 @@ func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
 	return nil
 }
 
-func (c *rawConn) processFrame(rawFrame frame) bool {
+func (c *rawConn) processFrame(rawFrame frame, scratch *[]byte) bool {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	for c.readblocked > 0 {
@@ -511,10 +511,19 @@ func (c *rawConn) processFrame(rawFrame frame) bool {
 		err = c.processPingFrameLocked(frame)
 	case openFrame:
 		err = c.processOpenFrameLocked(frame)
+		if len(frame.data) > len(*scratch) {
+			*scratch = frame.data
+		}
 	case dataFrame:
 		err = c.processDataFrameLocked(frame)
+		if len(frame.data) > len(*scratch) {
+			*scratch = frame.data
+		}
 	case resetFrame:
 		err = c.processResetFrameLocked(frame)
+		if len(frame.message) > len(*scratch) {
+			*scratch = frame.message
+		}
 	case windowFrame:
 		err = c.processWindowFrameLocked(frame)
 	case settingsFrame:
@@ -559,13 +568,14 @@ func (c *rawConn) failEverything() {
 }
 
 func (c *rawConn) readloop() {
+	var scratch []byte
 	for {
-		rawFrame, err := c.readFrame()
+		rawFrame, err := c.readFrame(scratch)
 		if err != nil {
 			c.closeWithError(err)
 			break
 		}
-		if !c.processFrame(rawFrame) {
+		if !c.processFrame(rawFrame, &scratch) {
 			break
 		}
 	}

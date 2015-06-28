@@ -109,7 +109,7 @@ func TestFrameReading(t *testing.T) {
 	r := bytes.NewReader(rawFrameData)
 
 	for _, expected := range decodedFrames {
-		f, err := readFrame(r)
+		f, err := readFrame(r, nil)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v\nExpected: %v", err, expected)
 		}
@@ -118,7 +118,7 @@ func TestFrameReading(t *testing.T) {
 		}
 	}
 
-	f, err := readFrame(r)
+	f, err := readFrame(r, nil)
 	if err == nil {
 		t.Fatalf("Unexpected frame: %#v", f)
 	}
@@ -157,7 +157,7 @@ func TestFrameErrors(t *testing.T) {
 	r := bytes.NewReader([]byte{
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
 	})
-	f, err := readFrame(r)
+	f, err := readFrame(r, nil)
 	if err == nil {
 		t.Fatalf("Unexpected frame: %#v", f)
 	}

@@ -247,7 +247,7 @@ func (p settingsFrame) writeFrameTo(w io.Writer) (err error) {
 	return
 }
 
-func readFrame(r io.Reader) (p frame, err error) {
+func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 	hdr, err := readFrameHeader(r)
 	if err != nil {
 		return nil, err
@@ -281,7 +281,11 @@ func readFrame(r io.Reader) (p frame, err error) {
 		}
 		var data []byte
 		if lr.N > 0 {
-			data = make([]byte, int(lr.N))
+			if int(lr.N) > len(scratch) {
+				data = make([]byte, int(lr.N))
+			} else {
+				data = scratch[:int(lr.N)]
+			}
 			_, err = io.ReadFull(lr, data)
 			if err != nil {
 				return
@@ -299,7 +303,11 @@ func readFrame(r io.Reader) (p frame, err error) {
 		}
 		var data []byte
 		if lr.N > 0 {
-			data = make([]byte, int(lr.N))
+			if int(lr.N) > len(scratch) {
+				data = make([]byte, int(lr.N))
+			} else {
+				data = scratch[:int(lr.N)]
+			}
 			_, err = io.ReadFull(lr, data)
 			if err != nil {
 				return
@@ -321,7 +329,11 @@ func readFrame(r io.Reader) (p frame, err error) {
 		}
 		var message []byte
 		if lr.N > 0 {
-			message = make([]byte, int(lr.N))
+			if int(lr.N) > len(scratch) {
+				message = make([]byte, int(lr.N))
+			} else {
+				message = scratch[:int(lr.N)]
+			}
 			_, err = io.ReadFull(lr, message)
 			if err != nil {
 				return

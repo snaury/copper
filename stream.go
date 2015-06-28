@@ -162,7 +162,9 @@ func newIncomingStream(owner *rawConn, frame openFrame, readwindow, writewindow 
 	s.mayread.L = &owner.lock
 	s.maywrite.L = &owner.lock
 	s.flushed.L = &owner.lock
-	s.readbuf.buf = frame.data
+	if len(frame.data) > 0 {
+		s.readbuf.write(frame.data)
+	}
 	if frame.flags&flagFin != 0 {
 		s.flags |= flagStreamSeenEOF
 		s.readerror = io.EOF
