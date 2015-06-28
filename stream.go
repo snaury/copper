@@ -133,6 +133,7 @@ type rawStream struct {
 	mayread    sync.Cond
 	readbuf    buffer
 	readerror  error
+	readextra  int
 	readwindow int
 	maywrite   sync.Cond
 	writebuf   buffer
@@ -289,17 +290,21 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 			code:  EINVALIDSTREAM,
 		}
 	}
-	if s.readbuf.len()+len(frame.data) > s.readwindow {
+	if s.readbuf.len()+s.readextra+len(frame.data) > s.readwindow {
 		return &copperError{
-			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len(), len(frame.data), s.readwindow),
+			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len()+s.readextra, len(frame.data), s.readwindow),
 			code:  EWINDOWOVERFLOW,
 		}
 	}
-	if s.readerror == nil && len(frame.data) > 0 {
-		if s.readbuf.len() == 0 {
-			s.mayread.Broadcast()
+	if len(frame.data) > 0 {
+		if s.readerror == nil {
+			if s.readbuf.len() == 0 {
+				s.mayread.Broadcast()
+			}
+			s.readbuf.write(frame.data)
+		} else {
+			s.readextra += len(frame.data)
 		}
-		s.readbuf.write(frame.data)
 	}
 	if frame.flags&flagFin != 0 {
 		s.flags |= flagStreamSeenEOF
