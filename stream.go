@@ -33,6 +33,9 @@ type Stream interface {
 	// Closes closes the stream, discarding any data
 	Close() error
 
+	// CloseRead closes the read side of the connection
+	CloseRead() error
+
 	// CloseWrite closes the write side of the connection
 	CloseWrite() error
 
@@ -64,14 +67,13 @@ type Stream interface {
 var _ net.Conn = Stream(nil)
 
 const (
-	flagStreamSentEOF   = 1
-	flagStreamSeenEOF   = 2
+	flagStreamSentEOF   = 0x01
+	flagStreamSeenEOF   = 0x02
 	flagStreamBothEOF   = flagStreamSentEOF | flagStreamSeenEOF
-	flagStreamSentReset = 4
-	flagStreamSeenReset = 8
-	flagStreamNeedOpen  = 16
-	flagStreamNeedEOF   = 32
-	flagStreamNeedReset = 64
+	flagStreamSentReset = 0x04
+	flagStreamNeedOpen  = 0x10
+	flagStreamNeedEOF   = 0x20
+	flagStreamNeedReset = 0x40
 	flagStreamDiscard   = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
 )
 
@@ -140,7 +142,6 @@ type rawStream struct {
 	writewire  int
 	reseterror error
 	flushed    sync.Cond
-	delayerror error
 	rdeadline  time.Time
 	wdeadline  time.Time
 	readexp    *expiration
@@ -191,6 +192,21 @@ func (s *rawStream) writePending() int {
 
 func (s *rawStream) isFullyClosed() bool {
 	return s.flags&flagStreamBothEOF == flagStreamBothEOF && s.readbuf.len() == 0 && s.writenack == 0
+}
+
+func (s *rawStream) clearReadBuffer() {
+	if s.readbuf.len() > 0 {
+		s.owner.addOutgoingAckLocked(s.streamID, s.readbuf.len())
+		s.readbuf.clear()
+		s.owner.cleanupStreamLocked(s)
+	}
+}
+
+func (s *rawStream) clearWriteBuffer() {
+	if s.writebuf.len() > 0 {
+		s.writebuf.clear()
+		s.writewire = 0
+	}
 }
 
 func (s *rawStream) setReadDeadlineLocked(t time.Time) {
@@ -309,28 +325,25 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 	}
 	if frame.flags&flagFin != 0 {
 		s.flags |= flagStreamSeenEOF
-		if s.delayerror == nil {
-			s.delayerror = io.EOF
-		}
-		s.setReadError(s.delayerror)
+		s.setReadError(io.EOF)
+		s.owner.cleanupStreamLocked(s)
 	}
 	return nil
 }
 
 func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
-	s.flags |= flagStreamSeenReset
-	s.delayerror = frame.toError()
-	if s.delayerror == ESTREAMCLOSED {
-		// ESTREAMCLOSED is special, it translated to a normal EOF
-		s.delayerror = io.EOF
-	}
+	reset := frame.toError()
+	s.setWriteError(reset)
+	s.clearWriteBuffer()
 	if frame.flags&flagFin != 0 {
+		if reset == ESTREAMCLOSED {
+			// ESTREAMCLOSED is special, it translates to a normal EOF
+			reset = io.EOF
+		}
 		s.flags |= flagStreamSeenEOF
-		s.setReadError(s.delayerror)
+		s.setReadError(reset)
+		s.owner.cleanupStreamLocked(s)
 	}
-	s.setWriteError(frame.toError())
-	s.writebuf.clear()
-	s.writewire = 0
 	return nil
 }
 
@@ -361,6 +374,7 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 		if s.writePending() == 0 && s.writenack <= 0 {
 			s.flushed.Broadcast()
 		}
+		s.owner.cleanupStreamLocked(s)
 	}
 	return nil
 }
@@ -406,7 +420,7 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 		data := s.prepareDataLocked(maxOpenFramePayloadSize)
 		err := s.owner.writeFrameLocked(openFrame{
 			streamID: s.streamID,
-			flags:    s.outgoingFlags(false),
+			flags:    s.outgoingFlags(),
 			targetID: s.targetID,
 			data:     data,
 		})
@@ -417,25 +431,37 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 		s.writewire = 0
 	}
 	if s.outgoingSendReset() {
-		s.flags &^= flagStreamNeedReset
+		var flags uint8
+		reset := s.reseterror
+		if reset == nil {
+			reset = ESTREAMCLOSED
+		}
+		if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
+			// This RESET closes both sides of the stream, otherwise it only
+			// closes the read side and write side is delayed until we need to
+			// send EOF.
+			s.flags &^= flagStreamNeedReset
+			s.flags &^= flagStreamNeedEOF
+			s.flags |= flagStreamSentEOF
+			flags |= flagFin
+			s.owner.cleanupStreamLocked(s)
+		}
+		// N.B.: we may send RESET twice. First without EOF, to stop the other
+		// side from sending us more data. Second with EOF, after sending all
+		// our pending data, to convey the error message to the other side.
 		s.flags |= flagStreamSentReset
 		err := s.owner.writeFrameLocked(errorToResetFrame(
-			s.outgoingFlags(false),
+			flags,
 			s.streamID,
-			s.reseterror,
+			reset,
 		))
 		if err != nil {
 			return err
 		}
-		if s.readbuf.len() > 0 {
-			// We clear read buffer after sending RESET (instead of before), so
-			// the other side does not keep trying to fill our window with what
-			// we discard anyway. However we must acknowledge everything we
-			// received.
-			s.owner.addOutgoingAckLocked(s.streamID, s.readbuf.len())
-			s.readbuf.clear()
-			s.owner.cleanupStreamLocked(s)
-		}
+		// We clear read buffer after sending RESET (instead of before), so the
+		// other side does not keep trying to fill our window with what we
+		// discard anyway.
+		s.clearReadBuffer()
 	}
 	if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
 		s.flags &^= flagStreamNeedEOF
@@ -458,7 +484,7 @@ func (s *rawStream) writeOutgoingDataLocked() error {
 	if len(data) > 0 {
 		err := s.owner.writeFrameLocked(dataFrame{
 			streamID: s.streamID,
-			flags:    s.outgoingFlags(true),
+			flags:    s.outgoingFlags(),
 			data:     data,
 		})
 		if err != nil {
@@ -469,6 +495,9 @@ func (s *rawStream) writeOutgoingDataLocked() error {
 		if s.activeData() {
 			// we have more data, make sure to re-register
 			s.owner.addOutgoingDataLocked(s.streamID)
+		} else if s.outgoingSendReset() {
+			// sending all data unblocked a pending RESET
+			s.owner.addOutgoingCtrlLocked(s.streamID)
 		}
 	}
 	return nil
@@ -479,20 +508,37 @@ func (s *rawStream) outgoingSendOpen() bool {
 }
 
 func (s *rawStream) outgoingSendReset() bool {
+	if s.flags&flagStreamBothEOF == flagStreamBothEOF {
+		// both sides already closed, don't need to send anything
+		return false
+	}
 	if s.flags&flagStreamNeedReset != 0 {
 		// we have a RESET frame pending
-		if s.flags&flagStreamSeenEOF != 0 {
-			// we have seen EOF: the other side cannot send us any data
-			if s.reseterror == ESTREAMCLOSED {
-				// if the error was ESTREAMCLOSED we don't need RESET at all
+		if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
+			// we need to send EOF too (closing both sides)
+			if s.reseterror == nil || s.reseterror == ESTREAMCLOSED {
+				// if the error was ESTREAMCLOSED we may send DATA with EOF
+				if s.flags&flagStreamSeenEOF == 0 {
+					// but we haven't seen EOF yet, so we need RESET
+					return true
+				}
 				s.flags &^= flagStreamNeedReset
 				return false
 			}
-			if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
-				// since we are about to EOF we might as well do it with RESET
-				return true
+			return true
+		}
+		if s.flags&flagStreamSeenEOF != 0 {
+			// we have seen EOF, so this RESET is for the write side only
+			if s.reseterror == nil || s.reseterror == ESTREAMCLOSED {
+				// if the error was ESTREAMCLOSED we no longer need RESET
+				s.flags &^= flagStreamNeedReset
+				return false
 			}
-			// we may delay RESET until we need to send EOF
+			// we must delay RESET until we need to send EOF
+			return false
+		}
+		if s.flags&flagStreamSentReset != 0 {
+			// we have already sent RESET for the read side
 			return false
 		}
 		return true
@@ -500,20 +546,17 @@ func (s *rawStream) outgoingSendReset() bool {
 	return false
 }
 
-func (s *rawStream) outgoingSendEOF(isdata bool) bool {
+func (s *rawStream) outgoingSendEOF() bool {
 	if s.writebuf.len() == s.writewire && s.flags&flagStreamNeedEOF != 0 {
 		// we have no data and need to send EOF
 		if s.flags&flagStreamNeedReset != 0 {
 			// however there's an active reset as well
-			if s.reseterror == ESTREAMCLOSED {
+			if s.reseterror == nil || s.reseterror == ESTREAMCLOSED {
 				// errors like ESTREAMCLOSED are translated into io.EOF, so
 				// it's ok to send EOF even if we have a pending RESET.
 				return true
 			}
 			// must send EOF with a RESET
-			if isdata {
-				s.owner.addOutgoingCtrlLocked(s.streamID)
-			}
 			return false
 		}
 		return true
@@ -521,9 +564,9 @@ func (s *rawStream) outgoingSendEOF(isdata bool) bool {
 	return false
 }
 
-func (s *rawStream) outgoingFlags(isdata bool) uint8 {
+func (s *rawStream) outgoingFlags() uint8 {
 	var flags uint8
-	if s.outgoingSendEOF(isdata) {
+	if s.outgoingSendEOF() {
 		s.flags &^= flagStreamNeedEOF
 		s.flags |= flagStreamSentEOF
 		flags |= flagFin
@@ -555,6 +598,12 @@ func (s *rawStream) setReadError(err error) {
 		if s.readbuf.len() == 0 {
 			s.mayread.Broadcast()
 		}
+		if s.flags&flagStreamSeenEOF == 0 {
+			s.flags |= flagStreamNeedReset
+			if s.outgoingSendReset() {
+				s.owner.addOutgoingCtrlLocked(s.streamID)
+			}
+		}
 	}
 }
 
@@ -579,12 +628,14 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 		s.reseterror = err
 		s.setReadError(err)
 		s.setWriteError(err)
-		if !s.isFullyClosed() {
-			s.flags |= flagStreamNeedReset
-			s.owner.addOutgoingCtrlLocked(s.streamID)
-		}
 		if s.writePending() > 0 || s.writenack > 0 {
 			s.flushed.Broadcast()
+		}
+		if s.flags&flagStreamSentEOF == 0 {
+			s.flags |= flagStreamNeedReset
+			if s.outgoingSendReset() {
+				s.owner.addOutgoingCtrlLocked(s.streamID)
+			}
 		}
 	}
 	return preverror
@@ -664,6 +715,14 @@ func (s *rawStream) Close() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	return s.closeWithErrorLocked(nil)
+}
+
+func (s *rawStream) CloseRead() error {
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	preverror := s.readerror
+	s.setReadError(ESTREAMCLOSED)
+	return preverror
 }
 
 func (s *rawStream) CloseWrite() error {

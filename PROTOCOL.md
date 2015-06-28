@@ -94,11 +94,13 @@ Payload MUST be at least 4 bytes with the following format:
 | code | int32_t | a 32-bit error code |
 | message | ... | the rest of payload is an optional error message |
 
-After receiving RESET endpoints SHOULD stop sending further data on the stream and schedule a frame with FIN flag set (unless such frame has already been sent).
+After receiving RESET endpoints SHOULD stop sending further data on the stream and SHOULD schedule a frame with FIN flag set (unless such frame has already been sent). Sending any more data after receiving RESET is pointless, the remote is likely to discard it.
 
-Sending RESET with a FIN flag is akin to forceful stream termination: no further data will be sent, all incoming data will be discarded. Additional effect of RESET with FIN flag set is it ensures read calls on the other side will return an error related to the specified error code.
+Sending RESET without a FIN flag closes the read side of the connection and instructs the remote to fail pending write calls with the specified error code. Read calls on the other side SHOULD NOT be affected.
 
-A special error code ESTREAMCLOSED is used when stream is closed normally. When error needs to be returned from a read call as a result of a RESET frame such error should be converted to an equivalent of a EOF.
+Sending RESET with a FIN flag is akin to forceful stream termination: no further data will be sent, all incoming data will be discarded, and instructs the remote to fail both read and write calls with the specified error code.
+
+A special error code ESTREAMCLOSED is used when stream is closed normally. When error needs to be returned from a read call as a result of a RESET frame with this error code it SHOULD be converted to an equivalent of a EOF.
 
 ## WINDOW frames
 
@@ -144,7 +146,7 @@ Rules on what may be sent and received with a given stream id are as follows:
 * After sending OPEN all other frames may be sent and received
 * After receiving a RESET frame:
   * SHOULD fail pending write calls with an attached error
-  * SHOULD fail final read calls with an attached error
+  * SHOULD fail final read calls with an attached error (if FIN flag is set)
   * SHOULD NOT send any DATA frames
 * After sending a frame with FIN flag set:
   * HALF-CLOSED(READ) must be added to stream state

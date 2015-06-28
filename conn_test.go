@@ -302,7 +302,9 @@ func TestStreamFlush(t *testing.T) {
 	var dataseen bool
 	var flushdone sync.Cond
 	flushdone.L = &lock
+	var wg sync.WaitGroup
 	runClientServer(StreamHandlerFunc(func(stream Stream) {
+		defer wg.Done()
 		switch stream.TargetID() {
 		case 1:
 			// 1st case: close the connection
@@ -347,6 +349,7 @@ func TestStreamFlush(t *testing.T) {
 		}
 	}), func(client Conn) {
 		for target := int64(1); target <= 3; target++ {
+			wg.Add(1)
 			stream, err := client.Open(target)
 			if err != nil {
 				t.Fatalf("client: Open: %s", err)
@@ -358,7 +361,10 @@ func TestStreamFlush(t *testing.T) {
 			}
 			err = stream.Flush()
 			lock.Lock()
+			seen := dataseen
+			dataseen = false
 			flushdone.Broadcast()
+			lock.Unlock()
 			switch target {
 			case 1:
 				if err != ESTREAMCLOSED {
@@ -373,11 +379,131 @@ func TestStreamFlush(t *testing.T) {
 					t.Fatalf("client: Flush(%d): %v (expected <nil>)", target, err)
 				}
 			}
-			if !dataseen {
+			if !seen {
 				t.Fatalf("client: Flush(%d): data was not confirmed before flush returned", target)
 			}
-			dataseen = false
-			lock.Unlock()
 		}
+		wg.Wait() // wait until server finishes
+	})
+}
+
+func TestStreamCloseRead(t *testing.T) {
+	var goahead1 sync.Mutex
+	var goahead2 sync.Mutex
+	goahead1.Lock()
+	goahead2.Lock()
+	runClientServer(StreamHandlerFunc(func(stream Stream) {
+		_, err := stream.Peek()
+		if err != nil {
+			t.Fatalf("server: Peek: %v", err)
+		}
+		err = stream.CloseRead()
+		if err != nil {
+			t.Fatalf("server: CloseRead: %v", err)
+		}
+		goahead1.Lock()
+		n, err := stream.Write([]byte("hello"))
+		if n != 5 || err != nil {
+			t.Fatalf("server: Write: %d, %v", n, err)
+		}
+		err = stream.Flush()
+		if err != nil {
+			t.Fatalf("server: Flush: %v", err)
+		}
+		goahead2.Unlock()
+	}), func(client Conn) {
+		stream, err := client.Open(0)
+		if err != nil {
+			t.Fatalf("client: Open: %v", err)
+		}
+		defer stream.Close()
+
+		stream.Write([]byte("foobar"))
+		err = stream.Flush()
+		goahead1.Unlock()
+		if err != ESTREAMCLOSED {
+			t.Fatalf("client: Flush: %v", err)
+		}
+		n, err := stream.Read(make([]byte, 16))
+		if n != 5 || err != nil {
+			t.Fatalf("client: Read: %d, %v", n, err)
+		}
+		goahead2.Lock()
+	})
+}
+
+func TestStreamCloseWithData(t *testing.T) {
+	var goahead1 sync.Mutex
+	var goahead2 sync.Mutex
+	goahead1.Lock()
+	goahead2.Lock()
+	runClientServer(StreamHandlerFunc(func(stream Stream) {
+		goahead1.Unlock()
+		defer goahead2.Unlock()
+		n, err := stream.Read(make([]byte, 16))
+		if err == nil {
+			// with GOMAXPROCS>1 we may see data before we see error, make sure
+			// to wait for the error as well.
+			_, err = stream.Peek()
+		}
+		if n != 5 || err != ENOROUTE {
+			t.Fatalf("server: Read: %d, %v", n, err)
+		}
+	}), func(client Conn) {
+		stream, err := client.Open(0)
+		if err != nil {
+			t.Fatalf("server: Open: %v", err)
+		}
+		defer stream.Close()
+
+		goahead1.Lock()
+		client.(*rawConn).blockWrite()
+		n, err := stream.Write([]byte("hello"))
+		if n != 5 || err != nil {
+			t.Fatalf("client: Write: %d, %v", n, err)
+		}
+		stream.CloseWithError(ENOROUTE)
+		client.(*rawConn).unblockWrite()
+		goahead2.Lock()
+	})
+}
+
+func TestStreamCloseAfterData(t *testing.T) {
+	var goahead1 sync.Mutex
+	var goahead2 sync.Mutex
+	var goahead3 sync.Mutex
+	goahead1.Lock()
+	goahead2.Lock()
+	goahead3.Lock()
+	runClientServer(StreamHandlerFunc(func(stream Stream) {
+		goahead1.Unlock()
+		n, err := stream.Read(make([]byte, 16))
+		goahead2.Unlock()
+		defer goahead3.Unlock()
+		if n != 5 || err != nil {
+			t.Fatalf("server: Read: %d, %v", n, err)
+		}
+		_, err = stream.Peek()
+		if err != ENOROUTE {
+			t.Fatalf("server Peek: %v", err)
+		}
+	}), func(client Conn) {
+		stream, err := client.Open(0)
+		if err != nil {
+			t.Fatalf("server: Open: %v", err)
+		}
+		defer stream.Close()
+
+		goahead1.Lock()
+		n, err := stream.Write([]byte("hello"))
+		if n != 5 || err != nil {
+			t.Fatalf("client: Write: %d, %v", n, err)
+		}
+		goahead2.Lock()
+		err = stream.CloseWithError(ENOROUTE)
+		if err != nil {
+			t.Fatalf("client: CloseWithError: %v", err)
+		}
+		goahead3.Lock()
 	})
 }

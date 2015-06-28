@@ -401,7 +401,6 @@ func (c *rawConn) processDataFrameLocked(frame dataFrame) error {
 	if err != nil {
 		return err
 	}
-	c.cleanupStreamLocked(stream)
 	if len(frame.data) > 0 {
 		c.addOutgoingAckLocked(0, len(frame.data))
 	}
@@ -426,7 +425,6 @@ func (c *rawConn) processResetFrameLocked(frame resetFrame) error {
 	if err != nil {
 		return err
 	}
-	c.cleanupStreamLocked(stream)
 	return nil
 }
 
