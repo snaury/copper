@@ -188,6 +188,10 @@ func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64, readwind
 	return s
 }
 
+func (s *rawStream) canReceive() bool {
+	return s.readerror == nil
+}
+
 func (s *rawStream) writePending() int {
 	return s.writebuf.len() - s.writewire
 }
@@ -321,7 +325,7 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 			}
 			s.readbuf.write(frame.data)
 		} else {
-			// it's not EOF, so we are ignoring all data, just send an ack
+			// we are ignoring all data, but we need to send an ack
 			s.owner.addOutgoingAckLocked(s.streamID, len(frame.data))
 		}
 	}
@@ -370,13 +374,15 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 			code:  EINVALIDFRAME,
 		}
 	}
-	s.changeWindowLocked(int(frame.increment))
 	if frame.flags&flagAck != 0 {
 		s.writenack -= int(frame.increment)
 		if s.writePending() == 0 && s.writenack <= 0 {
 			s.flushed.Broadcast()
 		}
 		s.owner.cleanupStreamLocked(s)
+	}
+	if frame.flags&flagInc != 0 {
+		s.changeWindowLocked(int(frame.increment))
 	}
 	return nil
 }

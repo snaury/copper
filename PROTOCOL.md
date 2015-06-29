@@ -104,15 +104,16 @@ A special error code ESTREAMCLOSED is used when stream is closed normally. When 
 
 ## WINDOW frames
 
-WINDOW frames are used for telling endpoints how much more data may be sent on the stream. Special stream id 0 is used for updating receive window for the connection, otherwise update is for receive window of the specified stream.
+WINDOW frames are used for telling endpoints how much more data may be sent on the stream. Special stream id 0 is used for updating receive window for the connection, otherwise update is for receive window for the specified stream.
 
-Endpoints MUST NOT send more data on each stream than both connection and stream windows permit. Only data in OPEN (minus 8 bytes for target) and DATA frames is counted towards the window, all other frames and their data are not considered. Note that sending data on the stream removes space from both connection and stream windows.
+Endpoints MUST NOT send more data on each stream than both connection and stream windows permit. Only OPEN (minus 8 bytes for target) and DATA frames are counted towards the window, all other frames and their data are not considered. Note that sending data on the stream removes space from both connection and stream windows.
 
 WINDOW frames support the following flags:
 
 | Flag | Description |
 | ---- | ----------- |
-| <nobr>ACK (bit 0)</nobr> | When set this frame acknowledges removal of the data from the stream's receive buffer, otherwise it temporarily allows more data to be sent |
+| <nobr>ACK (bit 0)</nobr> | When set this frame acknowledges removal of data from stream's receive buffer |
+| <nobr>INC (bit 1)</nobr> | When set this frame increases window size, allowing more data to be sent |
 
 Payload MUST be exactly 4 bytes with the following format:
 

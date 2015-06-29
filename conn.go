@@ -430,10 +430,12 @@ func (c *rawConn) processResetFrameLocked(frame resetFrame) error {
 
 func (c *rawConn) processWindowFrameLocked(frame windowFrame) error {
 	if frame.streamID == 0 {
-		if len(c.outgoingData) > 0 && c.writeleft <= 0 {
-			c.wakeupLocked()
+		if frame.flags&flagInc != 0 {
+			if len(c.outgoingData) > 0 && c.writeleft <= 0 {
+				c.wakeupLocked()
+			}
+			c.writeleft += int(frame.increment)
 		}
-		c.writeleft += int(frame.increment)
 		return nil
 	}
 	stream := c.streams[frame.streamID]
@@ -582,6 +584,17 @@ func (c *rawConn) readloop() {
 	c.failEverything()
 }
 
+func (c *rawConn) streamCanReceive(streamID uint32) bool {
+	if streamID == 0 {
+		return true
+	}
+	stream := c.streams[streamID]
+	if stream != nil {
+		return stream.canReceive()
+	}
+	return false
+}
+
 func (c *rawConn) writeOutgoingFrames(datarequired bool, timeout *time.Duration) (result bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -674,9 +687,13 @@ writeloop:
 		if len(c.outgoingAcks) > 0 {
 			for streamID, increment := range c.outgoingAcks {
 				delete(c.outgoingAcks, streamID)
+				flags := flagAck
+				if c.streamCanReceive(streamID) {
+					flags |= flagInc
+				}
 				err := c.writeFrameLocked(windowFrame{
 					streamID:  streamID,
-					flags:     flagAck,
+					flags:     flags,
 					increment: increment,
 				})
 				if err != nil {
