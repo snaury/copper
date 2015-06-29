@@ -1,10 +1,5 @@
 package protocol;
 
-message Error {
-    required sint32 code = 1;
-    optional string message = 2;
-}
-
 message Route {
     required string service = 1;
     required uint32 weight = 2;
@@ -22,12 +17,7 @@ message Endpoint {
     optional string network = 2;
 }
 
-message Subscribe {
-    message Result {
-        optional Error error = 1;
-        optional sint64 target_id = 2;
-    }
-
+message SubscribeRequest {
     message Option {
         required string service = 1;
         optional uint32 distance = 2;
@@ -37,75 +27,69 @@ message Subscribe {
     repeated Option options = 1;
 }
 
-message GetEndpoints {
-    message Result {
-        optional Error error = 1;
-        repeated Endpoint endpoints = 2;
-    }
-
-    message Event {
-        optional Error error = 1;
-        optional Endpoint.EventType type = 2;
-        repeated Endpoint endpoints = 3;
-    }
-
-    required sint64 target_id = 1;
-    optional bool stream_events = 2;
-}
-
-message Unsubscribe {
-    message Result {
-        optional Error error = 1;
-    }
-
+message SubscribeResponse {
     required sint64 target_id = 1;
 }
 
-message Publish {
-    message Result {
-        optional Error error = 1;
-    }
+message GetEndpointsRequest {
+    required sint64 target_id = 1;
+    optional bool stream_updates = 2;
+}
 
+message GetEndpointsResponse {
+    required Endpoint.EventType type = 1;
+    repeated Endpoint endpoints = 2;
+}
+
+message UnsubscribeRequest {
+    required sint64 target_id = 1;
+}
+
+message UnsubscribeResponse {
+    // nothing yet
+}
+
+message PublishRequest {
     required string name = 1;
     required sint64 target_id = 2;
     optional uint32 distance = 3;
     optional uint32 concurrency = 4;
 }
 
-message Unpublish {
-    message Result {
-        optional Error error = 1;
-    }
+message PublishResponse {
+    // nothing yet
+}
 
+message UnpublishRequest {
     required string name = 1;
 }
 
-message SetRoute {
-    message Result {
-        optional Error error = 1;
-    }
+message UnpublishResponse {
+    // nothing yet
+}
 
+message SetRouteRequest {
     required string name = 1;
     repeated Route routes = 2;
 }
 
-message LookupRoute {
-    message Result {
-        optional Error error = 1;
-        repeated Route routes = 2;
-    }
+message SetRouteResponse {
+    // nothing yet
+}
 
+message LookupRouteRequest {
     required string name = 1;
 }
 
-message Command {
-    oneof kind {
-        Subscribe subscribe = 1;
-        GetEndpoints get_endpoints = 2;
-        Unsubscribe unsubscribe = 3;
-        Publish publish = 4;
-        Unpublish unpublish = 5;
-        SetRoute set_route = 6;
-        LookupRoute lookup_route = 7;
-    }
+message LookupRouteResponse {
+    repeated Route routes = 1;
+}
+
+enum Command {
+    Subscribe = 1;
+    GetEndpoints = 2;
+    Unsubscribe = 3;
+    Publish = 4;
+    Unpublish = 5;
+    LookupRoute = 6;
 }
