@@ -109,9 +109,9 @@ type copperError struct {
 	code ErrorCode
 }
 
-var _ Error = &copperError{}
+var _ Error = copperError{}
 
-func (e *copperError) ErrorCode() ErrorCode { return e.code }
+func (e copperError) ErrorCode() ErrorCode { return e.code }
 
 type unknownFrameError struct {
 	frameType uint8

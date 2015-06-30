@@ -333,13 +333,13 @@ func (s *rawStream) waitAckLocked() error {
 
 func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 	if s.flags&flagStreamSeenEOF != 0 {
-		return &copperError{
+		return copperError{
 			error: fmt.Errorf("stream 0x%08x cannot have DATA after EOF"),
 			code:  EINVALIDSTREAM,
 		}
 	}
 	if s.readbuf.len()+len(frame.data) > s.readwindow {
-		return &copperError{
+		return copperError{
 			error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", frame.streamID, s.readbuf.len(), len(frame.data), s.readwindow),
 			code:  EWINDOWOVERFLOW,
 		}
@@ -391,7 +391,7 @@ func (s *rawStream) changeWindowLocked(diff int) {
 
 func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 	if frame.increment <= 0 {
-		return &copperError{
+		return copperError{
 			error: fmt.Errorf("stream 0x%08x received invalid increment %d", s.streamID, frame.increment),
 			code:  EINVALIDFRAME,
 		}

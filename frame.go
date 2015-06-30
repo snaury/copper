@@ -178,7 +178,7 @@ func (p resetFrame) toError() error {
 	if len(p.message) == 0 {
 		return p.code
 	}
-	return &copperError{
+	return copperError{
 		error: errors.New(string(p.message)),
 		code:  p.code,
 	}

@@ -352,20 +352,20 @@ func (c *rawConn) processPingFrameLocked(frame pingFrame) error {
 
 func (c *rawConn) processOpenFrameLocked(frame openFrame) error {
 	if frame.streamID <= 0 || isServerStreamID(frame.streamID) == c.isserver {
-		return &copperError{
+		return copperError{
 			error: fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.streamID),
 			code:  EINVALIDSTREAM,
 		}
 	}
 	old := c.streams[frame.streamID]
 	if old != nil {
-		return &copperError{
+		return copperError{
 			error: fmt.Errorf("stream 0x%08x cannot be reopened until fully closed", frame.streamID),
 			code:  EINVALIDSTREAM,
 		}
 	}
 	if len(frame.data) > c.localStreamWindowSize {
-		return &copperError{
+		return copperError{
 			error: fmt.Errorf("stream 0x%08x initial %d bytes, which is more than %d bytes window", frame.streamID, len(frame.data), c.localStreamWindowSize),
 			code:  EWINDOWOVERFLOW,
 		}
@@ -385,14 +385,14 @@ func (c *rawConn) processDataFrameLocked(frame dataFrame) error {
 		if frame.streamID == 0 {
 			// this is a reserved stream id
 			if frame.flags != 0 || len(frame.data) != 0 {
-				return &copperError{
+				return copperError{
 					error: fmt.Errorf("stream 0 cannot be used to send data"),
 					code:  EINVALIDSTREAM,
 				}
 			}
 			return nil
 		}
-		return &copperError{
+		return copperError{
 			error: fmt.Errorf("stream 0x%08x cannot be found", frame.streamID),
 			code:  EINVALIDSTREAM,
 		}
@@ -462,7 +462,7 @@ func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
 		switch key {
 		case settingsConnWindowID:
 			if value < 1024 {
-				return &copperError{
+				return copperError{
 					error: fmt.Errorf("cannot set connection window to %d bytes", value),
 					code:  EUNSUPPORTED,
 				}
@@ -472,7 +472,7 @@ func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
 			c.remoteConnWindowSize = value
 		case settingsStreamWindowID:
 			if value < 1024 {
-				return &copperError{
+				return copperError{
 					error: fmt.Errorf("cannot set stream window to %d bytes", value),
 					code:  EUNSUPPORTED,
 				}
@@ -483,14 +483,14 @@ func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
 			}
 		case settingsInactivityMillisecondsID:
 			if value < 1000 {
-				return &copperError{
+				return copperError{
 					error: fmt.Errorf("cannot set inactivity timeout to %dms", value),
 					code:  EUNSUPPORTED,
 				}
 			}
 			c.remoteInactivityTimeout = time.Duration(value) * time.Millisecond
 		default:
-			return &copperError{
+			return copperError{
 				error: fmt.Errorf("unknown settings key %d", key),
 				code:  EUNSUPPORTED,
 			}
