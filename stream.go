@@ -192,10 +192,6 @@ func (s *rawStream) canReceive() bool {
 	return s.readerror == nil
 }
 
-func (s *rawStream) writePending() int {
-	return s.writebuf.len() - s.writewire
-}
-
 func (s *rawStream) isFullyClosed() bool {
 	return s.flags&flagStreamBothEOF == flagStreamBothEOF && s.readbuf.len() == 0 && s.writenack == 0
 }
@@ -286,7 +282,7 @@ func (s *rawStream) waitWriteLocked() error {
 }
 
 func (s *rawStream) waitAckLocked() error {
-	for s.writePending() > 0 || s.writenack > 0 {
+	for s.writebuf.len() > 0 || s.writenack > 0 {
 		if s.reseterror != nil {
 			break
 		}
@@ -320,10 +316,8 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 	}
 	if len(frame.data) > 0 {
 		if s.readerror == nil {
-			if s.readbuf.len() == 0 {
-				s.mayread.Broadcast()
-			}
 			s.readbuf.write(frame.data)
+			s.mayread.Broadcast()
 		} else {
 			// we are ignoring all data, but we need to send an ack
 			s.owner.addOutgoingAckLocked(s.streamID, len(frame.data))
@@ -355,15 +349,13 @@ func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
 
 func (s *rawStream) changeWindowLocked(diff int) {
 	if s.writeerror == nil {
-		if diff > 0 {
-			if s.writeleft <= 0 && s.writeleft+diff > 0 {
-				s.maywrite.Broadcast()
-			}
-			if s.writeleft < 0 && s.writePending() > 0 {
-				s.owner.addOutgoingDataLocked(s.streamID)
-			}
-		}
 		s.writeleft += diff
+		if s.activeData() {
+			s.owner.addOutgoingDataLocked(s.streamID)
+		}
+		if s.writeleft > 0 {
+			s.maywrite.Broadcast()
+		}
 	}
 }
 
@@ -376,7 +368,7 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 	}
 	if frame.flags&flagAck != 0 {
 		s.writenack -= int(frame.increment)
-		if s.writePending() == 0 && s.writenack <= 0 {
+		if s.writebuf.len() == 0 && s.writenack <= 0 {
 			s.acked.Broadcast()
 		}
 		s.owner.cleanupStreamLocked(s)
@@ -594,36 +586,33 @@ func (s *rawStream) activeCtrl() bool {
 }
 
 func (s *rawStream) activeData() bool {
+	pending := s.writebuf.len() - s.writewire
 	if s.writeleft >= 0 {
-		return s.writebuf.len() > 0
+		return pending > 0
 	}
-	return s.writebuf.len()+s.writeleft > 0
+	return pending+s.writeleft > 0
 }
 
 func (s *rawStream) setReadError(err error) {
 	if s.readerror == nil {
 		s.readerror = err
-		if s.readbuf.len() == 0 {
-			s.mayread.Broadcast()
-		}
 		if s.flags&flagStreamSeenEOF == 0 {
 			s.flags |= flagStreamNeedReset
 			if s.outgoingSendReset() {
 				s.owner.addOutgoingCtrlLocked(s.streamID)
 			}
 		}
+		s.mayread.Broadcast()
 	}
 }
 
 func (s *rawStream) setWriteError(err error) {
 	if s.writeerror == nil {
 		s.writeerror = err
-		if s.writeleft <= 0 {
-			s.maywrite.Broadcast()
-		}
 		s.writeleft = 0
 		s.flags |= flagStreamNeedEOF
 		s.owner.addOutgoingCtrlLocked(s.streamID)
+		s.maywrite.Broadcast()
 	}
 }
 
@@ -636,15 +625,13 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 		s.reseterror = err
 		s.setReadError(err)
 		s.setWriteError(err)
-		if s.writePending() > 0 || s.writenack > 0 {
-			s.acked.Broadcast()
-		}
 		if s.flags&flagStreamSentEOF == 0 {
 			s.flags |= flagStreamNeedReset
 			if s.outgoingSendReset() {
 				s.owner.addOutgoingCtrlLocked(s.streamID)
 			}
 		}
+		s.acked.Broadcast()
 	}
 	return preverror
 }
