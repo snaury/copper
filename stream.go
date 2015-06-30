@@ -30,8 +30,10 @@ type Stream interface {
 	// Flush returns when all data has been flushed
 	Flush() error
 
-	// WaitAck returns when data has been read by the remote side
-	WaitAck() error
+	// WaitAck returns when data has been read by the remote side or there is
+	// an error. In case of an error it also returns the number of bytes
+	// that have not been acknowledged by the remote side.
+	WaitAck() (int, error)
 
 	// Closes closes the stream, discarding any data
 	Close() error
@@ -141,8 +143,9 @@ type rawStream struct {
 	writebuf   buffer
 	writeerror error
 	writeleft  int
-	writenack  int
 	writewire  int
+	writenack  int
+	writefail  int
 	reseterror error
 	flushed    sync.Cond
 	acked      sync.Cond
@@ -198,23 +201,24 @@ func (s *rawStream) canReceive() bool {
 }
 
 func (s *rawStream) isFullyClosed() bool {
-	return s.flags&flagStreamBothEOF == flagStreamBothEOF && s.readbuf.len() == 0 && s.writenack == 0
+	return s.flags&flagStreamBothEOF == flagStreamBothEOF && s.readbuf.len() == 0 && s.writenack <= 0
 }
 
 func (s *rawStream) clearReadBuffer() {
 	if s.readbuf.len() > 0 {
-		s.owner.addOutgoingAckLocked(s.streamID, s.readbuf.len())
 		s.readbuf.clear()
 		s.owner.cleanupStreamLocked(s)
 	}
 }
 
 func (s *rawStream) clearWriteBuffer() {
-	if s.writebuf.len() > 0 {
-		s.writebuf.clear()
-		s.writewire = 0
-		s.flushed.Broadcast()
-	}
+	s.writebuf.clear()
+	s.writewire = 0
+	s.flushed.Broadcast()
+	// Any unacknowledged data will not be acknowledged
+	s.writefail += s.writenack
+	s.writenack = 0
+	s.acked.Broadcast()
 }
 
 func (s *rawStream) setReadDeadlineLocked(t time.Time) {
@@ -348,9 +352,6 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 		if s.readerror == nil {
 			s.readbuf.write(frame.data)
 			s.mayread.Broadcast()
-		} else {
-			// we are ignoring all data, but we need to send an ack
-			s.owner.addOutgoingAckLocked(s.streamID, len(frame.data))
 		}
 	}
 	if frame.flags&flagFin != 0 {
@@ -491,10 +492,6 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 		if err != nil {
 			return err
 		}
-		// We clear read buffer after sending RESET (instead of before), so the
-		// other side does not keep trying to fill our window with what we
-		// discard anyway.
-		s.clearReadBuffer()
 	}
 	if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
 		s.flags &^= flagStreamNeedEOF
@@ -637,6 +634,7 @@ func (s *rawStream) setReadError(err error) {
 			if s.outgoingSendReset() {
 				s.owner.addOutgoingCtrlLocked(s.streamID)
 			}
+			s.clearReadBuffer()
 		}
 		s.mayread.Broadcast()
 	}
@@ -666,6 +664,7 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 			if s.outgoingSendReset() {
 				s.owner.addOutgoingCtrlLocked(s.streamID)
 			}
+			s.clearReadBuffer()
 		}
 		s.flushed.Broadcast()
 		s.acked.Broadcast()
@@ -743,10 +742,14 @@ func (s *rawStream) Flush() error {
 	return s.waitFlushLocked()
 }
 
-func (s *rawStream) WaitAck() error {
+func (s *rawStream) WaitAck() (int, error) {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
-	return s.waitAckLocked()
+	err := s.waitAckLocked()
+	if err != nil {
+		return s.writenack + s.writefail, err
+	}
+	return 0, nil
 }
 
 func (s *rawStream) Close() error {

@@ -287,9 +287,9 @@ func TestStreamWriteDeadline(t *testing.T) {
 
 		deadline = time.Now().Add(5 * time.Millisecond)
 		stream.SetWriteDeadline(deadline)
-		err = stream.WaitAck()
-		if !isTimeout(err) {
-			t.Fatalf("client: WaitAck: expected timeout, got: %v", err)
+		n, err = stream.WaitAck()
+		if n != 65536 || !isTimeout(err) {
+			t.Fatalf("client: WaitAck: expected timeout, got: %d, %v", n, err)
 		}
 		if deadline.After(time.Now()) {
 			t.Fatalf("client: WaitAck: expected to timeout after the deadline, not before")
@@ -359,7 +359,7 @@ func TestStreamWaitAck(t *testing.T) {
 			if err != nil {
 				t.Fatalf("client: Write: %s", err)
 			}
-			err = stream.WaitAck()
+			n, err := stream.WaitAck()
 			lock.Lock()
 			seen := dataseen
 			dataseen = false
@@ -367,16 +367,16 @@ func TestStreamWaitAck(t *testing.T) {
 			lock.Unlock()
 			switch target {
 			case 1:
-				if err != ESTREAMCLOSED {
-					t.Fatalf("client: WaitAck(%d): %v (expected ESTREAMCLOSED)", target, err)
+				if n != 13 || err != ESTREAMCLOSED {
+					t.Fatalf("client: WaitAck(%d): %d, %v (expected 13, ESTREAMCLOSED)", target, n, err)
 				}
 			case 2:
-				if err != ENOROUTE {
-					t.Fatalf("client: WaitAck(%d): %v (expected ETARGET)", target, err)
+				if n != 13 || err != ENOROUTE {
+					t.Fatalf("client: WaitAck(%d): %d, %v (expected 13, ETARGET)", target, n, err)
 				}
 			default:
-				if err != nil {
-					t.Fatalf("client: WaitAck(%d): %v (expected <nil>)", target, err)
+				if n != 0 || err != nil {
+					t.Fatalf("client: WaitAck(%d): %d, %v (expected <nil>)", target, n, err)
 				}
 			}
 			if !seen {
@@ -406,9 +406,9 @@ func TestStreamCloseRead(t *testing.T) {
 		if n != 5 || err != nil {
 			t.Fatalf("server: Write: %d, %v", n, err)
 		}
-		err = stream.WaitAck()
-		if err != nil {
-			t.Fatalf("server: WaitAck: %v", err)
+		n, err = stream.WaitAck()
+		if n != 0 || err != nil {
+			t.Fatalf("server: WaitAck: %d, %v", n, err)
 		}
 		goahead2.Unlock()
 	}), func(client Conn) {
@@ -419,12 +419,12 @@ func TestStreamCloseRead(t *testing.T) {
 		defer stream.Close()
 
 		stream.Write([]byte("foobar"))
-		err = stream.WaitAck()
+		n, err := stream.WaitAck()
 		goahead1.Unlock()
-		if err != ESTREAMCLOSED {
-			t.Fatalf("client: WaitAck: %v", err)
+		if n != 6 || err != ESTREAMCLOSED {
+			t.Fatalf("client: WaitAck: %d, %v", n, err)
 		}
-		n, err := stream.Read(make([]byte, 16))
+		n, err = stream.Read(make([]byte, 16))
 		if n != 5 || err != nil {
 			t.Fatalf("client: Read: %d, %v", n, err)
 		}

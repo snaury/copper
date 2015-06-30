@@ -96,6 +96,10 @@ Payload MUST be at least 4 bytes with the following format:
 
 After receiving RESET endpoints SHOULD stop sending further data on the stream and SHOULD schedule a frame with FIN flag set (unless such frame has already been sent). Sending any more data after receiving RESET is pointless, the remote is likely to discard it.
 
+Receiving RESET instructs the endpoint that it MUST treat all unacknowledged data as permanently undelivered at that point, unless a WINDOW frame with an ACK flag set is received later, which would imply otherwise.
+
+After sending RESET the endpoint SHOULD NOT send any more WINDOW frames with an ACK flag set, it is assumed that any unacknowledged data has not, and will not, be delivered at that point.
+
 Sending RESET without a FIN flag closes the read side of the connection and instructs the remote to fail pending write calls with the specified error code. Read calls on the other side SHOULD NOT be affected.
 
 Sending RESET with a FIN flag is akin to forceful stream termination: no further data will be sent, all incoming data will be discarded, and instructs the remote to fail both read and write calls with the specified error code.

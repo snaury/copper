@@ -310,7 +310,7 @@ func (c *rawConn) handleStream(stream Stream) {
 }
 
 func (c *rawConn) cleanupStreamLocked(s *rawStream) {
-	if s.isFullyClosed() {
+	if s.isFullyClosed() && c.streams[s.streamID] == s {
 		// connection is fully closed and must be forgotten
 		delete(c.streams, s.streamID)
 		delete(c.outgoingCtrl, s.streamID)
