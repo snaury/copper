@@ -11,6 +11,7 @@ It is generated from these files:
 It has these top-level messages:
 	Route
 	Endpoint
+	SubscribeOption
 	SubscribeRequest
 	SubscribeResponse
 	GetEndpointsRequest
@@ -157,52 +158,52 @@ func (m *Endpoint) GetTargetId() int64 {
 	return 0
 }
 
-type SubscribeRequest struct {
-	Options          []*SubscribeRequest_Option `protobuf:"bytes,1,rep,name=options" json:"options,omitempty"`
-	XXX_unrecognized []byte                     `json:"-"`
-}
-
-func (m *SubscribeRequest) Reset()         { *m = SubscribeRequest{} }
-func (m *SubscribeRequest) String() string { return proto.CompactTextString(m) }
-func (*SubscribeRequest) ProtoMessage()    {}
-
-func (m *SubscribeRequest) GetOptions() []*SubscribeRequest_Option {
-	if m != nil {
-		return m.Options
-	}
-	return nil
-}
-
-type SubscribeRequest_Option struct {
+type SubscribeOption struct {
 	Service          *string `protobuf:"bytes,1,req,name=service" json:"service,omitempty"`
 	Distance         *uint32 `protobuf:"varint,2,opt,name=distance" json:"distance,omitempty"`
 	MaxRetries       *uint32 `protobuf:"varint,3,opt,name=max_retries" json:"max_retries,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
-func (m *SubscribeRequest_Option) Reset()         { *m = SubscribeRequest_Option{} }
-func (m *SubscribeRequest_Option) String() string { return proto.CompactTextString(m) }
-func (*SubscribeRequest_Option) ProtoMessage()    {}
+func (m *SubscribeOption) Reset()         { *m = SubscribeOption{} }
+func (m *SubscribeOption) String() string { return proto.CompactTextString(m) }
+func (*SubscribeOption) ProtoMessage()    {}
 
-func (m *SubscribeRequest_Option) GetService() string {
+func (m *SubscribeOption) GetService() string {
 	if m != nil && m.Service != nil {
 		return *m.Service
 	}
 	return ""
 }
 
-func (m *SubscribeRequest_Option) GetDistance() uint32 {
+func (m *SubscribeOption) GetDistance() uint32 {
 	if m != nil && m.Distance != nil {
 		return *m.Distance
 	}
 	return 0
 }
 
-func (m *SubscribeRequest_Option) GetMaxRetries() uint32 {
+func (m *SubscribeOption) GetMaxRetries() uint32 {
 	if m != nil && m.MaxRetries != nil {
 		return *m.MaxRetries
 	}
 	return 0
+}
+
+type SubscribeRequest struct {
+	Options          []*SubscribeOption `protobuf:"bytes,1,rep,name=options" json:"options,omitempty"`
+	XXX_unrecognized []byte             `json:"-"`
+}
+
+func (m *SubscribeRequest) Reset()         { *m = SubscribeRequest{} }
+func (m *SubscribeRequest) String() string { return proto.CompactTextString(m) }
+func (*SubscribeRequest) ProtoMessage()    {}
+
+func (m *SubscribeRequest) GetOptions() []*SubscribeOption {
+	if m != nil {
+		return m.Options
+	}
+	return nil
 }
 
 type SubscribeResponse struct {

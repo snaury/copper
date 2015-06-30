@@ -13,7 +13,7 @@ type lowLevelServer interface {
 	unpublish(targetID int64) error
 	setRoute(name string, routes ...Route) error
 	lookupRoute(name string) ([]Route, error)
-	streamServiceChanges() (ServiceChangeStream, error)
+	streamServices() (ServiceChangeStream, error)
 }
 
 type server struct {
