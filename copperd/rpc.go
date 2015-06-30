@@ -21,119 +21,111 @@ func (e rpcError) ErrorCode() copper.ErrorCode {
 	return e.code
 }
 
-type rpcHeader struct {
-	size int
-	kind protocol.Command
-}
-
-func rpcReadHeader(r io.Reader) (hdr rpcHeader, err error) {
-	var buf [5]byte
-	_, err = io.ReadFull(r, buf[0:5])
+func rpcReadRequestType(r io.Reader) (rtype protocol.RequestType, err error) {
+	var buf [1]byte
+	_, err = io.ReadFull(r, buf[0:1])
 	if err != nil {
 		return
 	}
-	hdr.size = int(binary.LittleEndian.Uint32(buf[0:4]))
-	hdr.kind = protocol.Command(buf[4])
-	return
+	return protocol.RequestType(buf[0]), nil
 }
 
-func rpcReadMessage(r io.Reader, size int, m proto.Message) error {
-	var buf []byte
+func rpcReadMessage(r io.Reader, pb proto.Message) error {
+	var buf [4]byte
+	_, err := io.ReadFull(r, buf[0:4])
+	if err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		return err
+	}
+	size := int(binary.LittleEndian.Uint32(buf[0:4]))
+	var data []byte
 	if size > 0 {
-		buf := make([]byte, size)
-		_, err := io.ReadFull(r, buf)
+		data = make([]byte, size)
+		_, err = io.ReadFull(r, data)
 		if err != nil {
 			if err == io.EOF {
 				err = io.ErrUnexpectedEOF
 			}
 			return err
 		}
+	} else if size < 0 {
+		return copper.EINVALIDDATA
 	}
-	return proto.Unmarshal(buf, m)
+	return proto.Unmarshal(data, pb)
 }
 
-func rpcWriteHeader(w io.Writer, hdr rpcHeader) (err error) {
-	var buf [5]byte
-	binary.LittleEndian.PutUint32(buf[0:4], uint32(hdr.size))
-	buf[4] = uint8(hdr.kind)
-	_, err = w.Write(buf[0:5])
-	return
-}
-
-func rpcWriteMessage(w io.Writer, kind protocol.Command, m proto.Message) error {
-	buf, err := proto.Marshal(m)
+func rpcWriteMessage(w io.Writer, pb proto.Message) error {
+	data, err := proto.Marshal(pb)
 	if err != nil {
 		return err
 	}
-	err = rpcWriteHeader(w, rpcHeader{
-		size: len(buf),
-		kind: kind,
-	})
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(len(data)))
+	_, err = w.Write(buf[0:4])
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(buf)
-	if err != nil {
-		return err
+	if len(data) > 0 {
+		_, err = w.Write(data)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-type rpcGetEndpointsResponse interface {
-	Read() (protocol.GetEndpointsResponse, error)
-	Close() error
-}
-
-type rpcService interface {
-	Subscribe(protocol.SubscribeRequest) (protocol.SubscribeResponse, error)
-	GetEndpoints(protocol.GetEndpointsRequest) (rpcGetEndpointsResponse, error)
-	Unsubscribe(protocol.UnsubscribeRequest) (protocol.UnsubscribeResponse, error)
-	Publish(protocol.PublishRequest) (protocol.PublishResponse, error)
-	Unpublish(protocol.UnpublishRequest) (protocol.UnpublishResponse, error)
-	SetRoute(protocol.SetRouteRequest) (protocol.SetRouteResponse, error)
-	LookupRoute(protocol.LookupRouteRequest) (protocol.LookupRouteResponse, error)
-}
-
-func rpcWrap(stream copper.Stream, service rpcService) error {
-	hdr, err := rpcReadHeader(stream)
+func rpcWrap(stream copper.Stream, server lowLevelServer) error {
+	rtype, err := rpcReadRequestType(stream)
 	if err != nil {
 		return copper.EINVALIDDATA
 	}
-	switch hdr.kind {
-	case protocol.Command_Subscribe:
+	switch rtype {
+	case protocol.RequestType_Subscribe:
 		var request protocol.SubscribeRequest
-		err = rpcReadMessage(stream, hdr.size, &request)
+		err = rpcReadMessage(stream, &request)
 		if err != nil {
 			return copper.EINVALIDDATA
 		}
-		result, err := service.Subscribe(request)
+		var options []SubscribeOption
+		for _, poption := range request.GetOptions() {
+			options = append(options, SubscribeOption{
+				Service:    poption.GetService(),
+				Distance:   poption.GetDistance(),
+				MaxRetries: poption.GetMaxRetries(),
+			})
+		}
+		targetID, err := server.subscribe(options...)
 		if err != nil {
 			return err
 		}
-		return rpcWriteMessage(stream, protocol.Command_Subscribe, &result)
-	case protocol.Command_GetEndpoints:
+		return rpcWriteMessage(stream, &protocol.SubscribeResponse{
+			TargetId: proto.Int64(targetID),
+		})
+	case protocol.RequestType_GetEndpoints:
 		var request protocol.GetEndpointsRequest
-		err = rpcReadMessage(stream, hdr.size, &request)
+		err = rpcReadMessage(stream, &request)
 		if err != nil {
 			return copper.EINVALIDDATA
 		}
-		results, err := service.GetEndpoints(request)
+		endpoints, err := server.getEndpoints(request.GetTargetId())
 		if err != nil {
 			return err
 		}
-		for {
-			result, err := results.Read()
-			if err != nil {
-				if err == io.EOF {
-					return nil
-				}
-				return err
+		var pendpoints []*protocol.Endpoint
+		for _, endpoint := range endpoints {
+			pendpoint := &protocol.Endpoint{
+				Address: proto.String(endpoint.Address),
 			}
-			err = rpcWriteMessage(stream, protocol.Command_GetEndpoints, &result)
-			if err != nil {
-				return err
+			if len(endpoint.Network) > 0 {
+				pendpoint.Network = proto.String(endpoint.Network)
 			}
+			pendpoints = append(pendpoints, pendpoint)
 		}
+		return rpcWriteMessage(stream, &protocol.GetEndpointsResponse{
+			Endpoints: pendpoints,
+		})
 	}
 	panic("TODO")
 }

@@ -2,22 +2,7 @@ package copperd
 
 import (
 	"github.com/snaury/copper"
-	"github.com/snaury/copper/copperd/protocol"
 	"net"
-)
-
-// EndpointsEventType describes type of the event
-type EndpointsEventType protocol.Endpoint_EventType
-
-const (
-	// EndpointsAdded is returned when endpoints have been added
-	EndpointsAdded = protocol.Endpoint_ADDED
-
-	// EndpointsRemoved is returned when endpoints have been removed
-	EndpointsRemoved = protocol.Endpoint_REMOVED
-
-	// EndpointsReplaced is returned when endpoints have been replaced
-	EndpointsReplaced = protocol.Endpoint_REPLACED
 )
 
 // Route describes the target service for a route
@@ -41,25 +26,33 @@ type SubscribeOption struct {
 	MaxRetries uint32
 }
 
-// SubscriptionEvent is returned when endpoints for a subscription have changed
-type SubscriptionEvent struct {
-	Error     error
-	Type      EndpointsEventType
-	Endpoints []Endpoint
+// EndpointChanges is returned when endpoints for a subscription have changed
+type EndpointChanges struct {
+	Added   []Endpoint
+	Removed []Endpoint
 }
 
-// Subscription is a handle to a copperd subscription
+// EndpointChangesStream is a stream of endpoint changes
+type EndpointChangesStream interface {
+	// Read returns the next endpoint changes
+	Read() (EndpointChanges, error)
+
+	// Stop stops listening for endpoint changes
+	Stop() error
+}
+
+// Subscription is a handle to a set of copperd services
 type Subscription interface {
 	// Endpoints returns a list of currently active endpoints
 	Endpoints() ([]string, error)
 
-	// Events subscribes to endpoint events and returns a channel
-	Events() (<-chan SubscriptionEvent, error)
+	// EndpointChanges returns a stream of endpoint changes
+	EndpointChanges() (EndpointChanges, error)
 
-	// Open opens a stream to the service
+	// Open opens a stream to an instance of a service
 	Open() (copper.Stream, error)
 
-	// Close unsubscribes from the service
+	// Close unsubscribes from services
 	Close() error
 }
 

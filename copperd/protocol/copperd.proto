@@ -7,12 +7,6 @@ message Route {
 }
 
 message Endpoint {
-    enum EventType {
-        ADDED = 1;
-        REMOVED = 2;
-        REPLACED = 3;
-    }
-
     required string address = 1;
     optional string network = 2;
 }
@@ -33,12 +27,19 @@ message SubscribeResponse {
 
 message GetEndpointsRequest {
     required sint64 target_id = 1;
-    optional bool stream_updates = 2;
 }
 
 message GetEndpointsResponse {
-    required Endpoint.EventType type = 1;
-    repeated Endpoint endpoints = 2;
+    repeated Endpoint endpoints = 1;
+}
+
+message StreamEndpointsRequest {
+    required sint64 target_id = 1;
+}
+
+message StreamEndpointsResponse {
+    repeated Endpoint added = 1;
+    repeated Endpoint removed = 2;
 }
 
 message UnsubscribeRequest {
@@ -50,8 +51,8 @@ message UnsubscribeResponse {
 }
 
 message PublishRequest {
-    required string name = 1;
-    required sint64 target_id = 2;
+    required sint64 target_id = 1;
+    required string name = 2;
     optional uint32 distance = 3;
     optional uint32 concurrency = 4;
 }
@@ -85,11 +86,22 @@ message LookupRouteResponse {
     repeated Route routes = 1;
 }
 
-enum Command {
+message StreamServicesRequest {
+    // nothing yet
+}
+
+message StreamServicesResponse {
+    required string name = 1;
+    required sint64 target_id = 2;
+}
+
+enum RequestType {
     Subscribe = 1;
     GetEndpoints = 2;
-    Unsubscribe = 3;
-    Publish = 4;
-    Unpublish = 5;
-    LookupRoute = 6;
+    StreamEndpoints = 3;
+    Unsubscribe = 4;
+    Publish = 5;
+    Unpublish = 6;
+    LookupRoute = 7;
+    StreamServices = 8;
 }

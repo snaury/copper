@@ -15,6 +15,8 @@ It has these top-level messages:
 	SubscribeResponse
 	GetEndpointsRequest
 	GetEndpointsResponse
+	StreamEndpointsRequest
+	StreamEndpointsResponse
 	UnsubscribeRequest
 	UnsubscribeResponse
 	PublishRequest
@@ -25,6 +27,8 @@ It has these top-level messages:
 	SetRouteResponse
 	LookupRouteRequest
 	LookupRouteResponse
+	StreamServicesRequest
+	StreamServicesResponse
 */
 package protocol
 
@@ -35,84 +39,54 @@ import math "math"
 var _ = proto.Marshal
 var _ = math.Inf
 
-type Command int32
+type RequestType int32
 
 const (
-	Command_Subscribe    Command = 1
-	Command_GetEndpoints Command = 2
-	Command_Unsubscribe  Command = 3
-	Command_Publish      Command = 4
-	Command_Unpublish    Command = 5
-	Command_LookupRoute  Command = 6
+	RequestType_Subscribe       RequestType = 1
+	RequestType_GetEndpoints    RequestType = 2
+	RequestType_StreamEndpoints RequestType = 3
+	RequestType_Unsubscribe     RequestType = 4
+	RequestType_Publish         RequestType = 5
+	RequestType_Unpublish       RequestType = 6
+	RequestType_LookupRoute     RequestType = 7
+	RequestType_StreamServices  RequestType = 8
 )
 
-var Command_name = map[int32]string{
+var RequestType_name = map[int32]string{
 	1: "Subscribe",
 	2: "GetEndpoints",
-	3: "Unsubscribe",
-	4: "Publish",
-	5: "Unpublish",
-	6: "LookupRoute",
+	3: "StreamEndpoints",
+	4: "Unsubscribe",
+	5: "Publish",
+	6: "Unpublish",
+	7: "LookupRoute",
+	8: "StreamServices",
 }
-var Command_value = map[string]int32{
-	"Subscribe":    1,
-	"GetEndpoints": 2,
-	"Unsubscribe":  3,
-	"Publish":      4,
-	"Unpublish":    5,
-	"LookupRoute":  6,
+var RequestType_value = map[string]int32{
+	"Subscribe":       1,
+	"GetEndpoints":    2,
+	"StreamEndpoints": 3,
+	"Unsubscribe":     4,
+	"Publish":         5,
+	"Unpublish":       6,
+	"LookupRoute":     7,
+	"StreamServices":  8,
 }
 
-func (x Command) Enum() *Command {
-	p := new(Command)
+func (x RequestType) Enum() *RequestType {
+	p := new(RequestType)
 	*p = x
 	return p
 }
-func (x Command) String() string {
-	return proto.EnumName(Command_name, int32(x))
+func (x RequestType) String() string {
+	return proto.EnumName(RequestType_name, int32(x))
 }
-func (x *Command) UnmarshalJSON(data []byte) error {
-	value, err := proto.UnmarshalJSONEnum(Command_value, data, "Command")
+func (x *RequestType) UnmarshalJSON(data []byte) error {
+	value, err := proto.UnmarshalJSONEnum(RequestType_value, data, "RequestType")
 	if err != nil {
 		return err
 	}
-	*x = Command(value)
-	return nil
-}
-
-type Endpoint_EventType int32
-
-const (
-	Endpoint_ADDED    Endpoint_EventType = 1
-	Endpoint_REMOVED  Endpoint_EventType = 2
-	Endpoint_REPLACED Endpoint_EventType = 3
-)
-
-var Endpoint_EventType_name = map[int32]string{
-	1: "ADDED",
-	2: "REMOVED",
-	3: "REPLACED",
-}
-var Endpoint_EventType_value = map[string]int32{
-	"ADDED":    1,
-	"REMOVED":  2,
-	"REPLACED": 3,
-}
-
-func (x Endpoint_EventType) Enum() *Endpoint_EventType {
-	p := new(Endpoint_EventType)
-	*p = x
-	return p
-}
-func (x Endpoint_EventType) String() string {
-	return proto.EnumName(Endpoint_EventType_name, int32(x))
-}
-func (x *Endpoint_EventType) UnmarshalJSON(data []byte) error {
-	value, err := proto.UnmarshalJSONEnum(Endpoint_EventType_value, data, "Endpoint_EventType")
-	if err != nil {
-		return err
-	}
-	*x = Endpoint_EventType(value)
+	*x = RequestType(value)
 	return nil
 }
 
@@ -238,7 +212,6 @@ func (m *SubscribeResponse) GetTargetId() int64 {
 
 type GetEndpointsRequest struct {
 	TargetId         *int64 `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
-	StreamUpdates    *bool  `protobuf:"varint,2,opt,name=stream_updates" json:"stream_updates,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
 }
 
@@ -253,33 +226,58 @@ func (m *GetEndpointsRequest) GetTargetId() int64 {
 	return 0
 }
 
-func (m *GetEndpointsRequest) GetStreamUpdates() bool {
-	if m != nil && m.StreamUpdates != nil {
-		return *m.StreamUpdates
-	}
-	return false
-}
-
 type GetEndpointsResponse struct {
-	Type             *Endpoint_EventType `protobuf:"varint,1,req,name=type,enum=protocol.Endpoint_EventType" json:"type,omitempty"`
-	Endpoints        []*Endpoint         `protobuf:"bytes,2,rep,name=endpoints" json:"endpoints,omitempty"`
-	XXX_unrecognized []byte              `json:"-"`
+	Endpoints        []*Endpoint `protobuf:"bytes,1,rep,name=endpoints" json:"endpoints,omitempty"`
+	XXX_unrecognized []byte      `json:"-"`
 }
 
 func (m *GetEndpointsResponse) Reset()         { *m = GetEndpointsResponse{} }
 func (m *GetEndpointsResponse) String() string { return proto.CompactTextString(m) }
 func (*GetEndpointsResponse) ProtoMessage()    {}
 
-func (m *GetEndpointsResponse) GetType() Endpoint_EventType {
-	if m != nil && m.Type != nil {
-		return *m.Type
-	}
-	return Endpoint_ADDED
-}
-
 func (m *GetEndpointsResponse) GetEndpoints() []*Endpoint {
 	if m != nil {
 		return m.Endpoints
+	}
+	return nil
+}
+
+type StreamEndpointsRequest struct {
+	TargetId         *int64 `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *StreamEndpointsRequest) Reset()         { *m = StreamEndpointsRequest{} }
+func (m *StreamEndpointsRequest) String() string { return proto.CompactTextString(m) }
+func (*StreamEndpointsRequest) ProtoMessage()    {}
+
+func (m *StreamEndpointsRequest) GetTargetId() int64 {
+	if m != nil && m.TargetId != nil {
+		return *m.TargetId
+	}
+	return 0
+}
+
+type StreamEndpointsResponse struct {
+	Added            []*Endpoint `protobuf:"bytes,1,rep,name=added" json:"added,omitempty"`
+	Removed          []*Endpoint `protobuf:"bytes,2,rep,name=removed" json:"removed,omitempty"`
+	XXX_unrecognized []byte      `json:"-"`
+}
+
+func (m *StreamEndpointsResponse) Reset()         { *m = StreamEndpointsResponse{} }
+func (m *StreamEndpointsResponse) String() string { return proto.CompactTextString(m) }
+func (*StreamEndpointsResponse) ProtoMessage()    {}
+
+func (m *StreamEndpointsResponse) GetAdded() []*Endpoint {
+	if m != nil {
+		return m.Added
+	}
+	return nil
+}
+
+func (m *StreamEndpointsResponse) GetRemoved() []*Endpoint {
+	if m != nil {
+		return m.Removed
 	}
 	return nil
 }
@@ -309,8 +307,8 @@ func (m *UnsubscribeResponse) String() string { return proto.CompactTextString(m
 func (*UnsubscribeResponse) ProtoMessage()    {}
 
 type PublishRequest struct {
-	Name             *string `protobuf:"bytes,1,req,name=name" json:"name,omitempty"`
-	TargetId         *int64  `protobuf:"zigzag64,2,req,name=target_id" json:"target_id,omitempty"`
+	TargetId         *int64  `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
+	Name             *string `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
 	Distance         *uint32 `protobuf:"varint,3,opt,name=distance" json:"distance,omitempty"`
 	Concurrency      *uint32 `protobuf:"varint,4,opt,name=concurrency" json:"concurrency,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
@@ -320,18 +318,18 @@ func (m *PublishRequest) Reset()         { *m = PublishRequest{} }
 func (m *PublishRequest) String() string { return proto.CompactTextString(m) }
 func (*PublishRequest) ProtoMessage()    {}
 
-func (m *PublishRequest) GetName() string {
-	if m != nil && m.Name != nil {
-		return *m.Name
-	}
-	return ""
-}
-
 func (m *PublishRequest) GetTargetId() int64 {
 	if m != nil && m.TargetId != nil {
 		return *m.TargetId
 	}
 	return 0
+}
+
+func (m *PublishRequest) GetName() string {
+	if m != nil && m.Name != nil {
+		return *m.Name
+	}
+	return ""
 }
 
 func (m *PublishRequest) GetDistance() uint32 {
@@ -444,7 +442,38 @@ func (m *LookupRouteResponse) GetRoutes() []*Route {
 	return nil
 }
 
+type StreamServicesRequest struct {
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *StreamServicesRequest) Reset()         { *m = StreamServicesRequest{} }
+func (m *StreamServicesRequest) String() string { return proto.CompactTextString(m) }
+func (*StreamServicesRequest) ProtoMessage()    {}
+
+type StreamServicesResponse struct {
+	Name             *string `protobuf:"bytes,1,req,name=name" json:"name,omitempty"`
+	TargetId         *int64  `protobuf:"zigzag64,2,req,name=target_id" json:"target_id,omitempty"`
+	XXX_unrecognized []byte  `json:"-"`
+}
+
+func (m *StreamServicesResponse) Reset()         { *m = StreamServicesResponse{} }
+func (m *StreamServicesResponse) String() string { return proto.CompactTextString(m) }
+func (*StreamServicesResponse) ProtoMessage()    {}
+
+func (m *StreamServicesResponse) GetName() string {
+	if m != nil && m.Name != nil {
+		return *m.Name
+	}
+	return ""
+}
+
+func (m *StreamServicesResponse) GetTargetId() int64 {
+	if m != nil && m.TargetId != nil {
+		return *m.TargetId
+	}
+	return 0
+}
+
 func init() {
-	proto.RegisterEnum("protocol.Command", Command_name, Command_value)
-	proto.RegisterEnum("protocol.Endpoint_EventType", Endpoint_EventType_name, Endpoint_EventType_value)
+	proto.RegisterEnum("protocol.RequestType", RequestType_name, RequestType_value)
 }
