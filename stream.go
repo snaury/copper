@@ -27,8 +27,8 @@ type Stream interface {
 	// Write writes data to the stream
 	Write(b []byte) (n int, err error)
 
-	// Flush returns when data has been processed by the remote side
-	Flush() error
+	// WaitAck returns when data has been read by the remote side
+	WaitAck() error
 
 	// Closes closes the stream, discarding any data
 	Close() error
@@ -141,12 +141,12 @@ type rawStream struct {
 	writenack  int
 	writewire  int
 	reseterror error
-	flushed    sync.Cond
+	acked      sync.Cond
 	rdeadline  time.Time
 	wdeadline  time.Time
 	readexp    *expiration
 	writeexp   *expiration
-	flushexp   *expiration
+	ackedexp   *expiration
 }
 
 var _ Stream = &rawStream{}
@@ -161,7 +161,7 @@ func newIncomingStream(owner *rawConn, frame openFrame, readwindow, writewindow 
 	}
 	s.mayread.L = &owner.lock
 	s.maywrite.L = &owner.lock
-	s.flushed.L = &owner.lock
+	s.acked.L = &owner.lock
 	if len(frame.data) > 0 {
 		s.readbuf.write(frame.data)
 	}
@@ -183,7 +183,7 @@ func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64, readwind
 	}
 	s.mayread.L = &owner.lock
 	s.maywrite.L = &owner.lock
-	s.flushed.L = &owner.lock
+	s.acked.L = &owner.lock
 	s.flags |= flagStreamNeedOpen
 	return s
 }
@@ -235,15 +235,15 @@ func (s *rawStream) setWriteDeadlineLocked(t time.Time) {
 			s.writeexp.stop()
 			s.writeexp = nil
 		}
-		if s.flushexp != nil {
-			s.flushexp.stop()
-			s.flushexp = nil
+		if s.ackedexp != nil {
+			s.ackedexp.stop()
+			s.ackedexp = nil
 		}
 		s.wdeadline = t
 		if !t.IsZero() {
 			// Writes already waiting need to have a chance to timeout
 			s.maywrite.Broadcast()
-			s.flushed.Broadcast()
+			s.acked.Broadcast()
 		}
 	}
 }
@@ -285,20 +285,20 @@ func (s *rawStream) waitWriteLocked() error {
 	return s.writeerror
 }
 
-func (s *rawStream) waitFlushLocked() error {
+func (s *rawStream) waitAckLocked() error {
 	for s.writePending() > 0 || s.writenack > 0 {
 		if s.reseterror != nil {
 			break
 		}
-		if s.flushexp == nil && !s.wdeadline.IsZero() {
+		if s.ackedexp == nil && !s.wdeadline.IsZero() {
 			d := s.wdeadline.Sub(time.Now())
 			if d <= 0 {
 				return errTimeout
 			}
-			s.flushexp = newExpiration(&s.flushed, d)
+			s.ackedexp = newExpiration(&s.acked, d)
 		}
-		s.flushed.Wait()
-		if s.flushexp != nil && s.flushexp.expired {
+		s.acked.Wait()
+		if s.ackedexp != nil && s.ackedexp.expired {
 			return errTimeout
 		}
 	}
@@ -377,7 +377,7 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 	if frame.flags&flagAck != 0 {
 		s.writenack -= int(frame.increment)
 		if s.writePending() == 0 && s.writenack <= 0 {
-			s.flushed.Broadcast()
+			s.acked.Broadcast()
 		}
 		s.owner.cleanupStreamLocked(s)
 	}
@@ -637,7 +637,7 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 		s.setReadError(err)
 		s.setWriteError(err)
 		if s.writePending() > 0 || s.writenack > 0 {
-			s.flushed.Broadcast()
+			s.acked.Broadcast()
 		}
 		if s.flags&flagStreamSentEOF == 0 {
 			s.flags |= flagStreamNeedReset
@@ -713,10 +713,10 @@ func (s *rawStream) Write(b []byte) (n int, err error) {
 	return
 }
 
-func (s *rawStream) Flush() error {
+func (s *rawStream) WaitAck() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
-	return s.waitFlushLocked()
+	return s.waitAckLocked()
 }
 
 func (s *rawStream) Close() error {

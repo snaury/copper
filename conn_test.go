@@ -287,21 +287,21 @@ func TestStreamWriteDeadline(t *testing.T) {
 
 		deadline = time.Now().Add(5 * time.Millisecond)
 		stream.SetWriteDeadline(deadline)
-		err = stream.Flush()
+		err = stream.WaitAck()
 		if !isTimeout(err) {
-			t.Fatalf("client: Flush: expected timeout, got: %v", err)
+			t.Fatalf("client: WaitAck: expected timeout, got: %v", err)
 		}
 		if deadline.After(time.Now()) {
-			t.Fatalf("client: Flush: expected to timeout after the deadline, not before")
+			t.Fatalf("client: WaitAck: expected to timeout after the deadline, not before")
 		}
 	})
 }
 
-func TestStreamFlush(t *testing.T) {
+func TestStreamWaitAck(t *testing.T) {
 	var lock sync.Mutex
 	var dataseen bool
-	var flushdone sync.Cond
-	flushdone.L = &lock
+	var waitdone sync.Cond
+	waitdone.L = &lock
 	var wg sync.WaitGroup
 	runClientServer(StreamHandlerFunc(func(stream Stream) {
 		defer wg.Done()
@@ -336,7 +336,7 @@ func TestStreamFlush(t *testing.T) {
 				t.Fatalf("server: Read: %s", err)
 			}
 			dataseen = true
-			flushdone.Wait()
+			waitdone.Wait()
 			err = stream.Close()
 			if err != nil {
 				t.Fatalf("server: Close: %s", err)
@@ -359,28 +359,28 @@ func TestStreamFlush(t *testing.T) {
 			if err != nil {
 				t.Fatalf("client: Write: %s", err)
 			}
-			err = stream.Flush()
+			err = stream.WaitAck()
 			lock.Lock()
 			seen := dataseen
 			dataseen = false
-			flushdone.Broadcast()
+			waitdone.Broadcast()
 			lock.Unlock()
 			switch target {
 			case 1:
 				if err != ESTREAMCLOSED {
-					t.Fatalf("client: Flush(%d): %v (expected ESTREAMCLOSED)", target, err)
+					t.Fatalf("client: WaitAck(%d): %v (expected ESTREAMCLOSED)", target, err)
 				}
 			case 2:
 				if err != ENOROUTE {
-					t.Fatalf("client: Flush(%d): %v (expected ETARGET)", target, err)
+					t.Fatalf("client: WaitAck(%d): %v (expected ETARGET)", target, err)
 				}
 			default:
 				if err != nil {
-					t.Fatalf("client: Flush(%d): %v (expected <nil>)", target, err)
+					t.Fatalf("client: WaitAck(%d): %v (expected <nil>)", target, err)
 				}
 			}
 			if !seen {
-				t.Fatalf("client: Flush(%d): data was not confirmed before flush returned", target)
+				t.Fatalf("client: WaitAck(%d): data was not confirmed before the call returned", target)
 			}
 		}
 		wg.Wait() // wait until server finishes
@@ -406,9 +406,9 @@ func TestStreamCloseRead(t *testing.T) {
 		if n != 5 || err != nil {
 			t.Fatalf("server: Write: %d, %v", n, err)
 		}
-		err = stream.Flush()
+		err = stream.WaitAck()
 		if err != nil {
-			t.Fatalf("server: Flush: %v", err)
+			t.Fatalf("server: WaitAck: %v", err)
 		}
 		goahead2.Unlock()
 	}), func(client Conn) {
@@ -419,10 +419,10 @@ func TestStreamCloseRead(t *testing.T) {
 		defer stream.Close()
 
 		stream.Write([]byte("foobar"))
-		err = stream.Flush()
+		err = stream.WaitAck()
 		goahead1.Unlock()
 		if err != ESTREAMCLOSED {
-			t.Fatalf("client: Flush: %v", err)
+			t.Fatalf("client: WaitAck: %v", err)
 		}
 		n, err := stream.Read(make([]byte, 16))
 		if n != 5 || err != nil {
