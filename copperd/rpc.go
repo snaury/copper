@@ -10,12 +10,11 @@ import (
 )
 
 type rpcError struct {
+	error
 	code copper.ErrorCode
 }
 
-func (e rpcError) Error() string {
-	return fmt.Sprintf("TODO: error code %d", e.code)
-}
+var _ copper.Error = rpcError{}
 
 func (e rpcError) ErrorCode() copper.ErrorCode {
 	return e.code
@@ -76,7 +75,57 @@ func rpcWriteMessage(w io.Writer, pb proto.Message) error {
 	return nil
 }
 
-func rpcWrap(stream copper.Stream, server lowLevelServer) error {
+func rpcProtoToEndpoints(pendpoints []*protocol.Endpoint) []Endpoint {
+	var endpoints []Endpoint
+	for _, pe := range pendpoints {
+		endpoints = append(endpoints, Endpoint{
+			Network:  pe.GetNetwork(),
+			Address:  pe.GetAddress(),
+			TargetID: pe.GetTargetId(),
+		})
+	}
+	return endpoints
+}
+
+func rpcEndpointsToProto(endpoints []Endpoint) []*protocol.Endpoint {
+	var pendpoints []*protocol.Endpoint
+	for _, e := range endpoints {
+		pendpoint := &protocol.Endpoint{
+			Network:  proto.String(e.Network),
+			Address:  proto.String(e.Address),
+			TargetId: proto.Int64(e.TargetID),
+		}
+		pendpoints = append(pendpoints, pendpoint)
+	}
+	return pendpoints
+}
+
+func rpcProtoToRoutes(proutes []*protocol.Route) []Route {
+	var routes []Route
+	for _, proute := range proutes {
+		routes = append(routes, Route{
+			Service:  proute.GetService(),
+			Weight:   proute.GetWeight(),
+			Distance: proute.GetDistance(),
+		})
+	}
+	return routes
+}
+
+func rpcRoutesToProto(routes []Route) []*protocol.Route {
+	var proutes []*protocol.Route
+	for _, route := range routes {
+		proute := &protocol.Route{
+			Service:  proto.String(route.Service),
+			Weight:   proto.Uint32(route.Weight),
+			Distance: proto.Uint32(route.Distance),
+		}
+		proutes = append(proutes, proute)
+	}
+	return proutes
+}
+
+func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 	rtype, err := rpcReadRequestType(stream)
 	if err != nil {
 		return copper.EINVALIDDATA
@@ -113,19 +162,141 @@ func rpcWrap(stream copper.Stream, server lowLevelServer) error {
 		if err != nil {
 			return err
 		}
-		var pendpoints []*protocol.Endpoint
-		for _, endpoint := range endpoints {
-			pendpoint := &protocol.Endpoint{
-				Address: proto.String(endpoint.Address),
-			}
-			if len(endpoint.Network) > 0 {
-				pendpoint.Network = proto.String(endpoint.Network)
-			}
-			pendpoints = append(pendpoints, pendpoint)
-		}
 		return rpcWriteMessage(stream, &protocol.GetEndpointsResponse{
-			Endpoints: pendpoints,
+			Endpoints: rpcEndpointsToProto(endpoints),
 		})
+	case protocol.RequestType_StreamEndpoints:
+		var request protocol.StreamEndpointsRequest
+		err = rpcReadMessage(stream, &request)
+		if err != nil {
+			return copper.EINVALIDDATA
+		}
+		changes, err := server.streamEndpoints(request.GetTargetId())
+		if err != nil {
+			return err
+		}
+		defer changes.Stop()
+		go func() {
+			// this goroutine detects when read side is closed, which closes
+			// the changes stream and unblocks a read below
+			defer changes.Stop()
+			stream.Peek()
+		}()
+		for {
+			result, err := changes.Read()
+			if err != nil {
+				if err == io.EOF {
+					return nil
+				}
+				return err
+			}
+			err = rpcWriteMessage(stream, &protocol.StreamEndpointsResponse{
+				Added:   rpcEndpointsToProto(result.Added),
+				Removed: rpcEndpointsToProto(result.Removed),
+			})
+			if err != nil {
+				return err
+			}
+		}
+	case protocol.RequestType_Unsubscribe:
+		var request protocol.UnsubscribeRequest
+		err = rpcReadMessage(stream, &request)
+		if err != nil {
+			return copper.EINVALIDDATA
+		}
+		err = server.unsubscribe(request.GetTargetId())
+		if err != nil {
+			return err
+		}
+		return rpcWriteMessage(stream, &protocol.UnsubscribeResponse{})
+	case protocol.RequestType_Publish:
+		var request protocol.PublishRequest
+		err = rpcReadMessage(stream, &request)
+		if err != nil {
+			return copper.EINVALIDDATA
+		}
+		err = server.publish(request.GetTargetId(), PublishSettings{
+			Name:        request.GetName(),
+			Distance:    request.GetDistance(),
+			Concurrency: request.GetConcurrency(),
+		})
+		if err != nil {
+			return err
+		}
+		return rpcWriteMessage(stream, &protocol.PublishResponse{})
+	case protocol.RequestType_Unpublish:
+		var request protocol.UnpublishRequest
+		err = rpcReadMessage(stream, &request)
+		if err != nil {
+			return copper.EINVALIDDATA
+		}
+		err = server.unpublish(request.GetTargetId())
+		if err != nil {
+			return err
+		}
+		return rpcWriteMessage(stream, &protocol.UnpublishResponse{})
+	case protocol.RequestType_SetRoute:
+		var request protocol.SetRouteRequest
+		err = rpcReadMessage(stream, &request)
+		if err != nil {
+			return copper.EINVALIDDATA
+		}
+		err = server.setRoute(request.GetName(), rpcProtoToRoutes(request.GetRoutes())...)
+		if err != nil {
+			return err
+		}
+		return rpcWriteMessage(stream, &protocol.SetRouteResponse{})
+	case protocol.RequestType_LookupRoute:
+		var request protocol.LookupRouteRequest
+		err = rpcReadMessage(stream, &request)
+		if err != nil {
+			return copper.EINVALIDDATA
+		}
+		routes, err := server.lookupRoute(request.GetName())
+		if err != nil {
+			return err
+		}
+		return rpcWriteMessage(stream, &protocol.LookupRouteResponse{
+			Routes: rpcRoutesToProto(routes),
+		})
+	case protocol.RequestType_StreamServices:
+		var request protocol.StreamServicesRequest
+		err = rpcReadMessage(stream, &request)
+		if err != nil {
+			return copper.EINVALIDDATA
+		}
+		changes, err := server.streamServiceChanges()
+		if err != nil {
+			return err
+		}
+		defer changes.Stop()
+		go func() {
+			// this goroutine detects when read side is closed, which closes
+			// the changes stream and unblocks a read below
+			defer changes.Stop()
+			stream.Peek()
+		}()
+		for {
+			result, err := changes.Read()
+			if err != nil {
+				if err == io.EOF {
+					return nil
+				}
+				return err
+			}
+			err = rpcWriteMessage(stream, &protocol.StreamServicesResponse{
+				TargetId:    proto.Int64(result.TargetID),
+				Name:        proto.String(result.Name),
+				Distance:    proto.Uint32(result.Distance),
+				Concurrency: proto.Uint32(result.Concurrency),
+			})
+			if err != nil {
+				return err
+			}
+		}
 	}
-	panic("TODO")
+	return rpcError{
+		error: fmt.Errorf("unsupported request type %d", rtype),
+		code:  copper.EUNSUPPORTED,
+	}
 }

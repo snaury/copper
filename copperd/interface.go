@@ -14,8 +14,9 @@ type Route struct {
 
 // Endpoint describes access endpoints for services
 type Endpoint struct {
-	Address string
-	Network string
+	Network  string
+	Address  string
+	TargetID int64
 }
 
 // SubscribeOption describes the service, how far copperd is allowed to reach
@@ -66,8 +67,24 @@ type PublishSettings struct {
 
 // Publication is a handle to a copperd publication
 type Publication interface {
-	// Close unpublishes the service
-	Close() error
+	// Stop unpublishes the service
+	Stop() error
+}
+
+// ServiceChange is returned when service is added or removed on the daemon
+type ServiceChange struct {
+	TargetID    int64
+	Name        string
+	Distance    uint32
+	Concurrency uint32
+}
+
+// ServiceChangeStream is a stream of service changes
+type ServiceChangeStream interface {
+	// Read returns the next service change
+	Read() (ServiceChange, error)
+	// Stop stops listening for service changes
+	Stop() error
 }
 
 // Server interface allows you to work with copperd servers
@@ -83,6 +100,9 @@ type Server interface {
 
 	// LookupRoute looks up a route on the server
 	LookupRoute(name string) ([]Route, error)
+
+	// ServiceChanges returns a stream of service changes
+	ServiceChanges() (ServiceChangeStream, error)
 
 	// Close closes the connection to the server
 	Close() error

@@ -48,8 +48,9 @@ const (
 	RequestType_Unsubscribe     RequestType = 4
 	RequestType_Publish         RequestType = 5
 	RequestType_Unpublish       RequestType = 6
-	RequestType_LookupRoute     RequestType = 7
-	RequestType_StreamServices  RequestType = 8
+	RequestType_SetRoute        RequestType = 7
+	RequestType_LookupRoute     RequestType = 8
+	RequestType_StreamServices  RequestType = 9
 )
 
 var RequestType_name = map[int32]string{
@@ -59,8 +60,9 @@ var RequestType_name = map[int32]string{
 	4: "Unsubscribe",
 	5: "Publish",
 	6: "Unpublish",
-	7: "LookupRoute",
-	8: "StreamServices",
+	7: "SetRoute",
+	8: "LookupRoute",
+	9: "StreamServices",
 }
 var RequestType_value = map[string]int32{
 	"Subscribe":       1,
@@ -69,8 +71,9 @@ var RequestType_value = map[string]int32{
 	"Unsubscribe":     4,
 	"Publish":         5,
 	"Unpublish":       6,
-	"LookupRoute":     7,
-	"StreamServices":  8,
+	"SetRoute":        7,
+	"LookupRoute":     8,
+	"StreamServices":  9,
 }
 
 func (x RequestType) Enum() *RequestType {
@@ -123,14 +126,22 @@ func (m *Route) GetDistance() uint32 {
 }
 
 type Endpoint struct {
-	Address          *string `protobuf:"bytes,1,req,name=address" json:"address,omitempty"`
-	Network          *string `protobuf:"bytes,2,opt,name=network" json:"network,omitempty"`
+	Network          *string `protobuf:"bytes,1,req,name=network" json:"network,omitempty"`
+	Address          *string `protobuf:"bytes,2,req,name=address" json:"address,omitempty"`
+	TargetId         *int64  `protobuf:"zigzag64,3,opt,name=target_id" json:"target_id,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
 func (m *Endpoint) Reset()         { *m = Endpoint{} }
 func (m *Endpoint) String() string { return proto.CompactTextString(m) }
 func (*Endpoint) ProtoMessage()    {}
+
+func (m *Endpoint) GetNetwork() string {
+	if m != nil && m.Network != nil {
+		return *m.Network
+	}
+	return ""
+}
 
 func (m *Endpoint) GetAddress() string {
 	if m != nil && m.Address != nil {
@@ -139,11 +150,11 @@ func (m *Endpoint) GetAddress() string {
 	return ""
 }
 
-func (m *Endpoint) GetNetwork() string {
-	if m != nil && m.Network != nil {
-		return *m.Network
+func (m *Endpoint) GetTargetId() int64 {
+	if m != nil && m.TargetId != nil {
+		return *m.TargetId
 	}
-	return ""
+	return 0
 }
 
 type SubscribeRequest struct {
@@ -355,19 +366,19 @@ func (m *PublishResponse) String() string { return proto.CompactTextString(m) }
 func (*PublishResponse) ProtoMessage()    {}
 
 type UnpublishRequest struct {
-	Name             *string `protobuf:"bytes,1,req,name=name" json:"name,omitempty"`
-	XXX_unrecognized []byte  `json:"-"`
+	TargetId         *int64 `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
+	XXX_unrecognized []byte `json:"-"`
 }
 
 func (m *UnpublishRequest) Reset()         { *m = UnpublishRequest{} }
 func (m *UnpublishRequest) String() string { return proto.CompactTextString(m) }
 func (*UnpublishRequest) ProtoMessage()    {}
 
-func (m *UnpublishRequest) GetName() string {
-	if m != nil && m.Name != nil {
-		return *m.Name
+func (m *UnpublishRequest) GetTargetId() int64 {
+	if m != nil && m.TargetId != nil {
+		return *m.TargetId
 	}
-	return ""
+	return 0
 }
 
 type UnpublishResponse struct {
@@ -451,14 +462,23 @@ func (m *StreamServicesRequest) String() string { return proto.CompactTextString
 func (*StreamServicesRequest) ProtoMessage()    {}
 
 type StreamServicesResponse struct {
-	Name             *string `protobuf:"bytes,1,req,name=name" json:"name,omitempty"`
-	TargetId         *int64  `protobuf:"zigzag64,2,req,name=target_id" json:"target_id,omitempty"`
+	TargetId         *int64  `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
+	Name             *string `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
+	Distance         *uint32 `protobuf:"varint,3,opt,name=distance" json:"distance,omitempty"`
+	Concurrency      *uint32 `protobuf:"varint,4,opt,name=concurrency" json:"concurrency,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
 func (m *StreamServicesResponse) Reset()         { *m = StreamServicesResponse{} }
 func (m *StreamServicesResponse) String() string { return proto.CompactTextString(m) }
 func (*StreamServicesResponse) ProtoMessage()    {}
+
+func (m *StreamServicesResponse) GetTargetId() int64 {
+	if m != nil && m.TargetId != nil {
+		return *m.TargetId
+	}
+	return 0
+}
 
 func (m *StreamServicesResponse) GetName() string {
 	if m != nil && m.Name != nil {
@@ -467,9 +487,16 @@ func (m *StreamServicesResponse) GetName() string {
 	return ""
 }
 
-func (m *StreamServicesResponse) GetTargetId() int64 {
-	if m != nil && m.TargetId != nil {
-		return *m.TargetId
+func (m *StreamServicesResponse) GetDistance() uint32 {
+	if m != nil && m.Distance != nil {
+		return *m.Distance
+	}
+	return 0
+}
+
+func (m *StreamServicesResponse) GetConcurrency() uint32 {
+	if m != nil && m.Concurrency != nil {
+		return *m.Concurrency
 	}
 	return 0
 }
