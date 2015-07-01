@@ -507,3 +507,41 @@ func TestStreamCloseAfterData(t *testing.T) {
 		goahead3.Lock()
 	})
 }
+
+func TestConnClose(t *testing.T) {
+	runClientServer(StreamHandlerFunc(func(stream Stream) {
+		n, err := stream.Write([]byte("Hello, world!"))
+		if n != 13 || err != nil {
+			t.Fatalf("server: Write: %d, %v", n, err)
+		}
+		n, err = stream.WaitAck()
+		if n != 5 || err != ECONNCLOSED {
+			t.Fatalf("server: WaitAck: %d, %v", n, err)
+		}
+	}), func(client Conn) {
+		stream, err := client.Open(0)
+		if err != nil {
+			t.Fatalf("client: Open: %v", err)
+		}
+		defer stream.Close()
+
+		_, err = stream.Peek()
+		if err != nil {
+			t.Fatalf("client: Peek: %v", err)
+		}
+
+		client.(*rawConn).blockWrite()
+		n, err := stream.Read(make([]byte, 8))
+		if n != 8 || err != nil {
+			client.(*rawConn).unblockWrite()
+			t.Fatalf("client: Read: %d, %v", n, err)
+		}
+		client.Close()
+		client.(*rawConn).unblockWrite()
+
+		n, err = stream.Read(make([]byte, 16))
+		if n != 0 || err != ECONNCLOSED {
+			t.Fatalf("client: Read: %d, %v", n, err)
+		}
+	})
+}

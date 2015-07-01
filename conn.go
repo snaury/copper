@@ -66,6 +66,8 @@ type rawConn struct {
 	readunblocked           sync.Cond
 	writeblocked            int
 	writeunblocked          sync.Cond
+	closeblocked            int
+	closeunblocked          sync.Cond
 }
 
 var _ Conn = &rawConn{}
@@ -104,6 +106,7 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 	c.waitready.L = &c.lock
 	c.readunblocked.L = &c.lock
 	c.writeunblocked.L = &c.lock
+	c.closeunblocked.L = &c.lock
 	go c.readloop()
 	go c.writeloop()
 	return c
@@ -148,7 +151,11 @@ func (c *rawConn) wakeupLocked() {
 	}
 }
 
-func (c *rawConn) closeWithErrorLocked(err error) error {
+func (c *rawConn) closeWithErrorLocked(err error, closed bool) error {
+	if err == nil {
+		err = ECONNCLOSED
+	}
+	preverror := c.failure
 	if !c.closed {
 		c.closed = true
 		c.failure = err
@@ -157,15 +164,19 @@ func (c *rawConn) closeWithErrorLocked(err error) error {
 		}
 		close(c.signal)
 		c.waitready.Broadcast()
-		return nil
+		// Don't send any pings that haven't been sent already
+		c.pingQueue = nil
 	}
-	return c.failure
+	for _, stream := range c.streams {
+		stream.closeWithErrorLocked(err, closed)
+	}
+	return preverror
 }
 
 func (c *rawConn) closeWithError(err error) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	return c.closeWithErrorLocked(err)
+	return c.closeWithErrorLocked(err, true)
 }
 
 func (c *rawConn) Wait() error {
@@ -253,8 +264,8 @@ func (c *rawConn) Open(target int64) (Stream, error) {
 	}
 	var streamID uint32
 	for freeID := range c.freestreams {
-		streamID = freeID
 		delete(c.freestreams, freeID)
+		streamID = freeID
 		break
 	}
 	if streamID == 0 {
@@ -313,8 +324,6 @@ func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 	if s.isFullyClosed() && c.streams[s.streamID] == s {
 		// connection is fully closed and must be forgotten
 		delete(c.streams, s.streamID)
-		delete(c.outgoingCtrl, s.streamID)
-		delete(c.outgoingData, s.streamID)
 		if isServerStreamID(s.streamID) == c.isserver {
 			// this is our stream id, it is no longer in use, but we must wait
 			// for confirmation first before reusing it
@@ -372,6 +381,11 @@ func (c *rawConn) processOpenFrameLocked(frame openFrame) error {
 	}
 	stream := newIncomingStream(c, frame, c.localStreamWindowSize, c.remoteStreamWindowSize)
 	c.streams[frame.streamID] = stream
+	if c.closed {
+		// we are closed and ignore valid OPEN frames
+		stream.closeWithErrorLocked(c.failure, true)
+		return nil
+	}
 	go c.handleStream(stream)
 	if len(frame.data) > 0 {
 		c.addOutgoingAckLocked(0, len(frame.data))
@@ -397,6 +411,10 @@ func (c *rawConn) processDataFrameLocked(frame dataFrame) error {
 			code:  EINVALIDSTREAM,
 		}
 	}
+	if c.closed {
+		// we are closed and ignore valid DATA frames
+		return nil
+	}
 	err := stream.processDataFrameLocked(frame)
 	if err != nil {
 		return err
@@ -419,6 +437,10 @@ func (c *rawConn) processResetFrameLocked(frame resetFrame) error {
 			return frame.toError()
 		}
 		// it's ok to receive RESET for a dead stream
+		return nil
+	}
+	if c.closed {
+		// we are closed and ignore valid RESET frames
 		return nil
 	}
 	err := stream.processResetFrameLocked(frame)
@@ -534,7 +556,7 @@ func (c *rawConn) processFrame(rawFrame frame, scratch *[]byte) bool {
 		err = EUNKNOWNFRAME
 	}
 	if err != nil {
-		c.closeWithErrorLocked(err)
+		c.closeWithErrorLocked(err, false)
 		return false
 	}
 	return true
@@ -543,10 +565,9 @@ func (c *rawConn) processFrame(rawFrame frame, scratch *[]byte) bool {
 func (c *rawConn) failEverything() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	pingResults := c.pingResults
 	c.pingQueue = nil
-	c.pingResults = nil
-	for _, results := range pingResults {
+	for key, results := range c.pingResults {
+		delete(c.pingResults, key)
 		for _, result := range results {
 			if result != nil {
 				select {
@@ -562,10 +583,9 @@ func (c *rawConn) failEverything() {
 	for _, callback := range settingsCallbacks {
 		callback(c.failure)
 	}
-	streams := c.streams
-	c.streams = nil
-	for _, stream := range streams {
-		stream.closeWithErrorLocked(c.failure)
+	for streamID, stream := range c.streams {
+		delete(c.streams, streamID)
+		stream.closeWithErrorLocked(c.failure, false)
 	}
 }
 
@@ -608,7 +628,7 @@ func (c *rawConn) writeOutgoingFrames(datarequired bool, timeout *time.Duration)
 			// we haven't written anything on the wire, but it is required
 			err := c.writeFrameLocked(dataFrame{})
 			if err != nil {
-				c.closeWithErrorLocked(err)
+				c.closeWithErrorLocked(err, false)
 				result = false
 				return
 			}
@@ -617,7 +637,7 @@ func (c *rawConn) writeOutgoingFrames(datarequired bool, timeout *time.Duration)
 			// we use buffer for coalescing, must flush at the end
 			err := c.cwriter.buffer.Flush()
 			if err != nil {
-				c.closeWithErrorLocked(err)
+				c.closeWithErrorLocked(err, false)
 				result = false
 				return
 			}
@@ -627,13 +647,6 @@ func (c *rawConn) writeOutgoingFrames(datarequired bool, timeout *time.Duration)
 
 writeloop:
 	for {
-		if c.closed {
-			// Attempt to notify the other side that we have an error
-			// It's ok if any of this fails, the read side will stop
-			// when we close the connection.
-			c.writeFrameLocked(errorToResetFrame(flagFin, 0, c.outgoingFailure))
-			return false
-		}
 		writes := c.cwriter.writes
 		if len(c.pingAcks) > 0 {
 			pingAcks := c.pingAcks
@@ -644,7 +657,7 @@ writeloop:
 					value: value,
 				})
 				if err != nil {
-					c.closeWithErrorLocked(err)
+					c.closeWithErrorLocked(err, false)
 					return false
 				}
 			}
@@ -661,7 +674,7 @@ writeloop:
 					value: value,
 				})
 				if err != nil {
-					c.closeWithErrorLocked(err)
+					c.closeWithErrorLocked(err, false)
 					return false
 				}
 			}
@@ -676,7 +689,7 @@ writeloop:
 				flags: flagAck,
 			})
 			if err != nil {
-				c.closeWithErrorLocked(err)
+				c.closeWithErrorLocked(err, false)
 				return false
 			}
 			if writes != c.cwriter.writes {
@@ -697,7 +710,7 @@ writeloop:
 					increment: increment,
 				})
 				if err != nil {
-					c.closeWithErrorLocked(err)
+					c.closeWithErrorLocked(err, false)
 					return false
 				}
 				if writes != c.cwriter.writes {
@@ -706,6 +719,13 @@ writeloop:
 				}
 			}
 		}
+		if c.closed {
+			// Attempt to notify the other side that we have an error
+			// It's ok if any of this fails, the read side will stop
+			// when we close the connection.
+			c.writeFrameLocked(errorToResetFrame(flagFin, 0, c.outgoingFailure))
+			return false
+		}
 		if len(c.outgoingCtrl) > 0 {
 			for streamID := range c.outgoingCtrl {
 				delete(c.outgoingCtrl, streamID)
@@ -713,7 +733,7 @@ writeloop:
 				if stream != nil {
 					err := stream.writeOutgoingCtrlLocked()
 					if err != nil {
-						c.closeWithErrorLocked(err)
+						c.closeWithErrorLocked(err, false)
 						return false
 					}
 					if writes != c.cwriter.writes {
@@ -730,7 +750,7 @@ writeloop:
 				if stream != nil {
 					err := stream.writeOutgoingDataLocked()
 					if err != nil {
-						c.closeWithErrorLocked(err)
+						c.closeWithErrorLocked(err, false)
 						return false
 					}
 					if writes != c.cwriter.writes {
@@ -774,6 +794,11 @@ func (c *rawConn) writeloop() {
 			t.Reset(2 * timeout / 3)
 		}
 	}
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	for c.closeblocked > 0 {
+		c.closeunblocked.Wait()
+	}
 }
 
 func (c *rawConn) blockRead() {
@@ -786,6 +811,12 @@ func (c *rawConn) blockWrite() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.writeblocked++
+}
+
+func (c *rawConn) blockClose() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.closeblocked++
 }
 
 func (c *rawConn) unblockRead() {
@@ -803,5 +834,14 @@ func (c *rawConn) unblockWrite() {
 	c.writeblocked--
 	if c.writeblocked == 0 {
 		c.writeunblocked.Broadcast()
+	}
+}
+
+func (c *rawConn) unblockClose() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.closeblocked--
+	if c.closeblocked == 0 {
+		c.closeunblocked.Broadcast()
 	}
 }

@@ -212,12 +212,13 @@ func (s *rawStream) clearReadBuffer() {
 }
 
 func (s *rawStream) clearWriteBuffer() {
+	// Any unacknowledged data will not be acknowledged
+	s.writefail += s.writebuf.len() - s.writewire
 	s.writebuf.clear()
 	s.writewire = 0
-	s.flushed.Broadcast()
-	// Any unacknowledged data will not be acknowledged
 	s.writefail += s.writenack
 	s.writenack = 0
+	s.flushed.Broadcast()
 	s.acked.Broadcast()
 }
 
@@ -626,16 +627,27 @@ func (s *rawStream) activeData() bool {
 	return pending+s.writeleft > 0
 }
 
+func (s *rawStream) resetReadSide() {
+	if s.flags&flagStreamSeenEOF == 0 {
+		s.flags |= flagStreamNeedReset
+		if s.outgoingSendReset() {
+			s.owner.addOutgoingCtrlLocked(s.streamID)
+		}
+	}
+}
+
+func (s *rawStream) resetBothSides() {
+	if s.flags&flagStreamBothEOF != flagStreamBothEOF {
+		s.flags |= flagStreamNeedReset
+		if s.outgoingSendReset() {
+			s.owner.addOutgoingCtrlLocked(s.streamID)
+		}
+	}
+}
+
 func (s *rawStream) setReadError(err error) {
 	if s.readerror == nil {
 		s.readerror = err
-		if s.flags&flagStreamSeenEOF == 0 {
-			s.flags |= flagStreamNeedReset
-			if s.outgoingSendReset() {
-				s.owner.addOutgoingCtrlLocked(s.streamID)
-			}
-			s.clearReadBuffer()
-		}
 		s.mayread.Broadcast()
 	}
 }
@@ -650,7 +662,7 @@ func (s *rawStream) setWriteError(err error) {
 	}
 }
 
-func (s *rawStream) closeWithErrorLocked(err error) error {
+func (s *rawStream) closeWithErrorLocked(err error, closed bool) error {
 	if err == nil {
 		err = ESTREAMCLOSED
 	}
@@ -659,15 +671,12 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 		s.reseterror = err
 		s.setReadError(err)
 		s.setWriteError(err)
-		if s.flags&flagStreamSentEOF == 0 {
-			s.flags |= flagStreamNeedReset
-			if s.outgoingSendReset() {
-				s.owner.addOutgoingCtrlLocked(s.streamID)
-			}
-			s.clearReadBuffer()
-		}
 		s.flushed.Broadcast()
 		s.acked.Broadcast()
+	}
+	if closed {
+		s.resetBothSides()
+		s.clearReadBuffer()
 	}
 	return preverror
 }
@@ -747,7 +756,7 @@ func (s *rawStream) WaitAck() (int, error) {
 	defer s.owner.lock.Unlock()
 	err := s.waitAckLocked()
 	if err != nil {
-		return s.writenack + s.writefail, err
+		return s.writefail + s.writenack + s.writebuf.len() - s.writewire, err
 	}
 	return 0, nil
 }
@@ -755,7 +764,7 @@ func (s *rawStream) WaitAck() (int, error) {
 func (s *rawStream) Close() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
-	return s.closeWithErrorLocked(nil)
+	return s.closeWithErrorLocked(nil, true)
 }
 
 func (s *rawStream) CloseRead() error {
@@ -763,6 +772,8 @@ func (s *rawStream) CloseRead() error {
 	defer s.owner.lock.Unlock()
 	preverror := s.readerror
 	s.setReadError(ESTREAMCLOSED)
+	s.resetReadSide()
+	s.clearReadBuffer()
 	return preverror
 }
 
@@ -777,7 +788,7 @@ func (s *rawStream) CloseWrite() error {
 func (s *rawStream) CloseWithError(err error) error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
-	return s.closeWithErrorLocked(err)
+	return s.closeWithErrorLocked(err, true)
 }
 
 func (s *rawStream) SetDeadline(t time.Time) error {
