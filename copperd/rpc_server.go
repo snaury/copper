@@ -2,10 +2,11 @@ package copperd
 
 import (
 	"fmt"
+	"io"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/snaury/copper"
 	"github.com/snaury/copper/copperd/protocol"
-	"io"
 )
 
 func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {

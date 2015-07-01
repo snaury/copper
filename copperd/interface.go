@@ -1,8 +1,9 @@
 package copperd
 
 import (
-	"github.com/snaury/copper"
 	"net"
+
+	"github.com/snaury/copper"
 )
 
 // Route describes the target service for a route
@@ -45,16 +46,16 @@ type EndpointChangesStream interface {
 // Subscription is a handle to a set of copperd services
 type Subscription interface {
 	// Endpoints returns a list of currently active endpoints
-	Endpoints() ([]string, error)
+	Endpoints() ([]Endpoint, error)
 
 	// EndpointChanges returns a stream of endpoint changes
-	EndpointChanges() (EndpointChanges, error)
+	EndpointChanges() (EndpointChangesStream, error)
 
 	// Open opens a stream to an instance of a service
 	Open() (copper.Stream, error)
 
-	// Close unsubscribes from services
-	Close() error
+	// Stop unsubscribes from services
+	Stop() error
 }
 
 // PublishSettings describes how far is copperd allowed to advertise the

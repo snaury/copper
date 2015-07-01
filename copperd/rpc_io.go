@@ -2,10 +2,11 @@ package copperd
 
 import (
 	"encoding/binary"
+	"io"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/snaury/copper"
 	"github.com/snaury/copper/copperd/protocol"
-	"io"
 )
 
 func rpcReadRequestType(r io.Reader) (rtype protocol.RequestType, err error) {

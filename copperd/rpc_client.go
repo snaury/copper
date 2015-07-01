@@ -1,10 +1,11 @@
 package copperd
 
 import (
+	"io"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/snaury/copper"
 	"github.com/snaury/copper/copperd/protocol"
-	"io"
 )
 
 type rpcClient struct {
