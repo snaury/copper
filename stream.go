@@ -181,6 +181,7 @@ func newIncomingStream(owner *rawConn, frame openFrame, readwindow, writewindow 
 	}
 	s.mayread.L = &owner.lock
 	s.maywrite.L = &owner.lock
+	s.flushed.L = &owner.lock
 	s.acked.L = &owner.lock
 	if len(frame.data) > 0 {
 		s.readbuf.write(frame.data)
