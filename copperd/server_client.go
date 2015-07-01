@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/snaury/copper"
 )
@@ -62,8 +63,22 @@ func (c *serverClient) selectUpstreams(targetID int64) (upstreams []possibleUpst
 }
 
 func passthru(dst, src copper.Stream) {
+	var writeclosed uint32
+	go func() {
+		err := dst.WaitWriteClosed()
+		atomic.AddUint32(&writeclosed, 1)
+		if err == copper.ESTREAMCLOSED {
+			src.CloseRead()
+		} else {
+			src.CloseReadError(err)
+		}
+	}()
 	for {
 		buf, err := src.Peek()
+		if atomic.LoadUint32(&writeclosed) > 0 {
+			// Don't react to CloseRead in the above goroutine
+			return
+		}
 		if len(buf) > 0 {
 			n, werr := dst.Write(buf)
 			if n > 0 {
@@ -73,7 +88,7 @@ func passthru(dst, src copper.Stream) {
 				if werr == copper.ESTREAMCLOSED {
 					src.CloseRead()
 				} else {
-					src.CloseWithError(werr)
+					src.CloseReadError(werr)
 				}
 				return
 			}
