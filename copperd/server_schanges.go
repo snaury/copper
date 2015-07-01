@@ -38,17 +38,19 @@ func newServerServiceChangeStream(s *server, c *serverClient) *serverServiceChan
 	return cs
 }
 
-func (cs *serverServiceChangeStream) addRemoved(pub *serverPublication) {
+func (cs *serverServiceChangeStream) addRemovedLocked(pub *serverPublication) {
 	if !cs.closed {
 		delete(cs.changed, pub.targetID)
 		cs.removed[pub.targetID] = pub
+		cs.wakeup.Broadcast()
 	}
 }
 
-func (cs *serverServiceChangeStream) addChanged(pub *serverPublication) {
+func (cs *serverServiceChangeStream) addChangedLocked(pub *serverPublication) {
 	if !cs.closed {
 		delete(cs.removed, pub.targetID)
 		cs.changed[pub.targetID] = pub
+		cs.wakeup.Broadcast()
 	}
 }
 

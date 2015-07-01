@@ -94,7 +94,7 @@ func (s *server) publishLocalLocked(name string, c *serverClient, targetID int64
 	pub.localDistances[settings.Distance]++
 	pub.localConcurrency += settings.Concurrency
 	for watcher := range s.pubWatchers {
-		watcher.addChanged(pub)
+		watcher.addChangedLocked(pub)
 	}
 
 	return nil
@@ -130,14 +130,14 @@ func (s *server) unpublishLocalLocked(name string, c *serverClient, targetID int
 	if len(pub.localEndpoints) == 0 && len(pub.remoteEndpoints) == 0 {
 		s.pubGarbage[pub.targetID] = struct{}{}
 		for watcher := range s.pubWatchers {
-			watcher.addRemoved(pub)
+			watcher.addRemovedLocked(pub)
 		}
 	} else {
 		for watcher := range s.pubWatchers {
 			if len(pub.localEndpoints) == 0 {
-				watcher.addRemoved(pub)
+				watcher.addRemovedLocked(pub)
 			} else {
-				watcher.addChanged(pub)
+				watcher.addChangedLocked(pub)
 			}
 		}
 	}

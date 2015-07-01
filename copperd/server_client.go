@@ -2,7 +2,9 @@ package copperd
 
 import (
 	"fmt"
+	"io"
 	"net"
+	"sync"
 
 	"github.com/snaury/copper"
 )
@@ -29,18 +31,106 @@ func newServerClient(s *server, conn net.Conn) *serverClient {
 	return c
 }
 
-func (c *serverClient) HandleStream(stream copper.Stream) {
-	err := rpcWrapServer(stream, c)
-	if err != nil {
-		_, ok := err.(copper.Error)
-		if !ok {
-			err = rpcError{
-				error: err,
-				code:  copper.EINTERNAL,
+type possibleUpstream struct {
+	conn     copper.Conn
+	targetID int64
+}
+
+func (c *serverClient) selectUpstreams(targetID int64) (upstreams []possibleUpstream, err error) {
+	c.owner.lock.Lock()
+	defer c.owner.lock.Unlock()
+	if c.failure != nil {
+		return nil, c.failure
+	}
+	pub := c.owner.pubByTarget[targetID]
+	if pub != nil {
+		// This is a direct connection
+		for client, endpoints := range pub.localEndpoints {
+			for clientTargetID, settings := range endpoints {
+				if settings.Concurrency > 0 {
+					upstreams = append(upstreams, possibleUpstream{
+						conn:     client.conn,
+						targetID: clientTargetID,
+					})
+				}
 			}
 		}
-		stream.CloseWithError(err)
+		return
 	}
+	// Might be a subscription
+	return nil, copper.ENOTARGET
+}
+
+func passthru(dst, src copper.Stream) {
+	for {
+		buf, err := src.Peek()
+		if len(buf) > 0 {
+			n, werr := dst.Write(buf)
+			if n > 0 {
+				src.Discard(n)
+			}
+			if werr != nil {
+				if werr == copper.ESTREAMCLOSED {
+					src.CloseRead()
+				} else {
+					src.CloseWithError(werr)
+				}
+				return
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				dst.CloseWrite()
+			} else {
+				dst.CloseWithError(err)
+			}
+			return
+		}
+	}
+}
+
+func (c *serverClient) HandleStream(stream copper.Stream) {
+	if stream.TargetID() == 0 {
+		// This is our rpc control target
+		err := rpcWrapServer(stream, c)
+		if err != nil {
+			_, ok := err.(copper.Error)
+			if !ok {
+				err = rpcError{
+					error: err,
+					code:  copper.EINTERNAL,
+				}
+			}
+			stream.CloseWithError(err)
+		}
+		return
+	}
+	// Need to find an upstream and forward the data
+	upstreams, err := c.selectUpstreams(stream.TargetID())
+	if err != nil {
+		stream.CloseWithError(err)
+		return
+	}
+	for _, upstream := range upstreams {
+		dst, err := upstream.conn.Open(upstream.targetID)
+		if err != nil {
+			continue
+		}
+		defer dst.Close()
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			passthru(dst, stream)
+		}()
+		go func() {
+			defer wg.Done()
+			passthru(stream, dst)
+		}()
+		wg.Wait()
+		return
+	}
+	stream.CloseWithError(copper.ENOROUTE)
 }
 
 func (c *serverClient) failWithErrorLocked(err error) {
