@@ -44,6 +44,9 @@ type Stream interface {
 	// CloseRead closes the read side of the connection
 	CloseRead() error
 
+	// CloseReadError close the read side with the specifed error
+	CloseReadError(err error) error
+
 	// CloseWrite closes the write side of the connection
 	CloseWrite() error
 
@@ -478,7 +481,11 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 		var flags uint8
 		reset := s.reseterror
 		if reset == nil {
-			reset = ESTREAMCLOSED
+			// The only way we may end up with reseterror being nil, but with
+			// an outgoing RESET pending, is when we haven't seen a EOF yet,
+			// but either CloseRead() or CloseReadError() was called. In both
+			// of those cases the error is in readerror.
+			reset = s.readerror
 		}
 		if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
 			// This RESET closes both sides of the stream, otherwise it only
@@ -672,7 +679,7 @@ func (s *rawStream) setWriteError(err error) {
 }
 
 func (s *rawStream) closeWithErrorLocked(err error, closed bool) error {
-	if err == nil {
+	if err == nil || err == io.EOF {
 		err = ESTREAMCLOSED
 	}
 	preverror := s.reseterror
@@ -790,6 +797,19 @@ func (s *rawStream) CloseRead() error {
 	defer s.owner.lock.Unlock()
 	preverror := s.readerror
 	s.setReadError(ESTREAMCLOSED)
+	s.resetReadSide()
+	s.clearReadBuffer()
+	return preverror
+}
+
+func (s *rawStream) CloseReadError(err error) error {
+	if err == nil || err == io.EOF {
+		err = ESTREAMCLOSED
+	}
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	preverror := s.readerror
+	s.setReadError(err)
 	s.resetReadSide()
 	s.clearReadBuffer()
 	return preverror
