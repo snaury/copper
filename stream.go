@@ -112,21 +112,27 @@ func (e *expiration) stop() bool {
 	return false
 }
 
-type rawStreamAddr struct {
-	streamID uint32
-	targetID int64
-	netaddr  net.Addr
+// StreamAddr describes endpoint addresses for streams
+type StreamAddr struct {
+	NetAddr  net.Addr
+	StreamID uint32
+	TargetID int64
+	Outgoing bool
 }
 
-func (addr *rawStreamAddr) Network() string {
+// Network returns "copper" as the name of the network
+func (addr *StreamAddr) Network() string {
 	return "copper"
 }
 
-func (addr *rawStreamAddr) String() string {
-	if addr.streamID != 0 {
-		return fmt.Sprintf("stream %d @ %s", addr.streamID, addr.netaddr.String())
+func (addr *StreamAddr) String() string {
+	if addr == nil {
+		return "<nil>"
 	}
-	return fmt.Sprintf("target %d @ %s", addr.targetID, addr.netaddr.String())
+	if addr.Outgoing {
+		return fmt.Sprintf("[%s:%s;target=%d]", addr.NetAddr.Network(), addr.NetAddr.String(), addr.TargetID)
+	}
+	return fmt.Sprintf("[%s:%s;stream=%d]", addr.NetAddr.Network(), addr.NetAddr.String(), addr.StreamID)
 }
 
 type rawStream struct {
@@ -822,25 +828,21 @@ func (s *rawStream) TargetID() int64 {
 }
 
 func (s *rawStream) LocalAddr() net.Addr {
-	addr := &rawStreamAddr{
-		targetID: s.targetID,
-		netaddr:  s.owner.conn.LocalAddr(),
+	return &StreamAddr{
+		NetAddr:  s.owner.conn.LocalAddr(),
+		StreamID: s.streamID,
+		TargetID: s.targetID,
+		Outgoing: !s.outgoing,
 	}
-	if s.outgoing {
-		addr.streamID = s.streamID
-	}
-	return addr
 }
 
 func (s *rawStream) RemoteAddr() net.Addr {
-	addr := &rawStreamAddr{
-		targetID: s.targetID,
-		netaddr:  s.owner.conn.RemoteAddr(),
+	return &StreamAddr{
+		NetAddr:  s.owner.conn.RemoteAddr(),
+		StreamID: s.streamID,
+		TargetID: s.targetID,
+		Outgoing: s.outgoing,
 	}
-	if !s.outgoing {
-		addr.streamID = s.streamID
-	}
-	return addr
 }
 
 func isClientStreamID(streamID uint32) bool {
