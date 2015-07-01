@@ -35,6 +35,9 @@ type Stream interface {
 	// that have not been acknowledged by the remote side.
 	WaitAck() (int, error)
 
+	// WaitWriteClosed returns when write side has been closed
+	WaitWriteClosed() error
+
 	// Closes closes the stream, discarding any data
 	Close() error
 
@@ -765,6 +768,15 @@ func (s *rawStream) WaitAck() (int, error) {
 		return s.writefail + s.writenack + s.writebuf.len() - s.writewire, err
 	}
 	return 0, nil
+}
+
+func (s *rawStream) WaitWriteClosed() error {
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	for s.writeerror == nil {
+		s.maywrite.Wait()
+	}
+	return s.writeerror
 }
 
 func (s *rawStream) Close() error {

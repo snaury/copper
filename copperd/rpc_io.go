@@ -85,6 +85,10 @@ func rpcSimpleRequest(conn copper.Conn, targetID int64, rtype protocol.RequestTy
 	if err != nil {
 		return err
 	}
+	err = stream.CloseWrite()
+	if err != nil {
+		return err
+	}
 	err = rpcReadMessage(stream, response)
 	if err != nil {
 		return err
@@ -107,6 +111,10 @@ func rpcStreamingRequest(conn copper.Conn, targetID int64, rtype protocol.Reques
 		return nil, err
 	}
 	err = rpcWriteMessage(stream, request)
+	if err != nil {
+		return nil, err
+	}
+	err = stream.CloseWrite()
 	if err != nil {
 		return nil, err
 	}

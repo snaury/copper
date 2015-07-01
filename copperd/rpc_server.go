@@ -53,10 +53,10 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		}
 		defer changes.Stop()
 		go func() {
-			// this goroutine detects when read side is closed, which closes
+			// this goroutine detects when write side is closed, which closes
 			// the changes stream and unblocks a read below
 			defer changes.Stop()
-			stream.Peek()
+			stream.WaitWriteClosed()
 		}()
 		for {
 			result, err := changes.Read()
@@ -149,7 +149,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 			// this goroutine detects when read side is closed, which closes
 			// the changes stream and unblocks a read below
 			defer changes.Stop()
-			stream.Peek()
+			stream.WaitWriteClosed()
 		}()
 		for {
 			result, err := changes.Read()
