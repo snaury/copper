@@ -120,7 +120,7 @@ func (c *rpcClient) unsubscribe(targetID int64) error {
 	return nil
 }
 
-func (c *rpcClient) publish(targetID int64, settings PublishSettings) error {
+func (c *rpcClient) publish(targetID int64, name string, settings PublishSettings) error {
 	var response protocol.PublishResponse
 	err := rpcSimpleRequest(
 		c.Conn,
@@ -128,7 +128,7 @@ func (c *rpcClient) publish(targetID int64, settings PublishSettings) error {
 		protocol.RequestType_Publish,
 		&protocol.PublishRequest{
 			TargetId:    proto.Int64(targetID),
-			Name:        proto.String(settings.Name),
+			Name:        proto.String(name),
 			Distance:    proto.Uint32(settings.Distance),
 			Concurrency: proto.Uint32(settings.Concurrency),
 		},

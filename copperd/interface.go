@@ -57,10 +57,9 @@ type Subscription interface {
 	Close() error
 }
 
-// PublishSettings describes the service, how far is copperd allowed to advertise
-// it and how many concurrent streams an instance is able to handle.
+// PublishSettings describes how far is copperd allowed to advertise the
+// service and how many concurrent streams an instance is able to handle.
 type PublishSettings struct {
-	Name        string
 	Distance    uint32
 	Concurrency uint32
 }
@@ -87,13 +86,13 @@ type ServiceChangeStream interface {
 	Stop() error
 }
 
-// Server interface allows you to work with copperd servers
-type Server interface {
+// Client interface allows you to work with copperd servers
+type Client interface {
 	// Subscribe subscribes to a named service
 	Subscribe(options ...SubscribeOption) (Subscription, error)
 
 	// Publish publishes a named service
-	Publish(settings PublishSettings, handler copper.StreamHandler) (Publication, error)
+	Publish(name string, settings PublishSettings, handler copper.StreamHandler) (Publication, error)
 
 	// SetRoute sets a route on the server
 	SetRoute(name string, routes ...Route) error
@@ -108,20 +107,20 @@ type Server interface {
 	Close() error
 }
 
-// LocalServer interface allows you to work with an in-process copperd server
-type LocalServer interface {
-	Server
-
+// Server interface allows you to work with an in-process copperd server
+type Server interface {
 	// AddPeer adds a peer to the server
-	AddPeer(network, address string, distance int) error
+	AddPeer(network, address string, distance uint32) error
 
 	// AddUpstream adds an upstream to the server
 	AddUpstream(network, address string) error
 
-	// Listen listens on given network listeners, and returns when any of them
-	// fail, or when Shutdown or Close are called
-	Listen(listeners ...net.Listener) error
+	// Add given network listeners to the pool of listeners
+	AddListeners(listeners ...net.Listener) error
 
 	// Shutdown shuts down a running server
 	Shutdown() error
+
+	// Serve runs the server until it is shut down
+	Serve() error
 }

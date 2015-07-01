@@ -90,8 +90,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		if err != nil {
 			return copper.EINVALIDDATA
 		}
-		err = server.publish(request.GetTargetId(), PublishSettings{
-			Name:        request.GetName(),
+		err = server.publish(request.GetTargetId(), request.GetName(), PublishSettings{
 			Distance:    request.GetDistance(),
 			Concurrency: request.GetConcurrency(),
 		})

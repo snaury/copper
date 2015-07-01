@@ -38,6 +38,8 @@ const (
 	EINVALIDSTREAM
 	// EUNSUPPORTED is returned when some feature is unsupported
 	EUNSUPPORTED
+	// EINTERNAL is returned when some internal error happens
+	EINTERNAL
 	// ENOTARGET is returned when target does not exist
 	ENOTARGET
 	// ENOSTREAM is returned when stream does not exist
@@ -60,6 +62,7 @@ var errorMessages = map[ErrorCode]string{
 	EINVALIDDATA:    "invalid data",
 	EINVALIDSTREAM:  "invalid stream",
 	EUNSUPPORTED:    "feature unsupported",
+	EINTERNAL:       "internal error",
 	ENOTARGET:       "no such target",
 	ENOSTREAM:       "no such stream",
 	ENOROUTE:        "no route to target",
@@ -76,6 +79,7 @@ var errorNames = map[ErrorCode]string{
 	EINVALIDDATA:    "EINVALIDDATA",
 	EINVALIDSTREAM:  "EINVALIDSTREAM",
 	EUNSUPPORTED:    "EUNSUPPORTED",
+	EINTERNAL:       "EINTERNAL",
 	ENOTARGET:       "ENOTARGET",
 	ENOSTREAM:       "ENOSTREAM",
 	ENOROUTE:        "ENOROUTE",
