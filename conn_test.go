@@ -684,3 +684,83 @@ func TestStreamCloseReadErrorWithError(t *testing.T) {
 		},
 	)
 }
+
+func TestStreamFlush(t *testing.T) {
+	clientMayClose := make(chan int, 1)
+	serverMayClose := make(chan int, 1)
+	runClientServerStream(
+		func(client Stream) {
+			defer close(serverMayClose)
+			n, err := client.Write([]byte("Hello, world!"))
+			if n != 13 || err != nil {
+				t.Fatalf("client: Write: %d, %v", n, err)
+			}
+			err = client.Flush()
+			if err != nil {
+				t.Fatalf("client: Flush: %v", err)
+			}
+			serverMayClose <- 1
+			<-clientMayClose
+		},
+		func(server Stream) {
+			defer close(clientMayClose)
+			n, err := server.Write([]byte("foo bar baz"))
+			if n != 11 || err != nil {
+				t.Fatalf("server: Write: %d, %v", n, err)
+			}
+			err = server.Flush()
+			if err != nil {
+				t.Fatalf("server: Flush: %v", err)
+			}
+			clientMayClose <- 1
+			<-serverMayClose
+		},
+	)
+}
+
+func TestStreamWaitAckAny(t *testing.T) {
+	serverMayRead := make(chan int, 1)
+	clientMayClose := make(chan int, 1)
+	clientFinished := make(chan int, 1)
+	runClientServerStream(
+		func(client Stream) {
+			defer close(serverMayRead)
+			defer close(clientFinished)
+			n, err := client.Write([]byte("Hello, world!"))
+			if n != 13 || err != nil {
+				t.Fatalf("client: Write: %d, %v", n, err)
+			}
+			err = client.Flush()
+			if err != nil {
+				t.Fatalf("client: Flush: %v", err)
+			}
+			n, err = client.WaitAckAny(0)
+			if n != 13 || err != nil {
+				t.Fatalf("client: WaitAckAny(0): %d, %v", n, err)
+			}
+			serverMayRead <- 1
+			n, err = client.WaitAckAny(13)
+			if n != 13-8 || err != nil {
+				t.Fatalf("client: WaitAckAny: %d, %v", n, err)
+			}
+			clientFinished <- 1
+			if 1 != <-clientMayClose {
+				return
+			}
+		},
+		func(server Stream) {
+			defer close(clientMayClose)
+			if 1 != <-serverMayRead {
+				return
+			}
+			n, err := server.Read(make([]byte, 8))
+			if n != 8 || err != nil {
+				t.Fatalf("server: Read: %d, %v", n, err)
+			}
+			if 1 != <-clientFinished {
+				return
+			}
+			clientMayClose <- 1
+		},
+	)
+}

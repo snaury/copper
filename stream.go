@@ -30,10 +30,18 @@ type Stream interface {
 	// Flush returns when all data has been flushed
 	Flush() error
 
-	// WaitAck returns when data has been read by the remote side or there is
-	// an error. In case of an error it also returns the number of bytes
+	// WaitAck returns when all data has been read by the remote side or there
+	// is an error. In case of an error it also returns the number of bytes
 	// that have not been acknowledged by the remote side.
 	WaitAck() (int, error)
+
+	// WaitAckAny returns when any of the last n bytes have been read by the
+	// remote side or there is an error. Returns the number of bytes that have
+	// not been acknowledged by the remote side and an error if any.
+	// The intended use case is remote sensing, e.g. by calling it with the
+	// number of bytes returned from Write it would return when any bytes from
+	// that write have been read by the remote side.
+	WaitAckAny(n int) (int, error)
 
 	// WaitWriteClosed returns when write side has been closed
 	WaitWriteClosed() error
@@ -204,6 +212,7 @@ func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64, readwind
 	}
 	s.mayread.L = &owner.lock
 	s.maywrite.L = &owner.lock
+	s.flushed.L = &owner.lock
 	s.acked.L = &owner.lock
 	s.flags |= flagStreamNeedOpen
 	return s
@@ -329,8 +338,8 @@ func (s *rawStream) waitFlushLocked() error {
 	return s.writeerror
 }
 
-func (s *rawStream) waitAckLocked() error {
-	for s.writebuf.len() > 0 || s.writenack > 0 {
+func (s *rawStream) waitAckLocked(n int) error {
+	for s.writenack+s.writebuf.len()-s.writewire > n {
 		if s.reseterror != nil {
 			break
 		}
@@ -413,9 +422,7 @@ func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
 	}
 	if frame.flags&flagAck != 0 {
 		s.writenack -= int(frame.increment)
-		if s.writebuf.len() == 0 && s.writenack <= 0 {
-			s.acked.Broadcast()
-		}
+		s.acked.Broadcast() // TODO: split into acked full and acked partial
 		s.owner.cleanupStreamLocked(s)
 	}
 	if frame.flags&flagInc != 0 {
@@ -771,11 +778,23 @@ func (s *rawStream) Flush() error {
 func (s *rawStream) WaitAck() (int, error) {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
-	err := s.waitAckLocked()
+	err := s.waitAckLocked(0)
 	if err != nil {
 		return s.writefail + s.writenack + s.writebuf.len() - s.writewire, err
 	}
 	return 0, nil
+}
+
+func (s *rawStream) WaitAckAny(n int) (int, error) {
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	var err error
+	if n > 0 {
+		err = s.waitAckLocked(n - 1)
+	} else {
+		err = s.writeerror
+	}
+	return s.writefail + s.writenack + s.writebuf.len() - s.writewire, err
 }
 
 func (s *rawStream) WaitWriteClosed() error {
