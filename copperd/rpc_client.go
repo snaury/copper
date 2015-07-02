@@ -22,8 +22,9 @@ func (c *rpcClient) subscribe(settings SubscribeSettings) (int64, error) {
 		c.targetID,
 		protocol.RequestType_Subscribe,
 		&protocol.SubscribeRequest{
-			Options:    rpcSubscribeOptionsToProto(settings.Options),
-			MaxRetries: proto.Uint32(settings.MaxRetries),
+			Options:       rpcSubscribeOptionsToProto(settings.Options),
+			MaxRetries:    proto.Uint32(settings.MaxRetries),
+			DisableRoutes: proto.Bool(settings.DisableRoutes),
 		},
 		&response,
 	)

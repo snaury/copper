@@ -22,8 +22,9 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 			return copper.EINVALIDDATA
 		}
 		targetID, err := server.subscribe(SubscribeSettings{
-			Options:    rpcProtoToSubscribeOptions(request.GetOptions()),
-			MaxRetries: request.GetMaxRetries(),
+			Options:       rpcProtoToSubscribeOptions(request.GetOptions()),
+			MaxRetries:    request.GetMaxRetries(),
+			DisableRoutes: request.GetDisableRoutes(),
 		})
 		if err != nil {
 			return err

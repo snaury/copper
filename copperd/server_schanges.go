@@ -26,7 +26,7 @@ func newServerServiceChangeStream(s *server, c *serverClient) *serverServiceChan
 	cs.wakeup.L = &s.lock
 	// send all services that are currently active
 	for _, pub := range s.pubByTarget {
-		if len(pub.localEndpoints) > 0 {
+		if len(pub.endpoints) > 0 {
 			cs.changed[pub.targetID] = pub
 		}
 	}
@@ -73,9 +73,9 @@ func (cs *serverServiceChangeStream) Read() (ServiceChange, error) {
 			change := ServiceChange{
 				TargetID:    targetID,
 				Name:        pub.name,
-				Concurrency: pub.localConcurrency,
+				Concurrency: pub.concurrency,
 			}
-			for distance := range pub.localDistances {
+			for distance := range pub.distances {
 				if change.Distance < distance {
 					change.Distance = distance
 				}

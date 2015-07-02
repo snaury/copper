@@ -32,7 +32,7 @@ func connect(address string) Client {
 	return client
 }
 
-func runClientServerConn(clientfunc func(conn copper.Conn), serverfunc func(stream copper.Stream)) {
+func runClientServerConn(clientfunc func(conn *clientConn), serverfunc func(stream copper.Stream)) {
 	target, stopper := runServer("localhost:0")
 	defer stopper()
 
@@ -92,10 +92,19 @@ func runClientServerConn(clientfunc func(conn copper.Conn), serverfunc func(stre
 
 func runClientServer(clientfunc func(stream copper.Stream), serverfunc func(stream copper.Stream)) {
 	runClientServerConn(
-		func(conn copper.Conn) {
-			stream, err := conn.Open(1)
+		func(conn *clientConn) {
+			sub, err := conn.Subscribe(SubscribeSettings{
+				Options: []SubscribeOption{
+					{Service: "test/myservice"},
+				},
+			})
 			if err != nil {
-				log.Fatalf("conn.Open: %v", err)
+				log.Fatalf("conn.Subscribe: %v", err)
+			}
+			defer sub.Stop()
+			stream, err := sub.Open()
+			if err != nil {
+				log.Fatalf("sub.Open: %v", err)
 			}
 			defer stream.Close()
 			clientfunc(stream)

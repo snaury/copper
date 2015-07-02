@@ -9,8 +9,9 @@ func rpcProtoToSubscribeOptions(poptions []*protocol.SubscribeOption) []Subscrib
 	var options []SubscribeOption
 	for _, po := range poptions {
 		options = append(options, SubscribeOption{
-			Service:  po.GetService(),
-			Distance: po.GetDistance(),
+			Service:     po.GetService(),
+			MinDistance: po.GetMinDistance(),
+			MaxDistance: po.GetMaxDistance(),
 		})
 	}
 	return options
@@ -20,8 +21,9 @@ func rpcSubscribeOptionsToProto(options []SubscribeOption) []*protocol.Subscribe
 	var poptions []*protocol.SubscribeOption
 	for _, o := range options {
 		poptions = append(poptions, &protocol.SubscribeOption{
-			Service:  proto.String(o.Service),
-			Distance: proto.Uint32(o.Distance),
+			Service:     proto.String(o.Service),
+			MinDistance: proto.Uint32(o.MinDistance),
+			MaxDistance: proto.Uint32(o.MaxDistance),
 		})
 	}
 	return poptions
@@ -56,9 +58,8 @@ func rpcProtoToRoutes(proutes []*protocol.Route) []Route {
 	var routes []Route
 	for _, proute := range proutes {
 		routes = append(routes, Route{
-			Service:  proute.GetService(),
-			Weight:   proute.GetWeight(),
-			Distance: proute.GetDistance(),
+			Options: rpcProtoToSubscribeOptions(proute.GetOptions()),
+			Weight:  proute.GetWeight(),
 		})
 	}
 	return routes
@@ -68,9 +69,8 @@ func rpcRoutesToProto(routes []Route) []*protocol.Route {
 	var proutes []*protocol.Route
 	for _, route := range routes {
 		proute := &protocol.Route{
-			Service:  proto.String(route.Service),
-			Weight:   proto.Uint32(route.Weight),
-			Distance: proto.Uint32(route.Distance),
+			Options: rpcSubscribeOptionsToProto(route.Options),
+			Weight:  proto.Uint32(route.Weight),
 		}
 		proutes = append(proutes, proute)
 	}

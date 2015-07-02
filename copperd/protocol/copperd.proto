@@ -1,11 +1,5 @@
 package protocol;
 
-message Route {
-    required string service = 1;
-    required uint32 weight = 2;
-    optional uint32 distance = 3;
-}
-
 message Endpoint {
     required string network = 1;
     required string address = 2;
@@ -14,12 +8,19 @@ message Endpoint {
 
 message SubscribeOption {
     required string service = 1;
-    optional uint32 distance = 2;
+    optional uint32 min_distance = 2;
+    optional uint32 max_distance = 3;
+}
+
+message Route {
+    repeated SubscribeOption options = 1;
+    required uint32 weight = 2;
 }
 
 message SubscribeRequest {
     repeated SubscribeOption options = 1;
     optional uint32 max_retries = 2;
+    optional bool disable_routes = 3;
 }
 
 message SubscribeResponse {

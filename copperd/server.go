@@ -2,8 +2,13 @@ package copperd
 
 import (
 	"fmt"
+	"math/rand"
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/snaury/copper"
 )
 
 type lowLevelServer interface {
@@ -20,16 +25,19 @@ type lowLevelServer interface {
 }
 
 type server struct {
-	lock sync.Mutex
+	lock   sync.Mutex
+	random *rand.Rand
 
-	nextTargetID int64
+	lastTargetID int64
 
-	pubByName   map[string]*serverPublication
+	subByTarget map[int64]*serverSubscription
+	subByName   map[string]map[*serverSubscription]struct{}
+
 	pubByTarget map[int64]*serverPublication
-	pubGarbage  map[int64]struct{}
+	pubByName   map[string]*serverPublication
 	pubWatchers map[*serverServiceChangeStream]struct{}
 
-	routes map[string][]Route
+	routeByName map[string]*serverRoute
 
 	failure   error
 	listenwg  sync.WaitGroup
@@ -40,50 +48,281 @@ type server struct {
 // NewServer returns a new local server
 func NewServer() Server {
 	s := &server{
-		nextTargetID: 1,
+		random: rand.New(rand.NewSource(time.Now().UnixNano())),
 
-		pubByName:   make(map[string]*serverPublication),
+		subByTarget: make(map[int64]*serverSubscription),
+		subByName:   make(map[string]map[*serverSubscription]struct{}),
+
 		pubByTarget: make(map[int64]*serverPublication),
-		pubGarbage:  make(map[int64]struct{}),
+		pubByName:   make(map[string]*serverPublication),
 		pubWatchers: make(map[*serverServiceChangeStream]struct{}),
 
-		routes: make(map[string][]Route),
+		routeByName: make(map[string]*serverRoute),
 
 		clients: make(map[*serverClient]struct{}),
 	}
 	return s
 }
 
-type serverPublication struct {
-	owner              *server
-	name               string
-	targetID           int64
-	localReady         map[localEndpointKey]struct{}
-	localEndpoints     map[localEndpointKey]*localEndpoint
-	localDistances     map[uint32]int
-	localConcurrency   uint32
-	localMaxQueueSize  uint32
-	localMaxQueueSizes map[uint32]int
-	localHasReady      sync.Cond
+func (s *server) allocateTargetID() int64 {
+	return atomic.AddInt64(&s.lastTargetID, 1)
 }
 
-func (pub *serverPublication) selectLocalEndpoint() (*localEndpoint, error) {
-	for key := range pub.localReady {
-		endpoint := pub.localEndpoints[key]
-		if endpoint != nil && endpoint.pub != nil && endpoint.active < endpoint.concurrency {
-			endpoint.active++
-			if endpoint.active == endpoint.concurrency {
-				delete(pub.localReady, key)
+type endpointReference interface {
+	open() (copper.Stream, error)
+	decref() bool
+	getEndpointsLocked() []Endpoint
+	selectEndpointLocked() (endpointReference, error)
+}
+
+type serverSubscription struct {
+	owner    *server
+	targetID int64
+	settings SubscribeSettings
+
+	routes []*serverRoute
+	locals []*serverPublication
+	active int
+}
+
+var _ endpointReference = &serverSubscription{}
+
+func (sub *serverSubscription) open() (copper.Stream, error) {
+	return nil, ErrUnsupported
+}
+
+func (sub *serverSubscription) decref() bool {
+	return false
+}
+
+func (sub *serverSubscription) getEndpointsLocked() []Endpoint {
+	if sub.active < len(sub.settings.Options) {
+		if route := sub.routes[sub.active]; route != nil {
+			return route.getEndpointsLocked()
+		}
+		if local := sub.locals[sub.active]; local != nil {
+			return local.getEndpointsLocked()
+		}
+		// TODO: support remote services
+	}
+	// TODO: support upstream
+	return nil
+}
+
+func (sub *serverSubscription) selectEndpointLocked() (endpointReference, error) {
+	if sub.active < len(sub.settings.Options) {
+		if route := sub.routes[sub.active]; route != nil {
+			return route.selectEndpointLocked()
+		}
+		if local := sub.locals[sub.active]; local != nil {
+			return local.selectEndpointLocked()
+		}
+		// TODO: support remote services
+	}
+	// TODO: support upstream
+	return nil, copper.ENOROUTE
+}
+
+func (sub *serverSubscription) isActiveLocked() bool {
+	return sub.active < len(sub.settings.Options)
+}
+
+func (sub *serverSubscription) updateActiveIndexLocked() {
+	sub.active = len(sub.settings.Options)
+	for index := range sub.settings.Options {
+		if sub.routes[index] != nil || sub.locals[index] != nil {
+			if sub.active > index {
+				sub.active = index
+				break
 			}
-			return endpoint, nil
+		}
+		// TODO: support remote services
+	}
+}
+
+func (sub *serverSubscription) addRouteLocked(route *serverRoute) {
+	if sub.settings.DisableRoutes {
+		return
+	}
+	changed := false
+	for index, option := range sub.settings.Options {
+		if option.Service == route.name {
+			route.subscriptions[sub] = struct{}{}
+			sub.routes[index] = route
+			changed = true
+		}
+	}
+	if changed {
+		sub.updateActiveIndexLocked()
+	}
+}
+
+func (sub *serverSubscription) removeRouteLocked(route *serverRoute) {
+	if sub.settings.DisableRoutes {
+		return
+	}
+	changed := false
+	for index := range sub.settings.Options {
+		if sub.routes[index] == route {
+			sub.routes[index] = nil
+			changed = true
+		}
+	}
+	if changed {
+		sub.updateActiveIndexLocked()
+	}
+}
+
+func (sub *serverSubscription) addPublicationLocked(pub *serverPublication) {
+	changed := false
+	for index, option := range sub.settings.Options {
+		if option.MinDistance == 0 && option.Service == pub.name {
+			// This option allows local services and matches publication name
+			pub.subscriptions[sub] = struct{}{}
+			sub.locals[index] = pub
+			changed = true
+		}
+	}
+	if changed {
+		sub.updateActiveIndexLocked()
+	}
+}
+
+func (sub *serverSubscription) removePublicationLocked(pub *serverPublication) {
+	changed := false
+	for index := range sub.settings.Options {
+		if sub.locals[index] == pub {
+			sub.locals[index] = nil
+			changed = true
+		}
+	}
+	if changed {
+		sub.updateActiveIndexLocked()
+	}
+}
+
+func (sub *serverSubscription) registerLocked() {
+	changed := false
+	sub.owner.subByTarget[sub.targetID] = sub
+	for index, option := range sub.settings.Options {
+		// Let others know we have an interested in this name
+		subs := sub.owner.subByName[option.Service]
+		if subs == nil {
+			subs = make(map[*serverSubscription]struct{})
+			sub.owner.subByName[option.Service] = subs
+		}
+		subs[sub] = struct{}{}
+		if !sub.settings.DisableRoutes {
+			route := sub.owner.routeByName[option.Service]
+			if route != nil {
+				sub.routes[index] = route
+				route.subscriptions[sub] = struct{}{}
+			}
+		}
+		if option.MinDistance == 0 {
+			// This option allows local services, look them up
+			pub := sub.owner.pubByName[option.Service]
+			if pub != nil {
+				pub.subscriptions[sub] = struct{}{}
+				sub.locals[index] = pub
+				changed = true
+			}
+		}
+		// TODO: support remote services
+	}
+	// TODO: support upstream
+	if changed {
+		sub.updateActiveIndexLocked()
+	}
+}
+
+func (sub *serverSubscription) unregisterLocked() {
+	// TODO: support upstream
+	for index, option := range sub.settings.Options {
+		// TODO: support remote services
+		if pub := sub.locals[index]; pub != nil {
+			sub.locals[index] = nil
+			delete(pub.subscriptions, sub)
+		}
+		if route := sub.routes[index]; route != nil {
+			sub.routes[index] = nil
+			delete(route.subscriptions, sub)
+		}
+		if subs := sub.owner.subByName[option.Service]; subs != nil {
+			delete(subs, sub)
+			if len(subs) == 0 {
+				delete(sub.owner.subByName, option.Service)
+			}
+		}
+	}
+	delete(sub.owner.subByTarget, sub.targetID)
+	sub.active = len(sub.settings.Options)
+}
+
+func (s *server) subscribeLocked(settings SubscribeSettings) (*serverSubscription, error) {
+	if len(settings.Options) == 0 {
+		return nil, fmt.Errorf("cannot subscribe with 0 options")
+	}
+	sub := &serverSubscription{
+		owner:    s,
+		targetID: s.allocateTargetID(),
+		settings: settings,
+
+		routes: make([]*serverRoute, len(settings.Options)),
+		locals: make([]*serverPublication, len(settings.Options)),
+		active: len(settings.Options),
+	}
+	sub.registerLocked()
+	return sub, nil
+}
+
+type serverPublication struct {
+	owner    *server
+	name     string
+	targetID int64
+
+	endpoints     map[localEndpointKey]*localEndpoint
+	distances     map[uint32]int
+	concurrency   uint32
+	maxqueuesize  uint32
+	maxqueuesizes map[uint32]int
+	ready         map[*localEndpoint]struct{}
+	hasready      sync.Cond
+
+	subscriptions map[*serverSubscription]struct{}
+}
+
+var _ endpointReference = &serverPublication{}
+
+func (pub *serverPublication) open() (copper.Stream, error) {
+	return nil, ErrUnsupported
+}
+
+func (pub *serverPublication) decref() bool {
+	return false
+}
+
+func (pub *serverPublication) getEndpointsLocked() []Endpoint {
+	return []Endpoint{
+		Endpoint{
+			Network:  "",
+			Address:  "",
+			TargetID: pub.targetID,
+		},
+	}
+}
+
+func (pub *serverPublication) selectEndpointLocked() (endpointReference, error) {
+	if len(pub.endpoints) == 0 {
+		return nil, copper.ENOROUTE
+	}
+	for endpoint := range pub.ready {
+		if target, err := endpoint.selectEndpointLocked(); err == nil {
+			return target, nil
 		}
 	}
 	// TODO: support for queues, but need timeouts and cancellation
 	return nil, ErrOverCapacity
-}
-
-type returnableEndpoint interface {
-	returnEndpointLocked() bool
 }
 
 type localEndpointKey struct {
@@ -92,6 +331,7 @@ type localEndpointKey struct {
 }
 
 type localEndpoint struct {
+	owner        *server
 	pub          *serverPublication
 	key          localEndpointKey
 	active       uint32
@@ -100,15 +340,38 @@ type localEndpoint struct {
 	maxqueuesize uint32
 }
 
-func (endpoint *localEndpoint) returnEndpointLocked() bool {
+var _ endpointReference = &localEndpoint{}
+
+func (endpoint *localEndpoint) open() (copper.Stream, error) {
+	return endpoint.key.client.conn.Open(endpoint.key.targetID)
+}
+
+func (endpoint *localEndpoint) decref() bool {
+	endpoint.owner.lock.Lock()
+	defer endpoint.owner.lock.Unlock()
 	pub := endpoint.pub
 	if pub == nil {
 		return false
 	}
 	endpoint.active--
-	pub.localReady[endpoint.key] = struct{}{}
-	pub.localHasReady.Signal()
+	pub.ready[endpoint] = struct{}{}
+	pub.hasready.Signal()
 	return true
+}
+
+func (endpoint *localEndpoint) getEndpointsLocked() []Endpoint {
+	return nil
+}
+
+func (endpoint *localEndpoint) selectEndpointLocked() (endpointReference, error) {
+	if endpoint.pub != nil && endpoint.active < endpoint.concurrency {
+		endpoint.active++
+		if endpoint.active == endpoint.concurrency {
+			delete(endpoint.pub.ready, endpoint)
+		}
+		return endpoint, nil
+	}
+	return nil, ErrOverCapacity
 }
 
 func (endpoint *localEndpoint) registerLocked(pub *serverPublication) error {
@@ -117,14 +380,15 @@ func (endpoint *localEndpoint) registerLocked(pub *serverPublication) error {
 	}
 	endpoint.pub = pub
 
-	pub.localReady[endpoint.key] = struct{}{}
-	pub.localEndpoints[endpoint.key] = endpoint
-	pub.localDistances[endpoint.distance]++
-	pub.localConcurrency += endpoint.concurrency
-	if pub.localMaxQueueSize < endpoint.maxqueuesize {
-		pub.localMaxQueueSize = endpoint.maxqueuesize
+	pub.endpoints[endpoint.key] = endpoint
+	pub.distances[endpoint.distance]++
+	pub.concurrency += endpoint.concurrency
+	if pub.maxqueuesize < endpoint.maxqueuesize {
+		pub.maxqueuesize = endpoint.maxqueuesize
 	}
-	pub.localMaxQueueSizes[endpoint.maxqueuesize]++
+	pub.maxqueuesizes[endpoint.maxqueuesize]++
+	pub.ready[endpoint] = struct{}{}
+	pub.hasready.Broadcast()
 
 	for watcher := range pub.owner.pubWatchers {
 		watcher.addChangedLocked(pub)
@@ -139,33 +403,35 @@ func (endpoint *localEndpoint) unregisterLocked() error {
 	}
 	endpoint.pub = nil
 
-	newMaxQueueSizeCount := pub.localMaxQueueSizes[endpoint.maxqueuesize] - 1
+	delete(pub.ready, endpoint)
+	newMaxQueueSizeCount := pub.maxqueuesizes[endpoint.maxqueuesize] - 1
 	if newMaxQueueSizeCount != 0 {
-		pub.localMaxQueueSizes[endpoint.maxqueuesize] = newMaxQueueSizeCount
+		pub.maxqueuesizes[endpoint.maxqueuesize] = newMaxQueueSizeCount
 	} else {
-		delete(pub.localMaxQueueSizes, endpoint.maxqueuesize)
-		pub.localMaxQueueSize = 0
-		for maxqueuesize := range pub.localMaxQueueSizes {
-			if pub.localMaxQueueSize < maxqueuesize {
-				pub.localMaxQueueSize = maxqueuesize
+		delete(pub.maxqueuesizes, endpoint.maxqueuesize)
+		pub.maxqueuesize = 0
+		for maxqueuesize := range pub.maxqueuesizes {
+			if pub.maxqueuesize < maxqueuesize {
+				pub.maxqueuesize = maxqueuesize
 			}
 		}
 	}
-	pub.localConcurrency -= endpoint.concurrency
-	newDistanceCount := pub.localDistances[endpoint.distance] - 1
+	pub.concurrency -= endpoint.concurrency
+	newDistanceCount := pub.distances[endpoint.distance] - 1
 	if newDistanceCount != 0 {
-		pub.localDistances[endpoint.distance] = newDistanceCount
+		pub.distances[endpoint.distance] = newDistanceCount
 	} else {
-		delete(pub.localDistances, endpoint.distance)
+		delete(pub.distances, endpoint.distance)
 	}
-	delete(pub.localEndpoints, endpoint.key)
-	delete(pub.localReady, endpoint.key)
+	delete(pub.endpoints, endpoint.key)
 
-	if len(pub.localEndpoints) == 0 {
-		pub.owner.pubGarbage[pub.targetID] = struct{}{}
+	if len(pub.endpoints) == 0 {
+		delete(pub.owner.pubByName, pub.name)
+		delete(pub.owner.pubByTarget, pub.targetID)
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addRemovedLocked(pub)
 		}
+		// TODO: notify subscriptions
 	} else {
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addChangedLocked(pub)
@@ -178,25 +444,27 @@ func (s *server) publishLocalLocked(name string, key localEndpointKey, ps Publis
 	pub := s.pubByName[name]
 	if pub == nil {
 		pub = &serverPublication{
-			owner:              s,
-			name:               name,
-			targetID:           s.nextTargetID,
-			localReady:         make(map[localEndpointKey]struct{}),
-			localEndpoints:     make(map[localEndpointKey]*localEndpoint),
-			localDistances:     make(map[uint32]int),
-			localConcurrency:   0,
-			localMaxQueueSize:  0,
-			localMaxQueueSizes: make(map[uint32]int),
+			owner:    s,
+			name:     name,
+			targetID: s.allocateTargetID(),
+
+			endpoints:     make(map[localEndpointKey]*localEndpoint),
+			distances:     make(map[uint32]int),
+			concurrency:   0,
+			maxqueuesize:  0,
+			maxqueuesizes: make(map[uint32]int),
+
+			ready: make(map[*localEndpoint]struct{}),
+
+			subscriptions: make(map[*serverSubscription]struct{}),
 		}
-		pub.localHasReady.L = &s.lock
-		s.nextTargetID++
+		pub.hasready.L = &s.lock
 		s.pubByName[pub.name] = pub
 		s.pubByTarget[pub.targetID] = pub
-	} else {
-		delete(s.pubGarbage, pub.targetID)
 	}
 
 	endpoint := &localEndpoint{
+		owner:        s,
 		key:          key,
 		active:       0,
 		distance:     ps.Distance,
@@ -204,6 +472,119 @@ func (s *server) publishLocalLocked(name string, key localEndpointKey, ps Publis
 		maxqueuesize: ps.MaxQueueSize,
 	}
 	return endpoint, endpoint.registerLocked(pub)
+}
+
+type serverRouteCase struct {
+	sub    *serverSubscription
+	weight uint32
+}
+
+type serverRoute struct {
+	owner  *server
+	name   string
+	routes []Route
+
+	cases []serverRouteCase
+
+	subscriptions map[*serverSubscription]struct{}
+}
+
+var _ endpointReference = &serverRoute{}
+
+func (r *serverRoute) open() (copper.Stream, error) {
+	return nil, ErrUnsupported
+}
+
+func (r *serverRoute) decref() bool {
+	return false
+}
+
+func (r *serverRoute) getEndpointsLocked() []Endpoint {
+	var result []Endpoint
+	for _, c := range r.cases {
+		if c.weight > 0 && c.sub.isActiveLocked() {
+			result = append(result, c.sub.getEndpointsLocked()...)
+		}
+	}
+	return result
+}
+
+func (r *serverRoute) selectEndpointLocked() (endpointReference, error) {
+	sum := int64(0)
+	for _, c := range r.cases {
+		if c.weight > 0 && c.sub.isActiveLocked() {
+			sum += int64(c.weight)
+		}
+	}
+	if sum == 0 {
+		// There are no routes
+		return nil, copper.ENOROUTE
+	}
+	bin := r.owner.random.Int63n(sum)
+	for _, c := range r.cases {
+		if c.weight > 0 && c.sub.isActiveLocked() {
+			if bin < int64(c.weight) {
+				return c.sub.selectEndpointLocked()
+			}
+			bin -= int64(c.weight)
+		}
+	}
+	// this should never happen, might replace it with a panic!
+	return nil, fmt.Errorf("random number %d didn't match the %d sum", bin, sum)
+}
+
+func (s *server) setRouteLocked(name string, routes []Route) error {
+	r := s.routeByName[name]
+	if r == nil {
+		if len(routes) == 0 {
+			return nil
+		}
+		r = &serverRoute{
+			owner:  s,
+			name:   name,
+			routes: routes,
+
+			subscriptions: make(map[*serverSubscription]struct{}),
+		}
+		s.routeByName[name] = r
+		if subs := s.subByName[name]; subs != nil {
+			for sub := range subs {
+				sub.addRouteLocked(r)
+			}
+		}
+	} else if len(routes) == 0 {
+		for sub := range r.subscriptions {
+			sub.removeRouteLocked(r)
+		}
+		r.subscriptions = nil
+		for _, c := range r.cases {
+			c.sub.unregisterLocked()
+		}
+		r.cases = nil
+		r.routes = nil
+		delete(s.routeByName, name)
+		return nil
+	} else {
+		for _, c := range r.cases {
+			c.sub.unregisterLocked()
+		}
+		r.cases = nil
+		r.routes = routes
+	}
+	// we need to build our cases
+	r.cases = make([]serverRouteCase, len(r.routes))
+	for index, route := range r.routes {
+		sub, err := s.subscribeLocked(SubscribeSettings{
+			Options:       route.Options,
+			MaxRetries:    1,
+			DisableRoutes: true,
+		})
+		if err != nil {
+			panic(fmt.Errorf("unexpected subscribe error: %s", err))
+		}
+		r.cases[index].sub = sub
+	}
+	return nil
 }
 
 func (s *server) failWithError(err error) error {

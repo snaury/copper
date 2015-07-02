@@ -6,13 +6,6 @@ import (
 	"github.com/snaury/copper"
 )
 
-// Route describes the target service for a route
-type Route struct {
-	Service  string
-	Weight   uint32
-	Distance uint32
-}
-
 // Endpoint describes access endpoints for services
 type Endpoint struct {
 	Network  string
@@ -22,14 +15,22 @@ type Endpoint struct {
 
 // SubscribeOption names the service and how far it is allowed to be
 type SubscribeOption struct {
-	Service  string
-	Distance uint32
+	Service     string
+	MinDistance uint32
+	MaxDistance uint32
+}
+
+// Route describes the target service for a route
+type Route struct {
+	Options []SubscribeOption
+	Weight  uint32
 }
 
 // SubscribeSettings contains settings for the subscription
 type SubscribeSettings struct {
-	Options    []SubscribeOption
-	MaxRetries uint32
+	Options       []SubscribeOption
+	MaxRetries    uint32
+	DisableRoutes bool
 }
 
 // EndpointChanges is returned when endpoints for a subscription have changed

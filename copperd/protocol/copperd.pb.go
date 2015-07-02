@@ -9,9 +9,9 @@ It is generated from these files:
 	copperd.proto
 
 It has these top-level messages:
-	Route
 	Endpoint
 	SubscribeOption
+	Route
 	SubscribeRequest
 	SubscribeResponse
 	GetEndpointsRequest
@@ -99,38 +99,6 @@ func (x *RequestType) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type Route struct {
-	Service          *string `protobuf:"bytes,1,req,name=service" json:"service,omitempty"`
-	Weight           *uint32 `protobuf:"varint,2,req,name=weight" json:"weight,omitempty"`
-	Distance         *uint32 `protobuf:"varint,3,opt,name=distance" json:"distance,omitempty"`
-	XXX_unrecognized []byte  `json:"-"`
-}
-
-func (m *Route) Reset()         { *m = Route{} }
-func (m *Route) String() string { return proto.CompactTextString(m) }
-func (*Route) ProtoMessage()    {}
-
-func (m *Route) GetService() string {
-	if m != nil && m.Service != nil {
-		return *m.Service
-	}
-	return ""
-}
-
-func (m *Route) GetWeight() uint32 {
-	if m != nil && m.Weight != nil {
-		return *m.Weight
-	}
-	return 0
-}
-
-func (m *Route) GetDistance() uint32 {
-	if m != nil && m.Distance != nil {
-		return *m.Distance
-	}
-	return 0
-}
-
 type Endpoint struct {
 	Network          *string `protobuf:"bytes,1,req,name=network" json:"network,omitempty"`
 	Address          *string `protobuf:"bytes,2,req,name=address" json:"address,omitempty"`
@@ -165,7 +133,8 @@ func (m *Endpoint) GetTargetId() int64 {
 
 type SubscribeOption struct {
 	Service          *string `protobuf:"bytes,1,req,name=service" json:"service,omitempty"`
-	Distance         *uint32 `protobuf:"varint,2,opt,name=distance" json:"distance,omitempty"`
+	MinDistance      *uint32 `protobuf:"varint,2,opt,name=min_distance" json:"min_distance,omitempty"`
+	MaxDistance      *uint32 `protobuf:"varint,3,opt,name=max_distance" json:"max_distance,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
@@ -180,9 +149,40 @@ func (m *SubscribeOption) GetService() string {
 	return ""
 }
 
-func (m *SubscribeOption) GetDistance() uint32 {
-	if m != nil && m.Distance != nil {
-		return *m.Distance
+func (m *SubscribeOption) GetMinDistance() uint32 {
+	if m != nil && m.MinDistance != nil {
+		return *m.MinDistance
+	}
+	return 0
+}
+
+func (m *SubscribeOption) GetMaxDistance() uint32 {
+	if m != nil && m.MaxDistance != nil {
+		return *m.MaxDistance
+	}
+	return 0
+}
+
+type Route struct {
+	Options          []*SubscribeOption `protobuf:"bytes,1,rep,name=options" json:"options,omitempty"`
+	Weight           *uint32            `protobuf:"varint,2,req,name=weight" json:"weight,omitempty"`
+	XXX_unrecognized []byte             `json:"-"`
+}
+
+func (m *Route) Reset()         { *m = Route{} }
+func (m *Route) String() string { return proto.CompactTextString(m) }
+func (*Route) ProtoMessage()    {}
+
+func (m *Route) GetOptions() []*SubscribeOption {
+	if m != nil {
+		return m.Options
+	}
+	return nil
+}
+
+func (m *Route) GetWeight() uint32 {
+	if m != nil && m.Weight != nil {
+		return *m.Weight
 	}
 	return 0
 }
@@ -190,6 +190,7 @@ func (m *SubscribeOption) GetDistance() uint32 {
 type SubscribeRequest struct {
 	Options          []*SubscribeOption `protobuf:"bytes,1,rep,name=options" json:"options,omitempty"`
 	MaxRetries       *uint32            `protobuf:"varint,2,opt,name=max_retries" json:"max_retries,omitempty"`
+	DisableRoutes    *bool              `protobuf:"varint,3,opt,name=disable_routes" json:"disable_routes,omitempty"`
 	XXX_unrecognized []byte             `json:"-"`
 }
 
@@ -209,6 +210,13 @@ func (m *SubscribeRequest) GetMaxRetries() uint32 {
 		return *m.MaxRetries
 	}
 	return 0
+}
+
+func (m *SubscribeRequest) GetDisableRoutes() bool {
+	if m != nil && m.DisableRoutes != nil {
+		return *m.DisableRoutes
+	}
+	return false
 }
 
 type SubscribeResponse struct {

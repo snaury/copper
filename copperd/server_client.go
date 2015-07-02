@@ -12,6 +12,8 @@ type serverClient struct {
 	conn    copper.Conn
 	failure error
 
+	subscriptions map[int64]*serverSubscription
+
 	published   map[int64]*localEndpoint
 	pubWatchers map[*serverServiceChangeStream]struct{}
 }
@@ -20,7 +22,10 @@ var _ lowLevelServer = &serverClient{}
 
 func newServerClient(s *server, conn net.Conn) *serverClient {
 	c := &serverClient{
-		owner:       s,
+		owner: s,
+
+		subscriptions: make(map[int64]*serverSubscription),
+
 		published:   make(map[int64]*localEndpoint),
 		pubWatchers: make(map[*serverServiceChangeStream]struct{}),
 	}
@@ -29,45 +34,21 @@ func newServerClient(s *server, conn net.Conn) *serverClient {
 	return c
 }
 
-type possibleUpstream struct {
-	owner    *server
-	conn     copper.Conn
-	targetID int64
-	endpoint returnableEndpoint
-}
-
-func (upstream *possibleUpstream) returnUpstream() bool {
-	upstream.owner.lock.Lock()
-	defer upstream.owner.lock.Unlock()
-	return upstream.endpoint.returnEndpointLocked()
-}
-
-func (c *serverClient) selectUpstream(targetID int64) (upstream possibleUpstream, err error) {
+func (c *serverClient) selectUpstream(targetID int64) (upstream endpointReference, err error) {
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
 	if c.failure != nil {
-		return possibleUpstream{}, c.failure
+		return nil, c.failure
 	}
-	pub := c.owner.pubByTarget[targetID]
-	if pub != nil {
+	if sub := c.subscriptions[targetID]; sub != nil {
+		// This is a subscription
+		return sub.selectEndpointLocked()
+	}
+	if pub := c.owner.pubByTarget[targetID]; pub != nil {
 		// This is a direct connection
-		if len(pub.localEndpoints) == 0 {
-			// But there are no endpoints currently published
-			return possibleUpstream{}, copper.ENOROUTE
-		}
-		endpoint, err := pub.selectLocalEndpoint()
-		if err != nil {
-			return possibleUpstream{}, err
-		}
-		return possibleUpstream{
-			owner:    c.owner,
-			conn:     endpoint.key.client.conn,
-			targetID: endpoint.key.targetID,
-			endpoint: endpoint,
-		}, nil
+		return pub.selectEndpointLocked()
 	}
-	// TODO: support for subscription targets
-	return possibleUpstream{}, copper.ENOTARGET
+	return nil, copper.ENOTARGET
 }
 
 func (c *serverClient) HandleStream(stream copper.Stream) {
@@ -92,9 +73,9 @@ func (c *serverClient) HandleStream(stream copper.Stream) {
 		stream.CloseWithError(err)
 		return
 	}
-	defer upstream.returnUpstream()
+	defer upstream.decref()
 
-	remote, err := upstream.conn.Open(upstream.targetID)
+	remote, err := upstream.open()
 	if err != nil {
 		stream.CloseWithError(err)
 		return
@@ -106,6 +87,10 @@ func (c *serverClient) failWithErrorLocked(err error) {
 	if c.failure == nil {
 		c.failure = err
 		c.conn.Close()
+		for targetID, sub := range c.subscriptions {
+			delete(c.subscriptions, targetID)
+			sub.unregisterLocked()
+		}
 		for targetID, endpoint := range c.published {
 			delete(c.published, targetID)
 			endpoint.unregisterLocked()
@@ -125,11 +110,30 @@ func (c *serverClient) serve() {
 }
 
 func (c *serverClient) subscribe(settings SubscribeSettings) (int64, error) {
-	return 0, ErrUnsupported
+	c.owner.lock.Lock()
+	defer c.owner.lock.Unlock()
+	if c.failure != nil {
+		return 0, c.failure
+	}
+	sub, err := c.owner.subscribeLocked(settings)
+	if err != nil {
+		return 0, err
+	}
+	c.subscriptions[sub.targetID] = sub
+	return sub.targetID, nil
 }
 
 func (c *serverClient) getEndpoints(targetID int64) ([]Endpoint, error) {
-	return nil, ErrUnsupported
+	c.owner.lock.Lock()
+	defer c.owner.lock.Unlock()
+	if c.failure != nil {
+		return nil, c.failure
+	}
+	sub := c.subscriptions[targetID]
+	if sub == nil {
+		return nil, fmt.Errorf("target %d is not subscribed", targetID)
+	}
+	return sub.getEndpointsLocked(), nil
 }
 
 func (c *serverClient) streamEndpoints(targetID int64) (EndpointChangesStream, error) {
@@ -137,7 +141,18 @@ func (c *serverClient) streamEndpoints(targetID int64) (EndpointChangesStream, e
 }
 
 func (c *serverClient) unsubscribe(targetID int64) error {
-	return ErrUnsupported
+	c.owner.lock.Lock()
+	defer c.owner.lock.Unlock()
+	if c.failure != nil {
+		return c.failure
+	}
+	sub := c.subscriptions[targetID]
+	if sub == nil {
+		return fmt.Errorf("target %d is not subscribed", targetID)
+	}
+	delete(c.subscriptions, targetID)
+	sub.unregisterLocked()
+	return nil
 }
 
 func (c *serverClient) publish(targetID int64, name string, settings PublishSettings) error {
@@ -186,12 +201,7 @@ func (c *serverClient) setRoute(name string, routes ...Route) error {
 	if c.failure != nil {
 		return c.failure
 	}
-	if len(routes) > 0 {
-		c.owner.routes[name] = routes
-	} else {
-		delete(c.owner.routes, name)
-	}
-	return nil
+	return c.owner.setRouteLocked(name, routes)
 }
 
 func (c *serverClient) listRoutes() ([]string, error) {
@@ -200,8 +210,8 @@ func (c *serverClient) listRoutes() ([]string, error) {
 	if c.failure != nil {
 		return nil, c.failure
 	}
-	names := make([]string, 0, len(c.owner.routes))
-	for name := range c.owner.routes {
+	names := make([]string, 0, len(c.owner.routeByName))
+	for name := range c.owner.routeByName {
 		names = append(names, name)
 	}
 	return names, nil
@@ -213,7 +223,10 @@ func (c *serverClient) lookupRoute(name string) ([]Route, error) {
 	if c.failure != nil {
 		return nil, c.failure
 	}
-	return c.owner.routes[name], nil
+	if r := c.owner.routeByName[name]; r != nil {
+		return r.routes, nil
+	}
+	return nil, nil
 }
 
 func (c *serverClient) streamServices() (ServiceChangeStream, error) {

@@ -14,19 +14,19 @@ const (
 )
 
 // ErrShutdown is returned when server is shutting down
-var ErrShutdown = rpcError{
+var ErrShutdown error = rpcError{
 	error: errors.New("server shutdown"),
 	code:  ESHUTDOWN,
 }
 
 // ErrOverCapacity is returned when service is over its capacity
-var ErrOverCapacity = rpcError{
+var ErrOverCapacity error = rpcError{
 	error: errors.New("service is over capacity"),
 	code:  EOVERCAPACITY,
 }
 
 // ErrUnsupported is returned when feature is not supported
-var ErrUnsupported = rpcError{
+var ErrUnsupported error = rpcError{
 	error: errors.New("feature is not supported"),
 	code:  copper.EUNSUPPORTED,
 }
