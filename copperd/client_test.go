@@ -146,6 +146,10 @@ func TestClientServerCloseRead(t *testing.T) {
 			defer close(mayReadResponse)
 			defer close(mayCloseServer)
 
+			_, err := stream.Peek()
+			if err != nil {
+				t.Fatalf("client: Peek: %v", err)
+			}
 			if 1 != <-mayCloseRead {
 				return
 			}
@@ -176,7 +180,10 @@ func TestClientServerCloseRead(t *testing.T) {
 			if n != 4 || err != nil {
 				t.Fatalf("server: Write: %d, %v", n, err)
 			}
-			stream.Flush()
+			err = stream.Flush()
+			if err != nil {
+				t.Fatalf("server: Flush: %v", err)
+			}
 			mayCloseRead <- 1
 
 			err = stream.WaitWriteClosed()
