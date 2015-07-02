@@ -32,7 +32,7 @@ func connect(address string) Client {
 	return client
 }
 
-func runClientServer(clientfunc func(stream copper.Stream), serverfunc func(stream copper.Stream)) {
+func runClientServerConn(clientfunc func(conn copper.Conn), serverfunc func(stream copper.Stream)) {
 	target, stopper := runServer("localhost:0")
 	defer stopper()
 
@@ -57,14 +57,7 @@ func runClientServer(clientfunc func(stream copper.Stream), serverfunc func(stre
 			log.Fatalf("changes.Read(1): %#v, %v", change, err)
 		}
 
-		func() {
-			stream, err := c.(*client).Open(1)
-			if err != nil {
-				log.Fatalf("c.Open: %v", err)
-			}
-			defer stream.Close()
-			clientfunc(stream)
-		}()
+		clientfunc(c.(*clientConn))
 
 		clientFinished <- 1
 
@@ -95,6 +88,20 @@ func runClientServer(clientfunc func(stream copper.Stream), serverfunc func(stre
 	}()
 
 	<-unpublishSeen
+}
+
+func runClientServer(clientfunc func(stream copper.Stream), serverfunc func(stream copper.Stream)) {
+	runClientServerConn(
+		func(conn copper.Conn) {
+			stream, err := conn.Open(1)
+			if err != nil {
+				log.Fatalf("conn.Open: %v", err)
+			}
+			defer stream.Close()
+			clientfunc(stream)
+		},
+		serverfunc,
+	)
 }
 
 func TestClientServer(t *testing.T) {

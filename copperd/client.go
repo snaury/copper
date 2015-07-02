@@ -6,16 +6,16 @@ import (
 	"github.com/snaury/copper"
 )
 
-type client struct {
+type clientConn struct {
 	rpcClient
 	hmap *copper.StreamHandlerMap
 }
 
-var _ Client = &client{}
+var _ Client = &clientConn{}
 
-func newClient(conn net.Conn) *client {
+func newClient(conn net.Conn) *clientConn {
 	hmap := copper.NewStreamHandlerMap(nil)
-	return &client{
+	return &clientConn{
 		rpcClient: rpcClient{
 			Conn:     copper.NewConn(conn, hmap, false),
 			targetID: 0,
@@ -24,7 +24,7 @@ func newClient(conn net.Conn) *client {
 	}
 }
 
-func dialClient(network, address string) (*client, error) {
+func dialClient(network, address string) (*clientConn, error) {
 	conn, err := net.Dial(network, address)
 	if err != nil {
 		return nil, err
@@ -33,7 +33,7 @@ func dialClient(network, address string) (*client, error) {
 }
 
 type clientSubscription struct {
-	owner    *client
+	owner    *clientConn
 	targetID int64
 }
 
@@ -53,7 +53,7 @@ func (sub *clientSubscription) Stop() error {
 	return sub.owner.unsubscribe(sub.targetID)
 }
 
-func (c *client) Subscribe(settings SubscribeSettings) (Subscription, error) {
+func (c *clientConn) Subscribe(settings SubscribeSettings) (Subscription, error) {
 	targetID, err := c.subscribe(settings)
 	if err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func (c *client) Subscribe(settings SubscribeSettings) (Subscription, error) {
 }
 
 type clientPublication struct {
-	owner    *client
+	owner    *clientConn
 	targetID int64
 }
 
@@ -75,7 +75,7 @@ func (pub *clientPublication) Stop() error {
 	return err
 }
 
-func (c *client) Publish(name string, settings PublishSettings, handler copper.StreamHandler) (Publication, error) {
+func (c *clientConn) Publish(name string, settings PublishSettings, handler copper.StreamHandler) (Publication, error) {
 	targetID := c.hmap.Add(handler)
 	err := c.publish(targetID, name, settings)
 	if err != nil {
@@ -88,14 +88,14 @@ func (c *client) Publish(name string, settings PublishSettings, handler copper.S
 	}, nil
 }
 
-func (c *client) SetRoute(name string, routes ...Route) error {
+func (c *clientConn) SetRoute(name string, routes ...Route) error {
 	return c.setRoute(name, routes...)
 }
 
-func (c *client) LookupRoute(name string) ([]Route, error) {
+func (c *clientConn) LookupRoute(name string) ([]Route, error) {
 	return c.lookupRoute(name)
 }
 
-func (c *client) ServiceChanges() (ServiceChangeStream, error) {
+func (c *clientConn) ServiceChanges() (ServiceChangeStream, error) {
 	return c.streamServices()
 }
