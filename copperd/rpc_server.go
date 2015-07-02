@@ -95,8 +95,9 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 			return copper.EINVALIDDATA
 		}
 		err = server.publish(request.GetTargetId(), request.GetName(), PublishSettings{
-			Distance:    request.GetDistance(),
-			Concurrency: request.GetConcurrency(),
+			Distance:     request.GetDistance(),
+			Concurrency:  request.GetConcurrency(),
+			MaxQueueSize: request.GetMaxQueueSize(),
 		})
 		if err != nil {
 			return err
@@ -124,6 +125,19 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 			return err
 		}
 		return rpcWriteMessage(stream, &protocol.SetRouteResponse{})
+	case protocol.RequestType_ListRoutes:
+		var request protocol.ListRoutesRequest
+		err = rpcReadMessage(stream, &request)
+		if err != nil {
+			return copper.EINVALIDDATA
+		}
+		names, err := server.listRoutes()
+		if err != nil {
+			return err
+		}
+		return rpcWriteMessage(stream, &protocol.ListRoutesResponse{
+			Names: names,
+		})
 	case protocol.RequestType_LookupRoute:
 		var request protocol.LookupRouteRequest
 		err = rpcReadMessage(stream, &request)

@@ -26,6 +26,8 @@ It has these top-level messages:
 	UnpublishResponse
 	SetRouteRequest
 	SetRouteResponse
+	ListRoutesRequest
+	ListRoutesResponse
 	LookupRouteRequest
 	LookupRouteResponse
 	StreamServicesRequest
@@ -50,20 +52,22 @@ const (
 	RequestType_Publish         RequestType = 5
 	RequestType_Unpublish       RequestType = 6
 	RequestType_SetRoute        RequestType = 7
-	RequestType_LookupRoute     RequestType = 8
-	RequestType_StreamServices  RequestType = 9
+	RequestType_ListRoutes      RequestType = 8
+	RequestType_LookupRoute     RequestType = 9
+	RequestType_StreamServices  RequestType = 10
 )
 
 var RequestType_name = map[int32]string{
-	1: "Subscribe",
-	2: "GetEndpoints",
-	3: "StreamEndpoints",
-	4: "Unsubscribe",
-	5: "Publish",
-	6: "Unpublish",
-	7: "SetRoute",
-	8: "LookupRoute",
-	9: "StreamServices",
+	1:  "Subscribe",
+	2:  "GetEndpoints",
+	3:  "StreamEndpoints",
+	4:  "Unsubscribe",
+	5:  "Publish",
+	6:  "Unpublish",
+	7:  "SetRoute",
+	8:  "ListRoutes",
+	9:  "LookupRoute",
+	10: "StreamServices",
 }
 var RequestType_value = map[string]int32{
 	"Subscribe":       1,
@@ -73,8 +77,9 @@ var RequestType_value = map[string]int32{
 	"Publish":         5,
 	"Unpublish":       6,
 	"SetRoute":        7,
-	"LookupRoute":     8,
-	"StreamServices":  9,
+	"ListRoutes":      8,
+	"LookupRoute":     9,
+	"StreamServices":  10,
 }
 
 func (x RequestType) Enum() *RequestType {
@@ -323,6 +328,7 @@ type PublishRequest struct {
 	Name             *string `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
 	Distance         *uint32 `protobuf:"varint,3,opt,name=distance" json:"distance,omitempty"`
 	Concurrency      *uint32 `protobuf:"varint,4,opt,name=concurrency" json:"concurrency,omitempty"`
+	MaxQueueSize     *uint32 `protobuf:"varint,5,opt,name=max_queue_size" json:"max_queue_size,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
@@ -354,6 +360,13 @@ func (m *PublishRequest) GetDistance() uint32 {
 func (m *PublishRequest) GetConcurrency() uint32 {
 	if m != nil && m.Concurrency != nil {
 		return *m.Concurrency
+	}
+	return 0
+}
+
+func (m *PublishRequest) GetMaxQueueSize() uint32 {
+	if m != nil && m.MaxQueueSize != nil {
+		return *m.MaxQueueSize
 	}
 	return 0
 }
@@ -421,6 +434,30 @@ type SetRouteResponse struct {
 func (m *SetRouteResponse) Reset()         { *m = SetRouteResponse{} }
 func (m *SetRouteResponse) String() string { return proto.CompactTextString(m) }
 func (*SetRouteResponse) ProtoMessage()    {}
+
+type ListRoutesRequest struct {
+	XXX_unrecognized []byte `json:"-"`
+}
+
+func (m *ListRoutesRequest) Reset()         { *m = ListRoutesRequest{} }
+func (m *ListRoutesRequest) String() string { return proto.CompactTextString(m) }
+func (*ListRoutesRequest) ProtoMessage()    {}
+
+type ListRoutesResponse struct {
+	Names            []string `protobuf:"bytes,1,rep,name=names" json:"names,omitempty"`
+	XXX_unrecognized []byte   `json:"-"`
+}
+
+func (m *ListRoutesResponse) Reset()         { *m = ListRoutesResponse{} }
+func (m *ListRoutesResponse) String() string { return proto.CompactTextString(m) }
+func (*ListRoutesResponse) ProtoMessage()    {}
+
+func (m *ListRoutesResponse) GetNames() []string {
+	if m != nil {
+		return m.Names
+	}
+	return nil
+}
 
 type LookupRouteRequest struct {
 	Name             *string `protobuf:"bytes,1,req,name=name" json:"name,omitempty"`

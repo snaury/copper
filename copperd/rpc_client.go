@@ -129,10 +129,11 @@ func (c *rpcClient) publish(targetID int64, name string, settings PublishSetting
 		c.targetID,
 		protocol.RequestType_Publish,
 		&protocol.PublishRequest{
-			TargetId:    proto.Int64(targetID),
-			Name:        proto.String(name),
-			Distance:    proto.Uint32(settings.Distance),
-			Concurrency: proto.Uint32(settings.Concurrency),
+			TargetId:     proto.Int64(targetID),
+			Name:         proto.String(name),
+			Distance:     proto.Uint32(settings.Distance),
+			Concurrency:  proto.Uint32(settings.Concurrency),
+			MaxQueueSize: proto.Uint32(settings.MaxQueueSize),
 		},
 		&response,
 	)
@@ -175,6 +176,21 @@ func (c *rpcClient) setRoute(name string, routes ...Route) error {
 		return err
 	}
 	return nil
+}
+
+func (c *rpcClient) listRoutes() ([]string, error) {
+	var response protocol.ListRoutesResponse
+	err := rpcSimpleRequest(
+		c.Conn,
+		c.targetID,
+		protocol.RequestType_ListRoutes,
+		&protocol.ListRoutesRequest{},
+		&response,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return response.GetNames(), nil
 }
 
 func (c *rpcClient) lookupRoute(name string) ([]Route, error) {

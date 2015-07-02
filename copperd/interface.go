@@ -65,8 +65,9 @@ type Subscription interface {
 // PublishSettings describes how far is copperd allowed to advertise the
 // service and how many concurrent streams an instance is able to handle.
 type PublishSettings struct {
-	Distance    uint32
-	Concurrency uint32
+	Distance     uint32
+	Concurrency  uint32
+	MaxQueueSize uint32
 }
 
 // Publication is a handle to a copperd publication

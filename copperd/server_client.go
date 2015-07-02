@@ -2,10 +2,7 @@ package copperd
 
 import (
 	"fmt"
-	"io"
 	"net"
-	"sync"
-	"sync/atomic"
 
 	"github.com/snaury/copper"
 )
@@ -15,7 +12,7 @@ type serverClient struct {
 	conn    copper.Conn
 	failure error
 
-	published   map[int64]string
+	published   map[int64]*localEndpoint
 	pubWatchers map[*serverServiceChangeStream]struct{}
 }
 
@@ -24,7 +21,7 @@ var _ lowLevelServer = &serverClient{}
 func newServerClient(s *server, conn net.Conn) *serverClient {
 	c := &serverClient{
 		owner:       s,
-		published:   make(map[int64]string),
+		published:   make(map[int64]*localEndpoint),
 		pubWatchers: make(map[*serverServiceChangeStream]struct{}),
 	}
 	c.conn = copper.NewConn(conn, c, true)
@@ -33,75 +30,44 @@ func newServerClient(s *server, conn net.Conn) *serverClient {
 }
 
 type possibleUpstream struct {
+	owner    *server
 	conn     copper.Conn
 	targetID int64
+	endpoint returnableEndpoint
 }
 
-func (c *serverClient) selectUpstreams(targetID int64) (upstreams []possibleUpstream, err error) {
+func (upstream *possibleUpstream) returnUpstream() bool {
+	upstream.owner.lock.Lock()
+	defer upstream.owner.lock.Unlock()
+	return upstream.endpoint.returnEndpointLocked()
+}
+
+func (c *serverClient) selectUpstream(targetID int64) (upstream possibleUpstream, err error) {
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
 	if c.failure != nil {
-		return nil, c.failure
+		return possibleUpstream{}, c.failure
 	}
 	pub := c.owner.pubByTarget[targetID]
 	if pub != nil {
 		// This is a direct connection
-		for client, endpoints := range pub.localEndpoints {
-			for clientTargetID, settings := range endpoints {
-				if settings.Concurrency > 0 {
-					upstreams = append(upstreams, possibleUpstream{
-						conn:     client.conn,
-						targetID: clientTargetID,
-					})
-				}
-			}
+		if len(pub.localEndpoints) == 0 {
+			// But there are no endpoints currently published
+			return possibleUpstream{}, copper.ENOROUTE
 		}
-		return
-	}
-	// Might be a subscription
-	return nil, copper.ENOTARGET
-}
-
-func passthru(dst, src copper.Stream) {
-	var writeclosed uint32
-	go func() {
-		err := dst.WaitWriteClosed()
-		atomic.AddUint32(&writeclosed, 1)
-		if err == copper.ESTREAMCLOSED {
-			src.CloseRead()
-		} else {
-			src.CloseReadError(err)
-		}
-	}()
-	for {
-		buf, err := src.Peek()
-		if atomic.LoadUint32(&writeclosed) > 0 {
-			// Don't react to CloseRead in the above goroutine
-			return
-		}
-		if len(buf) > 0 {
-			n, werr := dst.Write(buf)
-			if n > 0 {
-				src.Discard(n)
-			}
-			if werr != nil {
-				if werr == copper.ESTREAMCLOSED {
-					src.CloseRead()
-				} else {
-					src.CloseReadError(werr)
-				}
-				return
-			}
-		}
+		endpoint, err := pub.selectLocalEndpoint()
 		if err != nil {
-			if err == io.EOF {
-				dst.CloseWrite()
-			} else {
-				dst.CloseWithError(err)
-			}
-			return
+			return possibleUpstream{}, err
 		}
+		return possibleUpstream{
+			owner:    c.owner,
+			conn:     endpoint.key.client.conn,
+			targetID: endpoint.key.targetID,
+			endpoint: endpoint,
+		}, nil
 	}
+	// TODO: support for subscription targets
+	return possibleUpstream{}, copper.ENOTARGET
 }
 
 func (c *serverClient) HandleStream(stream copper.Stream) {
@@ -121,37 +87,29 @@ func (c *serverClient) HandleStream(stream copper.Stream) {
 		return
 	}
 	// Need to find an upstream and forward the data
-	upstreams, err := c.selectUpstreams(stream.TargetID())
+	upstream, err := c.selectUpstream(stream.TargetID())
 	if err != nil {
 		stream.CloseWithError(err)
 		return
 	}
-	for _, upstream := range upstreams {
-		dst, err := upstream.conn.Open(upstream.targetID)
-		if err != nil {
-			continue
-		}
-		defer dst.Close()
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			passthru(dst, stream)
-		}()
-		go func() {
-			defer wg.Done()
-			passthru(stream, dst)
-		}()
-		wg.Wait()
+	defer upstream.returnUpstream()
+
+	remote, err := upstream.conn.Open(upstream.targetID)
+	if err != nil {
+		stream.CloseWithError(err)
 		return
 	}
-	stream.CloseWithError(copper.ENOROUTE)
+	passthruBoth(stream, remote)
 }
 
 func (c *serverClient) failWithErrorLocked(err error) {
 	if c.failure == nil {
 		c.failure = err
 		c.conn.Close()
+		for targetID, endpoint := range c.published {
+			delete(c.published, targetID)
+			endpoint.unregisterLocked()
+		}
 		for cs := range c.pubWatchers {
 			cs.stopLocked()
 		}
@@ -188,14 +146,18 @@ func (c *serverClient) publish(targetID int64, name string, settings PublishSett
 	if c.failure != nil {
 		return c.failure
 	}
-	if oldName, ok := c.published[targetID]; ok {
-		return fmt.Errorf("target %d is already published as %q", targetID, oldName)
+	if old := c.published[targetID]; old != nil && old.pub != nil {
+		return fmt.Errorf("target %d is already published as %q", targetID, old.pub.name)
 	}
-	err := c.owner.publishLocalLocked(name, c, targetID, settings)
+	key := localEndpointKey{
+		client:   c,
+		targetID: targetID,
+	}
+	endpoint, err := c.owner.publishLocalLocked(name, key, settings)
 	if err != nil {
 		return fmt.Errorf("target %d cannot be published: %s", targetID, err)
 	}
-	c.published[targetID] = name
+	c.published[targetID] = endpoint
 	return nil
 }
 
@@ -205,11 +167,12 @@ func (c *serverClient) unpublish(targetID int64) error {
 	if c.failure != nil {
 		return c.failure
 	}
-	name, ok := c.published[targetID]
-	if !ok {
+	endpoint := c.published[targetID]
+	if endpoint == nil {
 		return fmt.Errorf("target %d is not published", targetID)
 	}
-	err := c.owner.unpublishLocalLocked(name, c, targetID)
+	delete(c.published, targetID)
+	err := endpoint.unregisterLocked()
 	if err != nil {
 		return fmt.Errorf("target %d cannot be unpublished: %s", targetID, err)
 	}
@@ -229,6 +192,19 @@ func (c *serverClient) setRoute(name string, routes ...Route) error {
 		delete(c.owner.routes, name)
 	}
 	return nil
+}
+
+func (c *serverClient) listRoutes() ([]string, error) {
+	c.owner.lock.Lock()
+	defer c.owner.lock.Unlock()
+	if c.failure != nil {
+		return nil, c.failure
+	}
+	names := make([]string, 0, len(c.owner.routes))
+	for name := range c.owner.routes {
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 func (c *serverClient) lookupRoute(name string) ([]Route, error) {

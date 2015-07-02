@@ -56,6 +56,7 @@ message PublishRequest {
     required string name = 2;
     optional uint32 distance = 3;
     optional uint32 concurrency = 4;
+    optional uint32 max_queue_size = 5;
 }
 
 message PublishResponse {
@@ -77,6 +78,14 @@ message SetRouteRequest {
 
 message SetRouteResponse {
     // nothing yet
+}
+
+message ListRoutesRequest {
+    // nothing yet
+}
+
+message ListRoutesResponse {
+    repeated string names = 1;
 }
 
 message LookupRouteRequest {
@@ -106,6 +115,7 @@ enum RequestType {
     Publish = 5;
     Unpublish = 6;
     SetRoute = 7;
-    LookupRoute = 8;
-    StreamServices = 9;
+    ListRoutes = 8;
+    LookupRoute = 9;
+    StreamServices = 10;
 }
