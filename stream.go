@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -96,36 +95,6 @@ const (
 	flagStreamDiscard   = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
 )
 
-type expiration struct {
-	t       *time.Timer
-	cond    *sync.Cond
-	expired bool
-}
-
-func newExpiration(cond *sync.Cond, d time.Duration) *expiration {
-	e := &expiration{
-		cond: cond,
-	}
-	e.t = time.AfterFunc(d, e.callback)
-	return e
-}
-
-func (e *expiration) callback() {
-	e.cond.L.Lock()
-	defer e.cond.L.Unlock()
-	if !e.expired {
-		e.expired = true
-		e.cond.Broadcast()
-	}
-}
-
-func (e *expiration) stop() bool {
-	if e.t != nil {
-		return e.t.Stop()
-	}
-	return false
-}
-
 // StreamAddr describes endpoint addresses for streams
 type StreamAddr struct {
 	NetAddr  net.Addr
@@ -155,11 +124,11 @@ type rawStream struct {
 	targetID   int64
 	owner      *rawConn
 	flags      int
-	mayread    sync.Cond
+	mayread    condWithDeadline
 	readbuf    buffer
 	readerror  error
 	readwindow int
-	maywrite   sync.Cond
+	maywrite   condWithDeadline
 	writebuf   buffer
 	writeerror error
 	writeleft  int
@@ -167,14 +136,8 @@ type rawStream struct {
 	writenack  int
 	writefail  int
 	reseterror error
-	flushed    sync.Cond
-	acked      sync.Cond
-	rdeadline  time.Time
-	wdeadline  time.Time
-	readexp    *expiration
-	writeexp   *expiration
-	flushexp   *expiration
-	ackexp     *expiration
+	flushed    condWithDeadline
+	acked      condWithDeadline
 }
 
 var _ Stream = &rawStream{}
@@ -187,10 +150,10 @@ func newIncomingStream(owner *rawConn, frame openFrame, readwindow, writewindow 
 		readwindow: readwindow,
 		writeleft:  writewindow,
 	}
-	s.mayread.L = &owner.lock
-	s.maywrite.L = &owner.lock
-	s.flushed.L = &owner.lock
-	s.acked.L = &owner.lock
+	s.mayread.init(&owner.lock)
+	s.maywrite.init(&owner.lock)
+	s.flushed.init(&owner.lock)
+	s.acked.init(&owner.lock)
 	if len(frame.data) > 0 {
 		s.readbuf.write(frame.data)
 	}
@@ -210,10 +173,10 @@ func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64, readwind
 		readwindow: readwindow,
 		writeleft:  writewindow,
 	}
-	s.mayread.L = &owner.lock
-	s.maywrite.L = &owner.lock
-	s.flushed.L = &owner.lock
-	s.acked.L = &owner.lock
+	s.mayread.init(&owner.lock)
+	s.maywrite.init(&owner.lock)
+	s.flushed.init(&owner.lock)
+	s.acked.init(&owner.lock)
 	s.flags |= flagStreamNeedOpen
 	return s
 }
@@ -245,40 +208,13 @@ func (s *rawStream) clearWriteBuffer() {
 }
 
 func (s *rawStream) setReadDeadlineLocked(t time.Time) {
-	if s.rdeadline != t {
-		if s.readexp != nil {
-			s.readexp.stop()
-			s.readexp = nil
-		}
-		s.rdeadline = t
-		if !t.IsZero() {
-			// Reads already waiting need to have a chance to timeout
-			s.mayread.Broadcast()
-		}
-	}
+	s.mayread.setDeadline(t)
 }
 
 func (s *rawStream) setWriteDeadlineLocked(t time.Time) {
-	if s.wdeadline != t {
-		if s.writeexp != nil {
-			s.writeexp.stop()
-			s.writeexp = nil
-		}
-		if s.flushexp != nil {
-			s.flushexp.stop()
-			s.flushexp = nil
-		}
-		if s.ackexp != nil {
-			s.ackexp.stop()
-			s.ackexp = nil
-		}
-		s.wdeadline = t
-		if !t.IsZero() {
-			// Writes already waiting need to have a chance to timeout
-			s.maywrite.Broadcast()
-			s.acked.Broadcast()
-		}
-	}
+	s.maywrite.setDeadline(t)
+	s.flushed.setDeadline(t)
+	s.acked.setDeadline(t)
 }
 
 func (s *rawStream) waitReadLocked() error {
@@ -286,16 +222,9 @@ func (s *rawStream) waitReadLocked() error {
 		if s.readerror != nil {
 			return s.readerror
 		}
-		if s.readexp == nil && !s.rdeadline.IsZero() {
-			d := s.rdeadline.Sub(time.Now())
-			if d <= 0 {
-				return errTimeout
-			}
-			s.readexp = newExpiration(&s.mayread, d)
-		}
-		s.mayread.Wait()
-		if s.readexp != nil && s.readexp.expired {
-			return errTimeout
+		err := s.mayread.Wait()
+		if err != nil {
+			return err
 		}
 	}
 	return nil
@@ -303,16 +232,9 @@ func (s *rawStream) waitReadLocked() error {
 
 func (s *rawStream) waitWriteLocked() error {
 	for s.writeerror == nil && s.writeleft <= 0 {
-		if s.writeexp == nil && !s.wdeadline.IsZero() {
-			d := s.wdeadline.Sub(time.Now())
-			if d <= 0 {
-				return errTimeout
-			}
-			s.writeexp = newExpiration(&s.maywrite, d)
-		}
-		s.maywrite.Wait()
-		if s.writeexp != nil && s.writeexp.expired {
-			return errTimeout
+		err := s.maywrite.Wait()
+		if err != nil {
+			return err
 		}
 	}
 	return s.writeerror
@@ -323,16 +245,9 @@ func (s *rawStream) waitFlushLocked() error {
 		if s.reseterror != nil {
 			break
 		}
-		if s.flushexp == nil && !s.wdeadline.IsZero() {
-			d := s.wdeadline.Sub(time.Now())
-			if d <= 0 {
-				return errTimeout
-			}
-			s.flushexp = newExpiration(&s.flushed, d)
-		}
-		s.flushed.Wait()
-		if s.flushexp != nil && s.flushexp.expired {
-			return errTimeout
+		err := s.flushed.Wait()
+		if err != nil {
+			return err
 		}
 	}
 	return s.writeerror
@@ -343,16 +258,9 @@ func (s *rawStream) waitAckLocked(n int) error {
 		if s.reseterror != nil {
 			break
 		}
-		if s.ackexp == nil && !s.wdeadline.IsZero() {
-			d := s.wdeadline.Sub(time.Now())
-			if d <= 0 {
-				return errTimeout
-			}
-			s.ackexp = newExpiration(&s.acked, d)
-		}
-		s.acked.Wait()
-		if s.ackexp != nil && s.ackexp.expired {
-			return errTimeout
+		err := s.acked.Wait()
+		if err != nil {
+			return err
 		}
 	}
 	return s.writeerror

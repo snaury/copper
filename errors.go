@@ -128,8 +128,8 @@ func (e unknownFrameError) ErrorCode() ErrorCode { return EUNKNOWNFRAME }
 
 type timeoutError struct{}
 
-var _ Error = errTimeout
-var errTimeout = &timeoutError{}
+var _ Error = &timeoutError{}
+var errTimeout error = &timeoutError{}
 
 func (e *timeoutError) Error() string        { return "i/o timeout" }
 func (e *timeoutError) Timeout() bool        { return true }
