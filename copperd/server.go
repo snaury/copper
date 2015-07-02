@@ -30,8 +30,7 @@ type server struct {
 
 	lastTargetID int64
 
-	subByTarget map[int64]*serverSubscription
-	subByName   map[string]map[*serverSubscription]struct{}
+	subByName map[string]map[*serverSubscription]struct{}
 
 	pubByTarget map[int64]*serverPublication
 	pubByName   map[string]*serverPublication
@@ -50,8 +49,7 @@ func NewServer() Server {
 	s := &server{
 		random: rand.New(rand.NewSource(time.Now().UnixNano())),
 
-		subByTarget: make(map[int64]*serverSubscription),
-		subByName:   make(map[string]map[*serverSubscription]struct{}),
+		subByName: make(map[string]map[*serverSubscription]struct{}),
 
 		pubByTarget: make(map[int64]*serverPublication),
 		pubByName:   make(map[string]*serverPublication),
@@ -203,7 +201,6 @@ func (sub *serverSubscription) removePublicationLocked(pub *serverPublication) {
 
 func (sub *serverSubscription) registerLocked() {
 	changed := false
-	sub.owner.subByTarget[sub.targetID] = sub
 	for index, option := range sub.settings.Options {
 		// Let others know we have an interested in this name
 		subs := sub.owner.subByName[option.Service]
@@ -255,7 +252,6 @@ func (sub *serverSubscription) unregisterLocked() {
 			}
 		}
 	}
-	delete(sub.owner.subByTarget, sub.targetID)
 	sub.active = len(sub.settings.Options)
 }
 
@@ -431,7 +427,9 @@ func (endpoint *localEndpoint) unregisterLocked() error {
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addRemovedLocked(pub)
 		}
-		// TODO: notify subscriptions
+		for sub := range pub.subscriptions {
+			sub.removePublicationLocked(pub)
+		}
 	} else {
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addChangedLocked(pub)
@@ -461,6 +459,9 @@ func (s *server) publishLocalLocked(name string, key localEndpointKey, ps Publis
 		pub.hasready.L = &s.lock
 		s.pubByName[pub.name] = pub
 		s.pubByTarget[pub.targetID] = pub
+		for sub := range s.subByName[pub.name] {
+			sub.addPublicationLocked(pub)
+		}
 	}
 
 	endpoint := &localEndpoint{

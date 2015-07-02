@@ -32,89 +32,218 @@ func connect(address string) Client {
 	return client
 }
 
-func runClientServerConn(clientfunc func(conn *clientConn), serverfunc func(stream copper.Stream)) {
+func runClientServerRaw(clientfunc func(conn Client), serverfunc func(conn Client)) {
 	target, stopper := runServer("localhost:0")
 	defer stopper()
 
-	clientFinished := make(chan int, 1)
-	unpublishSeen := make(chan int, 1)
+	serverFinished := make(chan int, 1)
 
 	go func() {
-		defer close(clientFinished)
-		defer close(unpublishSeen)
-
-		c := connect(target)
-		defer c.Close()
-
-		changes, err := c.ServiceChanges()
-		if err != nil {
-			log.Fatalf("c.ServiceChanges: %s", err)
-		}
-		defer changes.Stop()
-
-		change, err := changes.Read()
-		if err != nil || change.TargetID != 1 || change.Name != "test/myservice" {
-			log.Fatalf("changes.Read(1): %#v, %v", change, err)
-		}
-
-		clientfunc(c.(*clientConn))
-
-		clientFinished <- 1
-
-		change, err = changes.Read()
-		if err != nil || change.TargetID != -1 || change.Name != "test/myservice" {
-			log.Fatalf("changes.Read(2): %#v, %v", change, err)
-		}
-
-		unpublishSeen <- 1
+		defer close(serverFinished)
+		conn := connect(target)
+		defer conn.Close()
+		serverfunc(conn)
 	}()
 
 	func() {
-		c := connect(target)
-		defer c.Close()
-
-		pub, err := c.Publish("test/myservice", PublishSettings{
-			Distance:    2,
-			Concurrency: 3,
-		}, copper.StreamHandlerFunc(func(stream copper.Stream) {
-			serverfunc(stream)
-		}))
-		if err != nil {
-			log.Fatalf("c.Publish: %v", err)
-		}
-		defer pub.Stop()
-
-		<-clientFinished
+		conn := connect(target)
+		defer conn.Close()
+		clientfunc(conn)
 	}()
 
-	<-unpublishSeen
+	<-serverFinished
 }
 
-func runClientServer(clientfunc func(stream copper.Stream), serverfunc func(stream copper.Stream)) {
-	runClientServerConn(
-		func(conn *clientConn) {
-			sub, err := conn.Subscribe(SubscribeSettings{
-				Options: []SubscribeOption{
-					{Service: "test/myservice"},
-				},
-			})
-			if err != nil {
-				log.Fatalf("conn.Subscribe: %v", err)
+func TestPublishChanges(t *testing.T) {
+	published := make(chan int, 1)
+	unpublish := make(chan int, 1)
+
+	expectedChange1 := ServiceChange{
+		TargetID:    1,
+		Name:        "test:myservice",
+		Distance:    2,
+		Concurrency: 3,
+	}
+	expectedChange2 := ServiceChange{
+		TargetID: -1,
+		Name:     "test:myservice",
+	}
+
+	runClientServerRaw(
+		func(client Client) {
+			defer close(unpublish)
+
+			if 1 != <-published {
+				return
 			}
-			defer sub.Stop()
-			stream, err := sub.Open()
+
+			changes, err := client.ServiceChanges()
 			if err != nil {
-				log.Fatalf("sub.Open: %v", err)
+				log.Fatalf("client: ServiceChanges: %s", err)
 			}
-			defer stream.Close()
-			clientfunc(stream)
+			defer changes.Stop()
+
+			change, err := changes.Read()
+			if err != nil || change != expectedChange1 {
+				log.Fatalf("client: changes(1): %#v, %v", change, err)
+			}
+
+			unpublish <- 1
+
+			change, err = changes.Read()
+			if err != nil || change != expectedChange2 {
+				log.Fatalf("client: changes(2): %#v, %v", change, err)
+			}
 		},
-		serverfunc,
+		func(server Client) {
+			defer close(published)
+
+			pub, err := server.Publish(
+				"test:myservice",
+				PublishSettings{
+					Distance:    2,
+					Concurrency: 3,
+				},
+				nil,
+			)
+			if err != nil {
+				log.Fatalf("server: Publish: %s", err)
+			}
+			defer pub.Stop()
+
+			published <- 1
+			if 1 != <-unpublish {
+				return
+			}
+
+			err = pub.Stop()
+			if err != nil {
+				log.Fatalf("server: Unpublish: %s", err)
+			}
+		},
 	)
 }
 
-func TestClientServer(t *testing.T) {
-	runClientServer(
+func runClientServerService(clientfunc func(conn Client), serverfunc func(stream copper.Stream), name string, settings PublishSettings) {
+	published := make(chan int, 1)
+	unpublish := make(chan int, 1)
+	runClientServerRaw(
+		func(client Client) {
+			defer close(unpublish)
+
+			if 1 != <-published {
+				return
+			}
+
+			clientfunc(client)
+
+			unpublish <- 1
+		},
+		func(server Client) {
+			defer close(published)
+
+			pub, err := server.Publish(
+				name,
+				settings,
+				copper.StreamHandlerFunc(serverfunc),
+			)
+			if err != nil {
+				log.Fatalf("server: Publish: %s", err)
+			}
+			defer pub.Stop()
+
+			published <- 1
+			if 1 != <-unpublish {
+				return
+			}
+
+			err = pub.Stop()
+			if err != nil {
+				log.Fatalf("server: Unpublish: %s", err)
+			}
+		},
+	)
+}
+
+func TestSubscribeEndpoints(t *testing.T) {
+	expectedEndpoint := Endpoint{
+		TargetID: 1,
+	}
+	runClientServerService(
+		func(client Client) {
+			sub1, err := client.Subscribe(SubscribeSettings{
+				Options: []SubscribeOption{
+					{Service: "test:myservice"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("client: Subscribe(1): %s", err)
+			}
+			defer sub1.Stop()
+
+			endpoints1, err := sub1.Endpoints()
+			if err != nil || len(endpoints1) != 1 || endpoints1[0] != expectedEndpoint {
+				t.Fatalf("client: Endpoints(1): %#v, %v", endpoints1, err)
+			}
+
+			sub2, err := client.Subscribe(SubscribeSettings{
+				Options: []SubscribeOption{
+					{Service: "test:myservice", MinDistance: 1, MaxDistance: 1},
+				},
+			})
+			if err != nil {
+				t.Fatalf("client: Subscribe(2): %s", err)
+			}
+			defer sub2.Stop()
+
+			endpoints2, err := sub2.Endpoints()
+			if err != nil || len(endpoints2) != 0 {
+				t.Fatalf("client: Endpoints(2): %#v, %v", endpoints2, err)
+			}
+		},
+		func(stream copper.Stream) {
+			// nothing
+		},
+		"test:myservice",
+		PublishSettings{
+			Distance:    1,
+			Concurrency: 2,
+		},
+	)
+}
+
+func runClientServerStream(clientfunc func(stream copper.Stream), serverfunc func(stream copper.Stream)) {
+	runClientServerService(
+		func(client Client) {
+			sub, err := client.Subscribe(SubscribeSettings{
+				Options: []SubscribeOption{
+					{Service: "test:myservice"},
+				},
+			})
+			if err != nil {
+				log.Fatalf("client: Subscribe: %s", err)
+			}
+			defer sub.Stop()
+
+			stream, err := sub.Open()
+			if err != nil {
+				log.Fatalf("client: Open: %s", err)
+			}
+			defer stream.Close()
+
+			clientfunc(stream)
+		},
+		serverfunc,
+		"test:myservice",
+		PublishSettings{
+			Distance:    0,
+			Concurrency: 1,
+		},
+	)
+}
+
+func TestClientServerStream(t *testing.T) {
+	runClientServerStream(
 		func(stream copper.Stream) {
 			n, err := stream.Write([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 			if n != 8 || err != nil {
@@ -128,7 +257,6 @@ func TestClientServer(t *testing.T) {
 			if n != 8 || err != copper.EINTERNAL {
 				t.Fatalf("failed to read: %d, %v", n, err)
 			}
-			t.Logf("client read: % x", buf)
 			stream.Close()
 		},
 		func(stream copper.Stream) {
@@ -137,7 +265,6 @@ func TestClientServer(t *testing.T) {
 			if n != 8 || err != nil {
 				t.Fatalf("server read: %d, %v", n, err)
 			}
-			t.Logf("server read: % x", buf[:n])
 			stream.Write(buf[:n])
 			stream.CloseWithError(copper.EINTERNAL)
 		},
@@ -150,7 +277,7 @@ func TestClientServerCloseRead(t *testing.T) {
 	mayReadResponse := make(chan int, 1)
 	mayCloseClient := make(chan int, 1)
 	mayCloseServer := make(chan int, 1)
-	runClientServer(
+	runClientServerStream(
 		func(stream copper.Stream) {
 			defer close(mayReadResponse)
 			defer close(mayCloseServer)
