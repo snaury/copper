@@ -15,14 +15,15 @@ type rpcClient struct {
 
 var _ lowLevelServer = &rpcClient{}
 
-func (c *rpcClient) subscribe(options ...SubscribeOption) (int64, error) {
+func (c *rpcClient) subscribe(settings SubscribeSettings) (int64, error) {
 	var response protocol.SubscribeResponse
 	err := rpcSimpleRequest(
 		c.Conn,
 		c.targetID,
 		protocol.RequestType_Subscribe,
 		&protocol.SubscribeRequest{
-			Options: rpcSubscribeOptionsToProto(options),
+			Options:    rpcSubscribeOptionsToProto(settings.Options),
+			MaxRetries: proto.Uint32(settings.MaxRetries),
 		},
 		&response,
 	)

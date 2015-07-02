@@ -53,8 +53,8 @@ func (sub *clientSubscription) Stop() error {
 	return sub.owner.unsubscribe(sub.targetID)
 }
 
-func (c *client) Subscribe(options ...SubscribeOption) (Subscription, error) {
-	targetID, err := c.subscribe(options...)
+func (c *client) Subscribe(settings SubscribeSettings) (Subscription, error) {
+	targetID, err := c.subscribe(settings)
 	if err != nil {
 		return nil, err
 	}

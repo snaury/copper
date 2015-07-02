@@ -161,7 +161,6 @@ func (m *Endpoint) GetTargetId() int64 {
 type SubscribeOption struct {
 	Service          *string `protobuf:"bytes,1,req,name=service" json:"service,omitempty"`
 	Distance         *uint32 `protobuf:"varint,2,opt,name=distance" json:"distance,omitempty"`
-	MaxRetries       *uint32 `protobuf:"varint,3,opt,name=max_retries" json:"max_retries,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
@@ -183,15 +182,9 @@ func (m *SubscribeOption) GetDistance() uint32 {
 	return 0
 }
 
-func (m *SubscribeOption) GetMaxRetries() uint32 {
-	if m != nil && m.MaxRetries != nil {
-		return *m.MaxRetries
-	}
-	return 0
-}
-
 type SubscribeRequest struct {
 	Options          []*SubscribeOption `protobuf:"bytes,1,rep,name=options" json:"options,omitempty"`
+	MaxRetries       *uint32            `protobuf:"varint,2,opt,name=max_retries" json:"max_retries,omitempty"`
 	XXX_unrecognized []byte             `json:"-"`
 }
 
@@ -204,6 +197,13 @@ func (m *SubscribeRequest) GetOptions() []*SubscribeOption {
 		return m.Options
 	}
 	return nil
+}
+
+func (m *SubscribeRequest) GetMaxRetries() uint32 {
+	if m != nil && m.MaxRetries != nil {
+		return *m.MaxRetries
+	}
+	return 0
 }
 
 type SubscribeResponse struct {

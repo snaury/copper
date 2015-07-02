@@ -9,9 +9,8 @@ func rpcProtoToSubscribeOptions(poptions []*protocol.SubscribeOption) []Subscrib
 	var options []SubscribeOption
 	for _, po := range poptions {
 		options = append(options, SubscribeOption{
-			Service:    po.GetService(),
-			Distance:   po.GetDistance(),
-			MaxRetries: po.GetMaxRetries(),
+			Service:  po.GetService(),
+			Distance: po.GetDistance(),
 		})
 	}
 	return options
@@ -21,9 +20,8 @@ func rpcSubscribeOptionsToProto(options []SubscribeOption) []*protocol.Subscribe
 	var poptions []*protocol.SubscribeOption
 	for _, o := range options {
 		poptions = append(poptions, &protocol.SubscribeOption{
-			Service:    proto.String(o.Service),
-			Distance:   proto.Uint32(o.Distance),
-			MaxRetries: proto.Uint32(o.MaxRetries),
+			Service:  proto.String(o.Service),
+			Distance: proto.Uint32(o.Distance),
 		})
 	}
 	return poptions

@@ -20,11 +20,15 @@ type Endpoint struct {
 	TargetID int64
 }
 
-// SubscribeOption describes the service, how far copperd is allowed to reach
-// it and how many retries are allowed when attempts to reach it fail.
+// SubscribeOption names the service and how far it is allowed to be
 type SubscribeOption struct {
-	Service    string
-	Distance   uint32
+	Service  string
+	Distance uint32
+}
+
+// SubscribeSettings contains settings for the subscription
+type SubscribeSettings struct {
+	Options    []SubscribeOption
 	MaxRetries uint32
 }
 
@@ -90,7 +94,7 @@ type ServiceChangeStream interface {
 // Client interface allows you to work with copperd servers
 type Client interface {
 	// Subscribe subscribes to a named service
-	Subscribe(options ...SubscribeOption) (Subscription, error)
+	Subscribe(settings SubscribeSettings) (Subscription, error)
 
 	// Publish publishes a named service
 	Publish(name string, settings PublishSettings, handler copper.StreamHandler) (Publication, error)

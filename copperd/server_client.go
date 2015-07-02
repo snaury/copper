@@ -166,7 +166,7 @@ func (c *serverClient) serve() {
 	c.failure = err
 }
 
-func (c *serverClient) subscribe(options ...SubscribeOption) (int64, error) {
+func (c *serverClient) subscribe(settings SubscribeSettings) (int64, error) {
 	return 0, ErrUnsupported
 }
 

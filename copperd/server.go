@@ -7,7 +7,7 @@ import (
 )
 
 type lowLevelServer interface {
-	subscribe(options ...SubscribeOption) (int64, error)
+	subscribe(settings SubscribeSettings) (int64, error)
 	getEndpoints(targetID int64) ([]Endpoint, error)
 	streamEndpoints(targetID int64) (EndpointChangesStream, error)
 	unsubscribe(targetID int64) error
