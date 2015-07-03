@@ -168,7 +168,7 @@ type PublishSettings struct {
 	Priority         *uint32 `protobuf:"varint,1,opt,name=priority" json:"priority,omitempty"`
 	Distance         *uint32 `protobuf:"varint,2,opt,name=distance" json:"distance,omitempty"`
 	Concurrency      *uint32 `protobuf:"varint,3,opt,name=concurrency" json:"concurrency,omitempty"`
-	MaxQueueSize     *uint32 `protobuf:"varint,4,opt,name=max_queue_size" json:"max_queue_size,omitempty"`
+	QueueSize        *uint32 `protobuf:"varint,4,opt,name=queue_size" json:"queue_size,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
@@ -197,9 +197,9 @@ func (m *PublishSettings) GetConcurrency() uint32 {
 	return 0
 }
 
-func (m *PublishSettings) GetMaxQueueSize() uint32 {
-	if m != nil && m.MaxQueueSize != nil {
-		return *m.MaxQueueSize
+func (m *PublishSettings) GetQueueSize() uint32 {
+	if m != nil && m.QueueSize != nil {
+		return *m.QueueSize
 	}
 	return 0
 }

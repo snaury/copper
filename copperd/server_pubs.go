@@ -108,7 +108,7 @@ func (pub *serverPublication) handleRequestLocked(client copper.Stream) bool {
 				return true
 			}
 		}
-		if len(pub.queue) >= int(pub.settings.MaxQueueSize) {
+		if len(pub.queue) >= int(pub.settings.QueueSize) {
 			// Queue for this publication is already full
 			client.CloseWithError(ErrOverCapacity)
 			return true
@@ -157,14 +157,14 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 		if pub.settings.Concurrency+settings.Concurrency < pub.settings.Concurrency {
 			return nil, fmt.Errorf("new endpoint with target=%d overflows maximum capacity", key.targetID)
 		}
-		if pub.settings.MaxQueueSize+settings.MaxQueueSize < pub.settings.MaxQueueSize {
+		if pub.settings.QueueSize+settings.QueueSize < pub.settings.QueueSize {
 			return nil, fmt.Errorf("new endpoint with target=%d overflows maximum queue size", key.targetID)
 		}
 		if pub.settings.Distance < settings.Distance {
 			pub.settings.Distance = settings.Distance
 		}
 		pub.settings.Concurrency += settings.Concurrency
-		pub.settings.MaxQueueSize += settings.MaxQueueSize
+		pub.settings.QueueSize += settings.QueueSize
 	}
 	pub.distances[settings.Distance]++
 
@@ -204,7 +204,7 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 		}
 	}
 	pub.settings.Concurrency -= endpoint.settings.Concurrency
-	pub.settings.MaxQueueSize -= endpoint.settings.MaxQueueSize
+	pub.settings.QueueSize -= endpoint.settings.QueueSize
 	delete(pub.endpoints, endpoint.key)
 
 	if len(pub.endpoints) == 0 {
@@ -225,8 +225,8 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 			sub.removePublicationLocked(pub)
 		}
 	} else {
-		if len(pub.queue) > int(pub.settings.MaxQueueSize) {
-			pub.wakeupWaitersLocked(int(pub.settings.MaxQueueSize) - len(pub.queue))
+		if len(pub.queue) > int(pub.settings.QueueSize) {
+			pub.wakeupWaitersLocked(int(pub.settings.QueueSize) - len(pub.queue))
 		}
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addChangedLocked(pub)

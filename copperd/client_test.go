@@ -599,8 +599,8 @@ func TestSubscribeQueueWorks(t *testing.T) {
 		},
 		"test:myservice",
 		PublishSettings{
-			Concurrency:  1,
-			MaxQueueSize: 1,
+			Concurrency: 1,
+			QueueSize:   1,
 		},
 	)
 }
