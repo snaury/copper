@@ -23,9 +23,24 @@ type lowLevelServer interface {
 	streamServices() (ServiceChangesStream, error)
 }
 
+type handleRequestStatus int
+
+const (
+	// Request was handled and the stream consumed
+	handleRequestStatusDone handleRequestStatus = iota
+	// There was an attempt to handle the request, but it failed. While the
+	// stream was not consumed, the lock was unlocked and the configuration
+	// may have changed in the mean time.
+	handleRequestStatusFailure
+	// There was no route to send the request to
+	handleRequestStatusNoRoute
+	// There was not enough capacity to handle the request
+	handleRequestStatusOverCapacity
+)
+
 type endpointReference interface {
 	getEndpointsLocked() []Endpoint
-	handleRequestLocked(client copper.Stream) bool
+	handleRequestLocked(client copper.Stream) handleRequestStatus
 }
 
 type server struct {

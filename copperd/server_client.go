@@ -48,6 +48,21 @@ func (c *serverClient) handleControl(client copper.Stream) error {
 	return err
 }
 
+func (c *serverClient) handleRequestWith(client copper.Stream, endpoint endpointReference) error {
+	switch status := endpoint.handleRequestLocked(client); status {
+	case handleRequestStatusDone:
+		return nil
+	case handleRequestStatusFailure, handleRequestStatusNoRoute:
+		// request failed or couldn't be routed
+		return copper.ENOROUTE
+	case handleRequestStatusOverCapacity:
+		// there is not enough capacity to handle the request
+		return ErrOverCapacity
+	default:
+		return fmt.Errorf("unhandled request status: %d", status)
+	}
+}
+
 func (c *serverClient) handleRequest(client copper.Stream) error {
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
@@ -56,17 +71,11 @@ func (c *serverClient) handleRequest(client copper.Stream) error {
 	}
 	if sub := c.subscriptions[client.TargetID()]; sub != nil {
 		// This is a subscription
-		if sub.handleRequestLocked(client) {
-			return nil
-		}
-		return copper.ENOROUTE
+		return c.handleRequestWith(client, sub)
 	}
 	if pub := c.owner.pubByTarget[client.TargetID()]; pub != nil {
-		// THis is a direct connection
-		if pub.handleRequestLocked(client) {
-			return nil
-		}
-		return copper.ENOROUTE
+		// This is a direct connection
+		return c.handleRequestWith(client, pub)
 	}
 	return copper.ENOTARGET
 }

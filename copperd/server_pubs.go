@@ -26,14 +26,14 @@ func (endpoint *localEndpoint) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (endpoint *localEndpoint) handleRequestLocked(client copper.Stream) bool {
+func (endpoint *localEndpoint) handleRequestLocked(client copper.Stream) handleRequestStatus {
 	if endpoint.pub != nil && endpoint.active < endpoint.settings.Concurrency {
 		return endpoint.passthruRequestLocked(client)
 	}
-	return false
+	return handleRequestStatusOverCapacity
 }
 
-func (endpoint *localEndpoint) passthruRequestLocked(client copper.Stream) bool {
+func (endpoint *localEndpoint) passthruRequestLocked(client copper.Stream) handleRequestStatus {
 	endpoint.active++
 	if endpoint.active == endpoint.settings.Concurrency {
 		delete(endpoint.pub.ready, endpoint)
@@ -50,10 +50,10 @@ func (endpoint *localEndpoint) passthruRequestLocked(client copper.Stream) bool 
 	remote, err := endpoint.key.client.conn.Open(endpoint.key.targetID)
 	if err != nil {
 		// this client has already disconnected
-		return false
+		return handleRequestStatusFailure
 	}
 	passthruBoth(client, remote)
-	return true
+	return handleRequestStatusDone
 }
 
 type serverPublication struct {
@@ -100,18 +100,28 @@ func (pub *serverPublication) getEndpointsLocked() []Endpoint {
 	}
 }
 
-func (pub *serverPublication) handleRequestLocked(client copper.Stream) bool {
+func (pub *serverPublication) handleRequestLocked(client copper.Stream) handleRequestStatus {
 	var waiter *sync.Cond
+reqloop:
 	for len(pub.endpoints) > 0 {
 		for endpoint := range pub.ready {
-			if endpoint.handleRequestLocked(client) {
-				return true
+			switch status := endpoint.handleRequestLocked(client); status {
+			case handleRequestStatusDone:
+				return status
+			case handleRequestStatusFailure:
+				// the endpoint is gone, we might just not know it yet
+				endpoint.unpublishLocked()
+				continue reqloop
+			case handleRequestStatusOverCapacity:
+				// there are not enough free slots, try the next one
+			default:
+				// local endpoints shouldn't return anything else
+				return status
 			}
 		}
 		if len(pub.queue) >= int(pub.settings.QueueSize) {
 			// Queue for this publication is already full
-			client.CloseWithError(ErrOverCapacity)
-			return true
+			return handleRequestStatusOverCapacity
 		}
 		if waiter == nil {
 			// TODO: support for timeout and cancellation
@@ -119,7 +129,7 @@ func (pub *serverPublication) handleRequestLocked(client copper.Stream) bool {
 		}
 		pub.waitInQueueLocked(waiter)
 	}
-	return false
+	return handleRequestStatusNoRoute
 }
 
 func (s *server) publishLocked(name string, key localEndpointKey, settings PublishSettings) (*localEndpoint, error) {

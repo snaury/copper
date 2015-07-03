@@ -33,7 +33,7 @@ func (r *serverRoute) getEndpointsLocked() []Endpoint {
 	return result
 }
 
-func (r *serverRoute) handleRequestLocked(client copper.Stream) bool {
+func (r *serverRoute) handleRequestLocked(client copper.Stream) handleRequestStatus {
 	sum := int64(0)
 	for _, c := range r.cases {
 		if c.weight > 0 && c.sub.isActiveLocked() {
@@ -42,7 +42,7 @@ func (r *serverRoute) handleRequestLocked(client copper.Stream) bool {
 	}
 	if sum == 0 {
 		// There are no routes
-		return false
+		return handleRequestStatusNoRoute
 	}
 	bin := r.owner.random.Int63n(sum)
 	for _, c := range r.cases {

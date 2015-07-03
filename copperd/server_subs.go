@@ -34,7 +34,7 @@ func (sub *serverSubscription) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (sub *serverSubscription) handleRequestLocked(client copper.Stream) bool {
+func (sub *serverSubscription) handleRequestLocked(client copper.Stream) handleRequestStatus {
 	if sub.active < len(sub.settings.Options) {
 		if route := sub.routes[sub.active]; route != nil {
 			return route.handleRequestLocked(client)
@@ -45,8 +45,7 @@ func (sub *serverSubscription) handleRequestLocked(client copper.Stream) bool {
 		// TODO: support remote services
 	}
 	// TODO: support upstream
-	client.CloseWithError(copper.ENOROUTE)
-	return true
+	return handleRequestStatusNoRoute
 }
 
 func (sub *serverSubscription) isActiveLocked() bool {

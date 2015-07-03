@@ -25,6 +25,33 @@ type serverPeerRemote struct {
 	subscriptions map[*serverSubscription]struct{}
 }
 
+var _ endpointReference = &serverPeerRemote{}
+
+func (remote *serverPeerRemote) getEndpointsLocked() []Endpoint {
+	if peer := remote.peer; peer != nil {
+		return []Endpoint{{
+			Network:  peer.key.network,
+			Address:  peer.key.address,
+			TargetID: remote.targetID,
+		}}
+	}
+	return nil
+}
+
+func (remote *serverPeerRemote) handleRequestLocked(client copper.Stream) handleRequestStatus {
+	if peer := remote.peer; peer != nil {
+		peer.owner.lock.Unlock()
+		defer peer.owner.lock.Lock()
+		stream, err := remote.client.Open(remote.targetID)
+		if err != nil {
+			return handleRequestStatusFailure
+		}
+		passthruBoth(client, stream)
+		return handleRequestStatusDone
+	}
+	return handleRequestStatusNoRoute
+}
+
 type serverPeer struct {
 	owner    *server
 	key      serverPeerKey
@@ -122,10 +149,10 @@ func (peer *serverPeer) detachClient(client *clientConn) {
 	peer.owner.lock.Lock()
 	defer peer.owner.lock.Unlock()
 	if peer.client == client {
-		peer.client = nil
 		for _, remote := range peer.remotesByTarget {
 			remote.removeLocked()
 		}
+		peer.client = nil
 	}
 }
 
@@ -225,14 +252,19 @@ func (peer *serverPeer) addRemoteLocked(change ServiceChange) {
 }
 
 func (remote *serverPeerRemote) removeLocked() {
+	peer := remote.peer
+	if peer == nil || peer.client != remote.client {
+		return
+	}
+	remote.peer = nil
 	for sub := range remote.subscriptions {
 		sub.removeRemoteLocked(remote)
 	}
-	if remotes := remote.peer.remotesByName[remote.name]; remotes != nil {
+	if remotes := peer.remotesByName[remote.name]; remotes != nil {
 		delete(remotes, remote.targetID)
 		if len(remotes) == 0 {
-			delete(remote.peer.remotesByName, remote.name)
+			delete(peer.remotesByName, remote.name)
 		}
 	}
-	delete(remote.peer.remotesByTarget, remote.targetID)
+	delete(peer.remotesByTarget, remote.targetID)
 }
