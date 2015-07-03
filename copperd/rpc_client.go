@@ -130,11 +130,9 @@ func (c *rpcClient) publish(targetID int64, name string, settings PublishSetting
 		c.targetID,
 		protocol.RequestType_Publish,
 		&protocol.PublishRequest{
-			TargetId:     proto.Int64(targetID),
-			Name:         proto.String(name),
-			Distance:     proto.Uint32(settings.Distance),
-			Concurrency:  proto.Uint32(settings.Concurrency),
-			MaxQueueSize: proto.Uint32(settings.MaxQueueSize),
+			TargetId: proto.Int64(targetID),
+			Name:     proto.String(name),
+			Settings: rpcPublishSettingsToProto(settings),
 		},
 		&response,
 	)
@@ -228,10 +226,10 @@ func (s *rpcServiceChangeStream) readloop() {
 			break
 		}
 		s.results <- ServiceChange{
-			TargetID:    response.GetTargetId(),
-			Name:        response.GetName(),
-			Distance:    response.GetDistance(),
-			Concurrency: response.GetConcurrency(),
+			TargetID: response.GetTargetId(),
+			Name:     response.GetName(),
+			Settings: rpcProtoToPublishSettings(response.GetSettings()),
+			Valid:    response.GetValid(),
 		}
 	}
 }

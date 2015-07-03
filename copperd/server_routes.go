@@ -79,7 +79,7 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 			subscriptions: make(map[*serverSubscription]struct{}),
 		}
 		s.routeByName[name] = r
-		if subs := s.subByName[name]; subs != nil {
+		if subs := s.subsByName[name]; subs != nil {
 			for sub := range subs {
 				sub.addRouteLocked(r)
 			}
@@ -90,7 +90,7 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 		}
 		r.subscriptions = nil
 		for _, c := range r.cases {
-			c.sub.unregisterLocked()
+			c.sub.unsubscribeLocked()
 		}
 		r.cases = nil
 		r.routes = nil
@@ -98,7 +98,7 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 		return nil
 	} else {
 		for _, c := range r.cases {
-			c.sub.unregisterLocked()
+			c.sub.unsubscribeLocked()
 		}
 		r.cases = nil
 		r.routes = routes

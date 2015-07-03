@@ -11,6 +11,7 @@ It is generated from these files:
 It has these top-level messages:
 	Endpoint
 	SubscribeOption
+	PublishSettings
 	Route
 	SubscribeRequest
 	SubscribeResponse
@@ -159,6 +160,46 @@ func (m *SubscribeOption) GetMinDistance() uint32 {
 func (m *SubscribeOption) GetMaxDistance() uint32 {
 	if m != nil && m.MaxDistance != nil {
 		return *m.MaxDistance
+	}
+	return 0
+}
+
+type PublishSettings struct {
+	Priority         *uint32 `protobuf:"varint,1,opt,name=priority" json:"priority,omitempty"`
+	Distance         *uint32 `protobuf:"varint,2,opt,name=distance" json:"distance,omitempty"`
+	Concurrency      *uint32 `protobuf:"varint,3,opt,name=concurrency" json:"concurrency,omitempty"`
+	MaxQueueSize     *uint32 `protobuf:"varint,4,opt,name=max_queue_size" json:"max_queue_size,omitempty"`
+	XXX_unrecognized []byte  `json:"-"`
+}
+
+func (m *PublishSettings) Reset()         { *m = PublishSettings{} }
+func (m *PublishSettings) String() string { return proto.CompactTextString(m) }
+func (*PublishSettings) ProtoMessage()    {}
+
+func (m *PublishSettings) GetPriority() uint32 {
+	if m != nil && m.Priority != nil {
+		return *m.Priority
+	}
+	return 0
+}
+
+func (m *PublishSettings) GetDistance() uint32 {
+	if m != nil && m.Distance != nil {
+		return *m.Distance
+	}
+	return 0
+}
+
+func (m *PublishSettings) GetConcurrency() uint32 {
+	if m != nil && m.Concurrency != nil {
+		return *m.Concurrency
+	}
+	return 0
+}
+
+func (m *PublishSettings) GetMaxQueueSize() uint32 {
+	if m != nil && m.MaxQueueSize != nil {
+		return *m.MaxQueueSize
 	}
 	return 0
 }
@@ -332,12 +373,10 @@ func (m *UnsubscribeResponse) String() string { return proto.CompactTextString(m
 func (*UnsubscribeResponse) ProtoMessage()    {}
 
 type PublishRequest struct {
-	TargetId         *int64  `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
-	Name             *string `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
-	Distance         *uint32 `protobuf:"varint,3,opt,name=distance" json:"distance,omitempty"`
-	Concurrency      *uint32 `protobuf:"varint,4,opt,name=concurrency" json:"concurrency,omitempty"`
-	MaxQueueSize     *uint32 `protobuf:"varint,5,opt,name=max_queue_size" json:"max_queue_size,omitempty"`
-	XXX_unrecognized []byte  `json:"-"`
+	TargetId         *int64           `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
+	Name             *string          `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
+	Settings         *PublishSettings `protobuf:"bytes,3,req,name=settings" json:"settings,omitempty"`
+	XXX_unrecognized []byte           `json:"-"`
 }
 
 func (m *PublishRequest) Reset()         { *m = PublishRequest{} }
@@ -358,25 +397,11 @@ func (m *PublishRequest) GetName() string {
 	return ""
 }
 
-func (m *PublishRequest) GetDistance() uint32 {
-	if m != nil && m.Distance != nil {
-		return *m.Distance
+func (m *PublishRequest) GetSettings() *PublishSettings {
+	if m != nil {
+		return m.Settings
 	}
-	return 0
-}
-
-func (m *PublishRequest) GetConcurrency() uint32 {
-	if m != nil && m.Concurrency != nil {
-		return *m.Concurrency
-	}
-	return 0
-}
-
-func (m *PublishRequest) GetMaxQueueSize() uint32 {
-	if m != nil && m.MaxQueueSize != nil {
-		return *m.MaxQueueSize
-	}
-	return 0
+	return nil
 }
 
 type PublishResponse struct {
@@ -508,11 +533,11 @@ func (m *StreamServicesRequest) String() string { return proto.CompactTextString
 func (*StreamServicesRequest) ProtoMessage()    {}
 
 type StreamServicesResponse struct {
-	TargetId         *int64  `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
-	Name             *string `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
-	Distance         *uint32 `protobuf:"varint,3,opt,name=distance" json:"distance,omitempty"`
-	Concurrency      *uint32 `protobuf:"varint,4,opt,name=concurrency" json:"concurrency,omitempty"`
-	XXX_unrecognized []byte  `json:"-"`
+	TargetId         *int64           `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
+	Name             *string          `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
+	Settings         *PublishSettings `protobuf:"bytes,3,req,name=settings" json:"settings,omitempty"`
+	Valid            *bool            `protobuf:"varint,4,req,name=valid" json:"valid,omitempty"`
+	XXX_unrecognized []byte           `json:"-"`
 }
 
 func (m *StreamServicesResponse) Reset()         { *m = StreamServicesResponse{} }
@@ -533,18 +558,18 @@ func (m *StreamServicesResponse) GetName() string {
 	return ""
 }
 
-func (m *StreamServicesResponse) GetDistance() uint32 {
-	if m != nil && m.Distance != nil {
-		return *m.Distance
+func (m *StreamServicesResponse) GetSettings() *PublishSettings {
+	if m != nil {
+		return m.Settings
 	}
-	return 0
+	return nil
 }
 
-func (m *StreamServicesResponse) GetConcurrency() uint32 {
-	if m != nil && m.Concurrency != nil {
-		return *m.Concurrency
+func (m *StreamServicesResponse) GetValid() bool {
+	if m != nil && m.Valid != nil {
+		return *m.Valid
 	}
-	return 0
+	return false
 }
 
 func init() {

@@ -36,10 +36,10 @@ type server struct {
 
 	lastTargetID int64
 
-	subByName map[string]map[*serverSubscription]struct{}
+	subsByName map[string]map[*serverSubscription]struct{}
 
 	pubByTarget map[int64]*serverPublication
-	pubByName   map[string]*serverPublication
+	pubsByName  map[string]map[uint32]*serverPublication
 	pubWatchers map[*serverServiceChangeStream]struct{}
 
 	routeByName map[string]*serverRoute
@@ -55,10 +55,10 @@ func NewServer() Server {
 	s := &server{
 		random: rand.New(rand.NewSource(time.Now().UnixNano())),
 
-		subByName: make(map[string]map[*serverSubscription]struct{}),
+		subsByName: make(map[string]map[*serverSubscription]struct{}),
 
 		pubByTarget: make(map[int64]*serverPublication),
-		pubByName:   make(map[string]*serverPublication),
+		pubsByName:  make(map[string]map[uint32]*serverPublication),
 		pubWatchers: make(map[*serverServiceChangeStream]struct{}),
 
 		routeByName: make(map[string]*serverRoute),

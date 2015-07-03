@@ -11,6 +11,8 @@ type serverSubscription struct {
 	targetID int64
 	settings SubscribeSettings
 
+	tracked []map[uint32]*serverPublication
+
 	routes []*serverRoute
 	locals []*serverPublication
 	active int
@@ -110,8 +112,11 @@ func (sub *serverSubscription) addPublicationLocked(pub *serverPublication) {
 		if option.MinDistance == 0 && option.Service == pub.name {
 			// This option allows local services and matches publication name
 			pub.subscriptions[sub] = struct{}{}
-			sub.locals[index] = pub
-			changed = true
+			sub.tracked[index][pub.settings.Priority] = pub
+			if old := sub.locals[index]; old == nil || pub.settings.Priority < old.settings.Priority {
+				sub.locals[index] = pub
+				changed = true
+			}
 		}
 	}
 	if changed {
@@ -121,71 +126,24 @@ func (sub *serverSubscription) addPublicationLocked(pub *serverPublication) {
 
 func (sub *serverSubscription) removePublicationLocked(pub *serverPublication) {
 	changed := false
-	for index := range sub.settings.Options {
-		if sub.locals[index] == pub {
-			sub.locals[index] = nil
-			changed = true
-		}
-	}
-	if changed {
-		sub.updateActiveIndexLocked()
-	}
-}
-
-func (sub *serverSubscription) registerLocked() {
-	changed := false
 	for index, option := range sub.settings.Options {
-		// Let others know we have an interested in this name
-		subs := sub.owner.subByName[option.Service]
-		if subs == nil {
-			subs = make(map[*serverSubscription]struct{})
-			sub.owner.subByName[option.Service] = subs
-		}
-		subs[sub] = struct{}{}
-		if !sub.settings.DisableRoutes {
-			route := sub.owner.routeByName[option.Service]
-			if route != nil {
-				sub.routes[index] = route
-				route.subscriptions[sub] = struct{}{}
-			}
-		}
-		if option.MinDistance == 0 {
-			// This option allows local services, look them up
-			pub := sub.owner.pubByName[option.Service]
-			if pub != nil {
-				pub.subscriptions[sub] = struct{}{}
-				sub.locals[index] = pub
+		if option.MinDistance == 0 && option.Service == pub.name {
+			delete(sub.tracked[index], pub.settings.Priority)
+			if sub.locals[index] == pub {
+				sub.locals[index] = nil
+				// Select a new lower priority publication
+				for priority, candidate := range sub.tracked[index] {
+					if old := sub.locals[index]; old == nil || priority < old.settings.Priority {
+						sub.locals[index] = candidate
+					}
+				}
 				changed = true
 			}
 		}
-		// TODO: support remote services
 	}
-	// TODO: support upstream
 	if changed {
 		sub.updateActiveIndexLocked()
 	}
-}
-
-func (sub *serverSubscription) unregisterLocked() {
-	// TODO: support upstream
-	for index, option := range sub.settings.Options {
-		// TODO: support remote services
-		if pub := sub.locals[index]; pub != nil {
-			sub.locals[index] = nil
-			delete(pub.subscriptions, sub)
-		}
-		if route := sub.routes[index]; route != nil {
-			sub.routes[index] = nil
-			delete(route.subscriptions, sub)
-		}
-		if subs := sub.owner.subByName[option.Service]; subs != nil {
-			delete(subs, sub)
-			if len(subs) == 0 {
-				delete(sub.owner.subByName, option.Service)
-			}
-		}
-	}
-	sub.active = len(sub.settings.Options)
 }
 
 func (s *server) subscribeLocked(settings SubscribeSettings) (*serverSubscription, error) {
@@ -197,10 +155,65 @@ func (s *server) subscribeLocked(settings SubscribeSettings) (*serverSubscriptio
 		targetID: s.allocateTargetID(),
 		settings: settings,
 
+		tracked: make([]map[uint32]*serverPublication, len(settings.Options)),
+
 		routes: make([]*serverRoute, len(settings.Options)),
 		locals: make([]*serverPublication, len(settings.Options)),
 		active: len(settings.Options),
 	}
-	sub.registerLocked()
+	for index, option := range sub.settings.Options {
+		// Let others know we have an interested in this name
+		subs := sub.owner.subsByName[option.Service]
+		if subs == nil {
+			subs = make(map[*serverSubscription]struct{})
+			sub.owner.subsByName[option.Service] = subs
+		}
+		subs[sub] = struct{}{}
+		if !sub.settings.DisableRoutes {
+			route := sub.owner.routeByName[option.Service]
+			if route != nil {
+				sub.routes[index] = route
+				route.subscriptions[sub] = struct{}{}
+			}
+		}
+		if option.MinDistance == 0 {
+			// This option allows local services, look them up
+			sub.tracked[index] = make(map[uint32]*serverPublication)
+			for priority, pub := range sub.owner.pubsByName[option.Service] {
+				// FIXME: pub needs to change back and forth
+				sub.tracked[index][priority] = pub
+				pub.subscriptions[sub] = struct{}{}
+				if old := sub.locals[index]; old == nil || priority < old.settings.Priority {
+					sub.locals[index] = pub
+				}
+			}
+		}
+		// TODO: support remote services
+	}
+	// TODO: support upstream
+	sub.updateActiveIndexLocked()
 	return sub, nil
+}
+
+func (sub *serverSubscription) unsubscribeLocked() {
+	// TODO: support upstream
+	for index, option := range sub.settings.Options {
+		// TODO: support remote services
+		for _, pub := range sub.tracked[index] {
+			delete(pub.subscriptions, sub)
+		}
+		if route := sub.routes[index]; route != nil {
+			delete(route.subscriptions, sub)
+		}
+		sub.tracked[index] = nil
+		sub.locals[index] = nil
+		sub.routes[index] = nil
+		if subs := sub.owner.subsByName[option.Service]; subs != nil {
+			delete(subs, sub)
+			if len(subs) == 0 {
+				delete(sub.owner.subsByName, option.Service)
+			}
+		}
+	}
+	sub.active = len(sub.settings.Options)
 }

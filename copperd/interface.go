@@ -66,6 +66,7 @@ type Subscription interface {
 // PublishSettings describes how far is copperd allowed to advertise the
 // service and how many concurrent streams an instance is able to handle.
 type PublishSettings struct {
+	Priority     uint32
 	Distance     uint32
 	Concurrency  uint32
 	MaxQueueSize uint32
@@ -79,10 +80,10 @@ type Publication interface {
 
 // ServiceChange is returned when service is added or removed on the daemon
 type ServiceChange struct {
-	TargetID    int64
-	Name        string
-	Distance    uint32
-	Concurrency uint32
+	TargetID int64
+	Name     string
+	Settings PublishSettings
+	Valid    bool
 }
 
 // ServiceChangeStream is a stream of service changes

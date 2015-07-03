@@ -13,13 +13,11 @@ type localEndpointKey struct {
 }
 
 type localEndpoint struct {
-	owner        *server
-	pub          *serverPublication
-	key          localEndpointKey
-	active       uint32
-	distance     uint32
-	concurrency  uint32
-	maxqueuesize uint32
+	owner    *server
+	pub      *serverPublication
+	key      localEndpointKey
+	active   uint32
+	settings PublishSettings
 }
 
 var _ endpointReference = &localEndpoint{}
@@ -46,82 +44,14 @@ func (endpoint *localEndpoint) getEndpointsLocked() []Endpoint {
 }
 
 func (endpoint *localEndpoint) selectEndpointLocked() (endpointReference, error) {
-	if endpoint.pub != nil && endpoint.active < endpoint.concurrency {
+	if endpoint.pub != nil && endpoint.active < endpoint.settings.Concurrency {
 		endpoint.active++
-		if endpoint.active == endpoint.concurrency {
+		if endpoint.active == endpoint.settings.Concurrency {
 			delete(endpoint.pub.ready, endpoint)
 		}
 		return endpoint, nil
 	}
 	return nil, ErrOverCapacity
-}
-
-func (endpoint *localEndpoint) registerLocked(pub *serverPublication) error {
-	if endpoint.pub != nil {
-		return fmt.Errorf("endpoint is already published")
-	}
-	endpoint.pub = pub
-
-	pub.endpoints[endpoint.key] = endpoint
-	pub.distances[endpoint.distance]++
-	pub.concurrency += endpoint.concurrency
-	if pub.maxqueuesize < endpoint.maxqueuesize {
-		pub.maxqueuesize = endpoint.maxqueuesize
-	}
-	pub.maxqueuesizes[endpoint.maxqueuesize]++
-	pub.ready[endpoint] = struct{}{}
-	pub.hasready.Broadcast()
-
-	for watcher := range pub.owner.pubWatchers {
-		watcher.addChangedLocked(pub)
-	}
-	return nil
-}
-
-func (endpoint *localEndpoint) unregisterLocked() error {
-	pub := endpoint.pub
-	if pub == nil {
-		return fmt.Errorf("endpoint is not published")
-	}
-	endpoint.pub = nil
-
-	delete(pub.ready, endpoint)
-	newMaxQueueSizeCount := pub.maxqueuesizes[endpoint.maxqueuesize] - 1
-	if newMaxQueueSizeCount != 0 {
-		pub.maxqueuesizes[endpoint.maxqueuesize] = newMaxQueueSizeCount
-	} else {
-		delete(pub.maxqueuesizes, endpoint.maxqueuesize)
-		pub.maxqueuesize = 0
-		for maxqueuesize := range pub.maxqueuesizes {
-			if pub.maxqueuesize < maxqueuesize {
-				pub.maxqueuesize = maxqueuesize
-			}
-		}
-	}
-	pub.concurrency -= endpoint.concurrency
-	newDistanceCount := pub.distances[endpoint.distance] - 1
-	if newDistanceCount != 0 {
-		pub.distances[endpoint.distance] = newDistanceCount
-	} else {
-		delete(pub.distances, endpoint.distance)
-	}
-	delete(pub.endpoints, endpoint.key)
-
-	if len(pub.endpoints) == 0 {
-		delete(pub.owner.pubByName, pub.name)
-		delete(pub.owner.pubByTarget, pub.targetID)
-		for watcher := range pub.owner.pubWatchers {
-			watcher.addRemovedLocked(pub)
-		}
-		for sub := range pub.subscriptions {
-			sub.removePublicationLocked(pub)
-		}
-	} else {
-		for watcher := range pub.owner.pubWatchers {
-			watcher.addChangedLocked(pub)
-		}
-	}
-	return nil
 }
 
 type serverPublication struct {
@@ -131,11 +61,11 @@ type serverPublication struct {
 
 	endpoints     map[localEndpointKey]*localEndpoint
 	distances     map[uint32]int
-	concurrency   uint32
-	maxqueuesize  uint32
 	maxqueuesizes map[uint32]int
-	ready         map[*localEndpoint]struct{}
-	hasready      sync.Cond
+	settings      PublishSettings
+
+	ready    map[*localEndpoint]struct{}
+	hasready sync.Cond
 
 	subscriptions map[*serverSubscription]struct{}
 }
@@ -173,8 +103,14 @@ func (pub *serverPublication) selectEndpointLocked() (endpointReference, error) 
 	return nil, ErrOverCapacity
 }
 
-func (s *server) publishLocalLocked(name string, key localEndpointKey, ps PublishSettings) (*localEndpoint, error) {
-	pub := s.pubByName[name]
+func (s *server) publishLocked(name string, key localEndpointKey, settings PublishSettings) (*localEndpoint, error) {
+	pubs := s.pubsByName[name]
+	if pubs == nil {
+		pubs = make(map[uint32]*serverPublication)
+		s.pubsByName[name] = pubs
+	}
+
+	pub := pubs[settings.Priority]
 	if pub == nil {
 		pub = &serverPublication{
 			owner:    s,
@@ -183,29 +119,99 @@ func (s *server) publishLocalLocked(name string, key localEndpointKey, ps Publis
 
 			endpoints:     make(map[localEndpointKey]*localEndpoint),
 			distances:     make(map[uint32]int),
-			concurrency:   0,
-			maxqueuesize:  0,
 			maxqueuesizes: make(map[uint32]int),
+			settings:      settings,
 
 			ready: make(map[*localEndpoint]struct{}),
 
 			subscriptions: make(map[*serverSubscription]struct{}),
 		}
 		pub.hasready.L = &s.lock
-		s.pubByName[pub.name] = pub
+		pubs[settings.Priority] = pub
 		s.pubByTarget[pub.targetID] = pub
-		for sub := range s.subByName[pub.name] {
+		for sub := range s.subsByName[pub.name] {
 			sub.addPublicationLocked(pub)
 		}
 	}
 
-	endpoint := &localEndpoint{
-		owner:        s,
-		key:          key,
-		active:       0,
-		distance:     ps.Distance,
-		concurrency:  ps.Concurrency,
-		maxqueuesize: ps.MaxQueueSize,
+	if pub.endpoints[key] != nil {
+		return nil, fmt.Errorf("endpoint with key [target=%d] is already published", key.targetID)
 	}
-	return endpoint, endpoint.registerLocked(pub)
+
+	endpoint := &localEndpoint{
+		owner:    s,
+		pub:      pub,
+		key:      key,
+		active:   0,
+		settings: settings,
+	}
+
+	pub.endpoints[endpoint.key] = endpoint
+	if len(pub.endpoints) != 1 {
+		if pub.settings.Distance < endpoint.settings.Distance {
+			pub.settings.Distance = endpoint.settings.Distance
+		}
+		pub.settings.Concurrency += endpoint.settings.Concurrency
+		if pub.settings.MaxQueueSize < endpoint.settings.MaxQueueSize {
+			pub.settings.MaxQueueSize = endpoint.settings.MaxQueueSize
+		}
+	}
+	pub.distances[endpoint.settings.Distance]++
+	pub.maxqueuesizes[endpoint.settings.MaxQueueSize]++
+	pub.ready[endpoint] = struct{}{}
+	pub.hasready.Broadcast()
+
+	for watcher := range pub.owner.pubWatchers {
+		watcher.addChangedLocked(pub)
+	}
+	return endpoint, nil
+}
+
+func (endpoint *localEndpoint) unpublishLocked() error {
+	pub := endpoint.pub
+	if pub == nil {
+		return fmt.Errorf("endpoint is not published")
+	}
+	endpoint.pub = nil
+
+	delete(pub.ready, endpoint)
+	if decrementCounterUint32(pub.distances, endpoint.settings.Distance) {
+		pub.settings.Distance = 0
+		for distance := range pub.distances {
+			if pub.settings.Distance < distance {
+				pub.settings.Distance = distance
+			}
+		}
+	}
+	pub.settings.Concurrency -= endpoint.settings.Concurrency
+	if decrementCounterUint32(pub.maxqueuesizes, endpoint.settings.MaxQueueSize) {
+		pub.settings.MaxQueueSize = 0
+		for maxqueuesize := range pub.maxqueuesizes {
+			if pub.settings.MaxQueueSize < maxqueuesize {
+				pub.settings.MaxQueueSize = maxqueuesize
+			}
+		}
+	}
+	delete(pub.endpoints, endpoint.key)
+
+	if len(pub.endpoints) == 0 {
+		delete(pub.owner.pubByTarget, pub.targetID)
+		if pubs := pub.owner.pubsByName[pub.name]; pubs != nil {
+			delete(pubs, pub.settings.Priority)
+			if len(pubs) == 0 {
+				delete(pub.owner.pubsByName, pub.name)
+			}
+		}
+		for watcher := range pub.owner.pubWatchers {
+			watcher.addRemovedLocked(pub)
+		}
+		for sub := range pub.subscriptions {
+			sub.removePublicationLocked(pub)
+		}
+	} else {
+		for watcher := range pub.owner.pubWatchers {
+			watcher.addChangedLocked(pub)
+		}
+	}
+	return nil
 }

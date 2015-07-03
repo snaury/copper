@@ -64,21 +64,19 @@ func (cs *serverServiceChangeStream) Read() (ServiceChange, error) {
 		for targetID, pub := range cs.removed {
 			delete(cs.removed, targetID)
 			return ServiceChange{
-				TargetID: -1,
+				TargetID: targetID,
 				Name:     pub.name,
+				Settings: pub.settings,
+				Valid:    false,
 			}, nil
 		}
 		for targetID, pub := range cs.changed {
 			delete(cs.changed, targetID)
 			change := ServiceChange{
-				TargetID:    targetID,
-				Name:        pub.name,
-				Concurrency: pub.concurrency,
-			}
-			for distance := range pub.distances {
-				if change.Distance < distance {
-					change.Distance = distance
-				}
+				TargetID: targetID,
+				Name:     pub.name,
+				Settings: pub.settings,
+				Valid:    true,
 			}
 			return change, nil
 		}

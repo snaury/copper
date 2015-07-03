@@ -59,14 +59,22 @@ func TestPublishChanges(t *testing.T) {
 	unpublish := make(chan int, 1)
 
 	expectedChange1 := ServiceChange{
-		TargetID:    1,
-		Name:        "test:myservice",
-		Distance:    2,
-		Concurrency: 3,
+		TargetID: 1,
+		Name:     "test:myservice",
+		Settings: PublishSettings{
+			Priority:    1,
+			Distance:    2,
+			Concurrency: 3,
+		},
+		Valid: true,
 	}
 	expectedChange2 := ServiceChange{
-		TargetID: -1,
+		TargetID: 1,
 		Name:     "test:myservice",
+		Settings: PublishSettings{
+			Priority: 1,
+		},
+		Valid: false,
 	}
 
 	runClientServerRaw(
@@ -101,6 +109,7 @@ func TestPublishChanges(t *testing.T) {
 			pub, err := server.Publish(
 				"test:myservice",
 				PublishSettings{
+					Priority:    1,
 					Distance:    2,
 					Concurrency: 3,
 				},
@@ -120,6 +129,276 @@ func TestPublishChanges(t *testing.T) {
 			if err != nil {
 				log.Fatalf("server: Unpublish: %s", err)
 			}
+		},
+	)
+}
+
+func TestPublishPriorities(t *testing.T) {
+	published1 := make(chan int, 1)
+	publish2 := make(chan int, 1)
+	published2 := make(chan int, 1)
+	unpublish1 := make(chan int, 1)
+	unpublished1 := make(chan int, 1)
+	unpublish2 := make(chan int, 1)
+	unpublished2 := make(chan int, 1)
+
+	expectedChange1 := ServiceChange{
+		TargetID: 1,
+		Name:     "test:myservice",
+		Settings: PublishSettings{
+			Priority:    0,
+			Distance:    1,
+			Concurrency: 2,
+		},
+		Valid: true,
+	}
+	expectedChange2 := ServiceChange{
+		TargetID: 2,
+		Name:     "test:myservice",
+		Settings: PublishSettings{
+			Priority:    1,
+			Distance:    2,
+			Concurrency: 3,
+		},
+		Valid: true,
+	}
+	expectedChange3 := ServiceChange{
+		TargetID: 1,
+		Name:     "test:myservice",
+		Settings: PublishSettings{
+			Priority: 0,
+		},
+		Valid: false,
+	}
+	expectedChange4 := ServiceChange{
+		TargetID: 2,
+		Name:     "test:myservice",
+		Settings: PublishSettings{
+			Priority: 1,
+		},
+		Valid: false,
+	}
+
+	runClientServerRaw(
+		func(client Client) {
+			defer close(publish2)
+			defer close(unpublish1)
+			defer close(unpublish2)
+
+			changes, err := client.ServiceChanges()
+			if err != nil {
+				log.Fatalf("client: ServiceChanges: %s", err)
+			}
+			defer changes.Stop()
+
+			if 1 != <-published1 {
+				return
+			}
+
+			change, err := changes.Read()
+			if err != nil || change != expectedChange1 {
+				log.Fatalf("client: changes(1): %#v, %v", change, err)
+			}
+
+			publish2 <- 1
+			if 1 != <-published2 {
+				return
+			}
+
+			change, err = changes.Read()
+			if err != nil || change != expectedChange2 {
+				log.Fatalf("client: changes(2): %#v, %v", change, err)
+			}
+
+			unpublish1 <- 1
+			if 1 != <-unpublished1 {
+				return
+			}
+
+			change, err = changes.Read()
+			if err != nil || change != expectedChange3 {
+				log.Fatalf("client: changes(3): %#v, %v", change, err)
+			}
+
+			unpublish2 <- 1
+			if 1 != <-unpublished2 {
+				return
+			}
+
+			change, err = changes.Read()
+			if err != nil || change != expectedChange4 {
+				log.Fatalf("client: changes(4): %#v, %v", change, err)
+			}
+		},
+		func(server Client) {
+			defer close(published1)
+			defer close(published2)
+			defer close(unpublished1)
+			defer close(unpublished2)
+
+			pub1, err := server.Publish(
+				"test:myservice",
+				PublishSettings{
+					Priority:    0,
+					Distance:    1,
+					Concurrency: 2,
+				},
+				nil,
+			)
+			if err != nil {
+				log.Fatalf("server: Publish(1): %s", err)
+			}
+			defer pub1.Stop()
+
+			published1 <- 1
+			if 1 != <-publish2 {
+				return
+			}
+
+			pub2, err := server.Publish(
+				"test:myservice",
+				PublishSettings{
+					Priority:    1,
+					Distance:    2,
+					Concurrency: 3,
+				},
+				nil,
+			)
+			if err != nil {
+				log.Fatalf("server: Publish(2): %s", err)
+			}
+			defer pub2.Stop()
+
+			published2 <- 1
+			if 1 != <-unpublish1 {
+				return
+			}
+
+			err = pub1.Stop()
+			if err != nil {
+				log.Fatalf("server: Unpublish(1): %s", err)
+			}
+
+			unpublished1 <- 1
+			if 1 != <-unpublish2 {
+				return
+			}
+
+			err = pub2.Stop()
+			if err != nil {
+				log.Fatalf("server: Unpublish(2): %s", err)
+			}
+
+			unpublished2 <- 1
+		},
+	)
+}
+
+func TestSubscribePriorities(t *testing.T) {
+	published := make(chan int, 1)
+	unpublish1 := make(chan int, 1)
+	unpublished1 := make(chan int, 1)
+	unpublish2 := make(chan int, 1)
+	unpublished2 := make(chan int, 1)
+
+	runClientServerRaw(
+		func(client Client) {
+			defer close(unpublish1)
+			defer close(unpublish2)
+
+			if 1 != <-published {
+				return
+			}
+
+			sub, err := client.Subscribe(SubscribeSettings{
+				Options: []SubscribeOption{
+					{Service: "test:myservice"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("client: Subscribe: %s", err)
+			}
+			defer sub.Stop()
+
+			endpoints, err := sub.Endpoints()
+			if err != nil || len(endpoints) != 1 || endpoints[0] != (Endpoint{TargetID: 1}) {
+				t.Fatalf("client: Endpoints(1): %#v, %v", endpoints, err)
+			}
+
+			unpublish1 <- 1
+			if 1 != <-unpublished1 {
+				return
+			}
+
+			endpoints, err = sub.Endpoints()
+			if err != nil || len(endpoints) != 1 || endpoints[0] != (Endpoint{TargetID: 2}) {
+				t.Fatalf("client: Endpoints(2): %#v, %v", endpoints, err)
+			}
+
+			unpublish2 <- 1
+			if 1 != <-unpublished2 {
+				return
+			}
+
+			endpoints, err = sub.Endpoints()
+			if err != nil || len(endpoints) != 0 {
+				t.Fatalf("client: Endpoints(3): %#v, %v", endpoints, err)
+			}
+		},
+		func(server Client) {
+			defer close(published)
+			defer close(unpublished1)
+			defer close(unpublished2)
+
+			pub1, err := server.Publish(
+				"test:myservice",
+				PublishSettings{
+					Priority:    0,
+					Distance:    1,
+					Concurrency: 2,
+				},
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("server: Publish(1): %s", err)
+			}
+			defer pub1.Stop()
+
+			pub2, err := server.Publish(
+				"test:myservice",
+				PublishSettings{
+					Priority:    1,
+					Distance:    2,
+					Concurrency: 3,
+				},
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("server: Publish(2): %s", err)
+			}
+			defer pub2.Stop()
+
+			published <- 1
+			if 1 != <-unpublish1 {
+				return
+			}
+
+			err = pub1.Stop()
+			if err != nil {
+				t.Fatalf("server: Unpublish(1): %s", err)
+			}
+
+			unpublished1 <- 1
+			if 1 != <-unpublish2 {
+				return
+			}
+
+			err = pub2.Stop()
+			if err != nil {
+				t.Fatalf("server: Unpublish(2): %s", err)
+			}
+
+			unpublished2 <- 1
 		},
 	)
 }

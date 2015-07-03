@@ -95,11 +95,11 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		if err != nil {
 			return copper.EINVALIDDATA
 		}
-		err = server.publish(request.GetTargetId(), request.GetName(), PublishSettings{
-			Distance:     request.GetDistance(),
-			Concurrency:  request.GetConcurrency(),
-			MaxQueueSize: request.GetMaxQueueSize(),
-		})
+		err = server.publish(
+			request.GetTargetId(),
+			request.GetName(),
+			rpcProtoToPublishSettings(request.GetSettings()),
+		)
 		if err != nil {
 			return err
 		}
@@ -178,10 +178,10 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 				return err
 			}
 			err = rpcWriteMessage(stream, &protocol.StreamServicesResponse{
-				TargetId:    proto.Int64(result.TargetID),
-				Name:        proto.String(result.Name),
-				Distance:    proto.Uint32(result.Distance),
-				Concurrency: proto.Uint32(result.Concurrency),
+				TargetId: proto.Int64(result.TargetID),
+				Name:     proto.String(result.Name),
+				Settings: rpcPublishSettingsToProto(result.Settings),
+				Valid:    proto.Bool(result.Valid),
 			})
 			if err != nil {
 				return err

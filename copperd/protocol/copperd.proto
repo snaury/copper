@@ -12,6 +12,13 @@ message SubscribeOption {
     optional uint32 max_distance = 3;
 }
 
+message PublishSettings {
+    optional uint32 priority = 1;
+    optional uint32 distance = 2;
+    optional uint32 concurrency = 3;
+    optional uint32 max_queue_size = 4;
+}
+
 message Route {
     repeated SubscribeOption options = 1;
     required uint32 weight = 2;
@@ -55,9 +62,7 @@ message UnsubscribeResponse {
 message PublishRequest {
     required sint64 target_id = 1;
     required string name = 2;
-    optional uint32 distance = 3;
-    optional uint32 concurrency = 4;
-    optional uint32 max_queue_size = 5;
+    required PublishSettings settings = 3;
 }
 
 message PublishResponse {
@@ -104,8 +109,8 @@ message StreamServicesRequest {
 message StreamServicesResponse {
     required sint64 target_id = 1;
     required string name = 2;
-    optional uint32 distance = 3;
-    optional uint32 concurrency = 4;
+    required PublishSettings settings = 3;
+    required bool valid = 4;
 }
 
 enum RequestType {

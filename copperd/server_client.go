@@ -89,11 +89,11 @@ func (c *serverClient) failWithErrorLocked(err error) {
 		c.conn.Close()
 		for targetID, sub := range c.subscriptions {
 			delete(c.subscriptions, targetID)
-			sub.unregisterLocked()
+			sub.unsubscribeLocked()
 		}
 		for targetID, endpoint := range c.published {
 			delete(c.published, targetID)
-			endpoint.unregisterLocked()
+			endpoint.unpublishLocked()
 		}
 		for cs := range c.pubWatchers {
 			cs.stopLocked()
@@ -151,7 +151,7 @@ func (c *serverClient) unsubscribe(targetID int64) error {
 		return fmt.Errorf("target %d is not subscribed", targetID)
 	}
 	delete(c.subscriptions, targetID)
-	sub.unregisterLocked()
+	sub.unsubscribeLocked()
 	return nil
 }
 
@@ -164,11 +164,14 @@ func (c *serverClient) publish(targetID int64, name string, settings PublishSett
 	if old := c.published[targetID]; old != nil && old.pub != nil {
 		return fmt.Errorf("target %d is already published as %q", targetID, old.pub.name)
 	}
+	if settings.Concurrency == 0 {
+		return fmt.Errorf("publishing with concurrency=0 is not alloswed")
+	}
 	key := localEndpointKey{
 		client:   c,
 		targetID: targetID,
 	}
-	endpoint, err := c.owner.publishLocalLocked(name, key, settings)
+	endpoint, err := c.owner.publishLocked(name, key, settings)
 	if err != nil {
 		return fmt.Errorf("target %d cannot be published: %s", targetID, err)
 	}
@@ -187,7 +190,7 @@ func (c *serverClient) unpublish(targetID int64) error {
 		return fmt.Errorf("target %d is not published", targetID)
 	}
 	delete(c.published, targetID)
-	err := endpoint.unregisterLocked()
+	err := endpoint.unpublishLocked()
 	if err != nil {
 		return fmt.Errorf("target %d cannot be unpublished: %s", targetID, err)
 	}
