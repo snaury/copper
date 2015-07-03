@@ -733,3 +733,43 @@ func TestClientServerCloseRead(t *testing.T) {
 		},
 	)
 }
+
+func TestClientServerCloseReadBig(t *testing.T) {
+	serverMayCloseRead := make(chan int, 1)
+	serverMayClose := make(chan int, 1)
+
+	runClientServerStream(
+		func(client copper.Stream) {
+			defer close(serverMayCloseRead)
+			defer close(serverMayClose)
+
+			n, err := client.Write(make([]byte, 65536+16))
+			if n != 65536+16 || err != nil {
+				t.Fatalf("client: Write: %d, %v", n, err)
+			}
+
+			serverMayCloseRead <- 1
+
+			n, err = client.WaitAck()
+			if n != 16 || err != copper.EINTERNAL {
+				t.Fatalf("client: Write: %d, %v", n, err)
+			}
+
+			serverMayClose <- 1
+		},
+		func(server copper.Stream) {
+			buf, err := server.Peek()
+			if len(buf) != 65536 || err != nil {
+				t.Fatalf("server: Peek: %d, %v", len(buf), err)
+			}
+
+			if 1 != <-serverMayCloseRead {
+				return
+			}
+
+			server.CloseReadError(copper.EINTERNAL)
+
+			<-serverMayClose
+		},
+	)
+}

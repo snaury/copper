@@ -9,9 +9,12 @@ import (
 )
 
 func passthru(dst, src copper.Stream) {
+	var write sync.Mutex
 	var writeclosed uint32
 	go func() {
 		err := dst.WaitWriteClosed()
+		write.Lock()
+		defer write.Unlock()
 		atomic.AddUint32(&writeclosed, 1)
 		if err == copper.ESTREAMCLOSED {
 			src.CloseRead()
@@ -26,10 +29,12 @@ func passthru(dst, src copper.Stream) {
 			return
 		}
 		if len(buf) > 0 {
+			write.Lock()
 			n, werr := dst.Write(buf)
 			if n > 0 {
 				src.Discard(n)
 			}
+			write.Unlock()
 			if werr != nil {
 				if werr == copper.ESTREAMCLOSED {
 					src.CloseRead()

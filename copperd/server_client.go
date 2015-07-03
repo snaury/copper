@@ -106,7 +106,7 @@ func (c *serverClient) serve() {
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
 	delete(c.owner.clients, c)
-	c.failure = err
+	c.failWithErrorLocked(err)
 }
 
 func (c *serverClient) subscribe(settings SubscribeSettings) (int64, error) {
