@@ -209,13 +209,13 @@ func (c *rpcClient) lookupRoute(name string) ([]Route, error) {
 	return rpcProtoToRoutes(response.GetRoutes()), nil
 }
 
-type rpcServiceChangeStream struct {
+type rpcServiceChangesStream struct {
 	stream  copper.Stream
-	results chan ServiceChange
+	results chan ServiceChanges
 	err     error
 }
 
-func (s *rpcServiceChangeStream) readloop() {
+func (s *rpcServiceChangesStream) readloop() {
 	defer s.stream.Close()
 	defer close(s.results)
 	for {
@@ -225,27 +225,25 @@ func (s *rpcServiceChangeStream) readloop() {
 			s.err = err
 			break
 		}
-		s.results <- ServiceChange{
-			TargetID: response.GetTargetId(),
-			Name:     response.GetName(),
-			Settings: rpcProtoToPublishSettings(response.GetSettings()),
-			Valid:    response.GetValid(),
+		s.results <- ServiceChanges{
+			Removed: response.GetRemoved(),
+			Changed: rpcProtoToServiceChanges(response.GetChanged()),
 		}
 	}
 }
 
-func (s *rpcServiceChangeStream) Read() (ServiceChange, error) {
+func (s *rpcServiceChangesStream) Read() (ServiceChanges, error) {
 	if result, ok := <-s.results; ok {
 		return result, nil
 	}
-	return ServiceChange{}, s.err
+	return ServiceChanges{}, s.err
 }
 
-func (s *rpcServiceChangeStream) Stop() error {
+func (s *rpcServiceChangesStream) Stop() error {
 	return s.stream.Close()
 }
 
-func (c *rpcClient) streamServices() (ServiceChangeStream, error) {
+func (c *rpcClient) streamServices() (ServiceChangesStream, error) {
 	stream, err := rpcStreamingRequest(
 		c.Conn,
 		c.targetID,
@@ -255,9 +253,9 @@ func (c *rpcClient) streamServices() (ServiceChangeStream, error) {
 	if err != nil {
 		return nil, err
 	}
-	changes := &rpcServiceChangeStream{
+	changes := &rpcServiceChangesStream{
 		stream:  stream,
-		results: make(chan ServiceChange, 16),
+		results: make(chan ServiceChanges, 16),
 		err:     io.EOF,
 	}
 	go changes.readloop()

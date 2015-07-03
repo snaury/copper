@@ -15,7 +15,7 @@ type serverClient struct {
 	subscriptions map[int64]*serverSubscription
 
 	published   map[int64]*localEndpoint
-	pubWatchers map[*serverServiceChangeStream]struct{}
+	pubWatchers map[*serverServiceChangesStream]struct{}
 }
 
 var _ lowLevelServer = &serverClient{}
@@ -27,7 +27,7 @@ func newServerClient(s *server, conn net.Conn) *serverClient {
 		subscriptions: make(map[int64]*serverSubscription),
 
 		published:   make(map[int64]*localEndpoint),
-		pubWatchers: make(map[*serverServiceChangeStream]struct{}),
+		pubWatchers: make(map[*serverServiceChangesStream]struct{}),
 	}
 	c.conn = copper.NewConn(conn, c, true)
 	go c.serve()
@@ -232,12 +232,12 @@ func (c *serverClient) lookupRoute(name string) ([]Route, error) {
 	return nil, nil
 }
 
-func (c *serverClient) streamServices() (ServiceChangeStream, error) {
+func (c *serverClient) streamServices() (ServiceChangesStream, error) {
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
 	if c.failure != nil {
 		return nil, c.failure
 	}
-	cs := newServerServiceChangeStream(c.owner, c)
+	cs := newServerServiceChangesStream(c.owner, c)
 	return cs, nil
 }

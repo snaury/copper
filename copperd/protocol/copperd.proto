@@ -24,6 +24,12 @@ message Route {
     required uint32 weight = 2;
 }
 
+message ServiceChange {
+    required sint64 target_id = 1;
+    required string name = 2;
+    required PublishSettings settings = 3;
+}
+
 message SubscribeRequest {
     repeated SubscribeOption options = 1;
     optional uint32 max_retries = 2;
@@ -107,10 +113,8 @@ message StreamServicesRequest {
 }
 
 message StreamServicesResponse {
-    required sint64 target_id = 1;
-    required string name = 2;
-    required PublishSettings settings = 3;
-    required bool valid = 4;
+    repeated sint64 removed = 1 [packed=true];
+    repeated ServiceChange changed = 2;
 }
 
 enum RequestType {

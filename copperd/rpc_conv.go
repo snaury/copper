@@ -94,3 +94,27 @@ func rpcRoutesToProto(routes []Route) []*protocol.Route {
 	}
 	return proutes
 }
+
+func rpcProtoToServiceChanges(pchanges []*protocol.ServiceChange) []ServiceChange {
+	var changes []ServiceChange
+	for _, pchange := range pchanges {
+		changes = append(changes, ServiceChange{
+			TargetID: pchange.GetTargetId(),
+			Name:     pchange.GetName(),
+			Settings: rpcProtoToPublishSettings(pchange.GetSettings()),
+		})
+	}
+	return changes
+}
+
+func rpcServiceChangesToProto(changes []ServiceChange) []*protocol.ServiceChange {
+	var pchanges []*protocol.ServiceChange
+	for _, change := range changes {
+		pchanges = append(pchanges, &protocol.ServiceChange{
+			TargetId: proto.Int64(change.TargetID),
+			Name:     proto.String(change.Name),
+			Settings: rpcPublishSettingsToProto(change.Settings),
+		})
+	}
+	return pchanges
+}

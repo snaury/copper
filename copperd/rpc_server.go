@@ -178,10 +178,8 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 				return err
 			}
 			err = rpcWriteMessage(stream, &protocol.StreamServicesResponse{
-				TargetId: proto.Int64(result.TargetID),
-				Name:     proto.String(result.Name),
-				Settings: rpcPublishSettingsToProto(result.Settings),
-				Valid:    proto.Bool(result.Valid),
+				Removed: result.Removed,
+				Changed: rpcServiceChangesToProto(result.Changed),
 			})
 			if err != nil {
 				return err

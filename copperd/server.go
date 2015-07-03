@@ -20,7 +20,7 @@ type lowLevelServer interface {
 	setRoute(name string, routes ...Route) error
 	listRoutes() ([]string, error)
 	lookupRoute(name string) ([]Route, error)
-	streamServices() (ServiceChangeStream, error)
+	streamServices() (ServiceChangesStream, error)
 }
 
 type endpointReference interface {
@@ -38,7 +38,7 @@ type server struct {
 
 	pubByTarget map[int64]*serverPublication
 	pubsByName  map[string]map[uint32]*serverPublication
-	pubWatchers map[*serverServiceChangeStream]struct{}
+	pubWatchers map[*serverServiceChangesStream]struct{}
 
 	routeByName map[string]*serverRoute
 
@@ -57,7 +57,7 @@ func NewServer() Server {
 
 		pubByTarget: make(map[int64]*serverPublication),
 		pubsByName:  make(map[string]map[uint32]*serverPublication),
-		pubWatchers: make(map[*serverServiceChangeStream]struct{}),
+		pubWatchers: make(map[*serverServiceChangesStream]struct{}),
 
 		routeByName: make(map[string]*serverRoute),
 

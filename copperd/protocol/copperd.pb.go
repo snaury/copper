@@ -13,6 +13,7 @@ It has these top-level messages:
 	SubscribeOption
 	PublishSettings
 	Route
+	ServiceChange
 	SubscribeRequest
 	SubscribeResponse
 	GetEndpointsRequest
@@ -226,6 +227,38 @@ func (m *Route) GetWeight() uint32 {
 		return *m.Weight
 	}
 	return 0
+}
+
+type ServiceChange struct {
+	TargetId         *int64           `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
+	Name             *string          `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
+	Settings         *PublishSettings `protobuf:"bytes,3,req,name=settings" json:"settings,omitempty"`
+	XXX_unrecognized []byte           `json:"-"`
+}
+
+func (m *ServiceChange) Reset()         { *m = ServiceChange{} }
+func (m *ServiceChange) String() string { return proto.CompactTextString(m) }
+func (*ServiceChange) ProtoMessage()    {}
+
+func (m *ServiceChange) GetTargetId() int64 {
+	if m != nil && m.TargetId != nil {
+		return *m.TargetId
+	}
+	return 0
+}
+
+func (m *ServiceChange) GetName() string {
+	if m != nil && m.Name != nil {
+		return *m.Name
+	}
+	return ""
+}
+
+func (m *ServiceChange) GetSettings() *PublishSettings {
+	if m != nil {
+		return m.Settings
+	}
+	return nil
 }
 
 type SubscribeRequest struct {
@@ -533,10 +566,8 @@ func (m *StreamServicesRequest) String() string { return proto.CompactTextString
 func (*StreamServicesRequest) ProtoMessage()    {}
 
 type StreamServicesResponse struct {
-	TargetId         *int64           `protobuf:"zigzag64,1,req,name=target_id" json:"target_id,omitempty"`
-	Name             *string          `protobuf:"bytes,2,req,name=name" json:"name,omitempty"`
-	Settings         *PublishSettings `protobuf:"bytes,3,req,name=settings" json:"settings,omitempty"`
-	Valid            *bool            `protobuf:"varint,4,req,name=valid" json:"valid,omitempty"`
+	Removed          []int64          `protobuf:"zigzag64,1,rep,packed,name=removed" json:"removed,omitempty"`
+	Changed          []*ServiceChange `protobuf:"bytes,2,rep,name=changed" json:"changed,omitempty"`
 	XXX_unrecognized []byte           `json:"-"`
 }
 
@@ -544,32 +575,18 @@ func (m *StreamServicesResponse) Reset()         { *m = StreamServicesResponse{}
 func (m *StreamServicesResponse) String() string { return proto.CompactTextString(m) }
 func (*StreamServicesResponse) ProtoMessage()    {}
 
-func (m *StreamServicesResponse) GetTargetId() int64 {
-	if m != nil && m.TargetId != nil {
-		return *m.TargetId
-	}
-	return 0
-}
-
-func (m *StreamServicesResponse) GetName() string {
-	if m != nil && m.Name != nil {
-		return *m.Name
-	}
-	return ""
-}
-
-func (m *StreamServicesResponse) GetSettings() *PublishSettings {
+func (m *StreamServicesResponse) GetRemoved() []int64 {
 	if m != nil {
-		return m.Settings
+		return m.Removed
 	}
 	return nil
 }
 
-func (m *StreamServicesResponse) GetValid() bool {
-	if m != nil && m.Valid != nil {
-		return *m.Valid
+func (m *StreamServicesResponse) GetChanged() []*ServiceChange {
+	if m != nil {
+		return m.Changed
 	}
-	return false
+	return nil
 }
 
 func init() {

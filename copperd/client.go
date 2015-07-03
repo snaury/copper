@@ -96,6 +96,6 @@ func (c *clientConn) LookupRoute(name string) ([]Route, error) {
 	return c.lookupRoute(name)
 }
 
-func (c *clientConn) ServiceChanges() (ServiceChangeStream, error) {
+func (c *clientConn) ServiceChanges() (ServiceChangesStream, error) {
 	return c.streamServices()
 }

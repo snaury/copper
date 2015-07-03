@@ -78,18 +78,23 @@ type Publication interface {
 	Stop() error
 }
 
-// ServiceChange is returned when service is added or removed on the daemon
+// ServiceChange is returned when service is added or changed
 type ServiceChange struct {
 	TargetID int64
 	Name     string
 	Settings PublishSettings
-	Valid    bool
 }
 
-// ServiceChangeStream is a stream of service changes
-type ServiceChangeStream interface {
+// ServiceChanges is returned with accumulated service changes
+type ServiceChanges struct {
+	Removed []int64
+	Changed []ServiceChange
+}
+
+// ServiceChangesStream is a stream of service changes
+type ServiceChangesStream interface {
 	// Read returns the next service change
-	Read() (ServiceChange, error)
+	Read() (ServiceChanges, error)
 	// Stop stops listening for service changes
 	Stop() error
 }
@@ -109,7 +114,7 @@ type Client interface {
 	LookupRoute(name string) ([]Route, error)
 
 	// ServiceChanges returns a stream of service changes
-	ServiceChanges() (ServiceChangeStream, error)
+	ServiceChanges() (ServiceChangesStream, error)
 
 	// Close closes the connection to the server
 	Close() error

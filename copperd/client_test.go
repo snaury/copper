@@ -3,6 +3,7 @@ package copperd
 import (
 	"log"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
@@ -59,23 +60,21 @@ func TestPublishChanges(t *testing.T) {
 	published := make(chan int, 1)
 	unpublish := make(chan int, 1)
 
-	expectedChange1 := ServiceChange{
-		TargetID: 1,
-		Name:     "test:myservice",
-		Settings: PublishSettings{
-			Priority:    1,
-			Distance:    2,
-			Concurrency: 3,
+	expectedChanges1 := ServiceChanges{
+		Changed: []ServiceChange{
+			{
+				TargetID: 1,
+				Name:     "test:myservice",
+				Settings: PublishSettings{
+					Priority:    1,
+					Distance:    2,
+					Concurrency: 3,
+				},
+			},
 		},
-		Valid: true,
 	}
-	expectedChange2 := ServiceChange{
-		TargetID: 1,
-		Name:     "test:myservice",
-		Settings: PublishSettings{
-			Priority: 1,
-		},
-		Valid: false,
+	expectedChanges2 := ServiceChanges{
+		Removed: []int64{1},
 	}
 
 	runClientServerRaw(
@@ -92,16 +91,16 @@ func TestPublishChanges(t *testing.T) {
 			}
 			defer changes.Stop()
 
-			change, err := changes.Read()
-			if err != nil || change != expectedChange1 {
-				log.Fatalf("client: changes(1): %#v, %v", change, err)
+			changes1, err := changes.Read()
+			if err != nil || !reflect.DeepEqual(changes1, expectedChanges1) {
+				log.Fatalf("client: changes(1): %#v, %v", changes1, err)
 			}
 
 			unpublish <- 1
 
-			change, err = changes.Read()
-			if err != nil || change != expectedChange2 {
-				log.Fatalf("client: changes(2): %#v, %v", change, err)
+			changes2, err := changes.Read()
+			if err != nil || !reflect.DeepEqual(changes2, expectedChanges2) {
+				log.Fatalf("client: changes(2): %#v, %v", changes2, err)
 			}
 		},
 		func(server Client) {
@@ -143,41 +142,37 @@ func TestPublishPriorities(t *testing.T) {
 	unpublish2 := make(chan int, 1)
 	unpublished2 := make(chan int, 1)
 
-	expectedChange1 := ServiceChange{
-		TargetID: 1,
-		Name:     "test:myservice",
-		Settings: PublishSettings{
-			Priority:    0,
-			Distance:    1,
-			Concurrency: 2,
+	expectedChanges1 := ServiceChanges{
+		Changed: []ServiceChange{
+			{
+				TargetID: 1,
+				Name:     "test:myservice",
+				Settings: PublishSettings{
+					Priority:    0,
+					Distance:    1,
+					Concurrency: 2,
+				},
+			},
 		},
-		Valid: true,
 	}
-	expectedChange2 := ServiceChange{
-		TargetID: 2,
-		Name:     "test:myservice",
-		Settings: PublishSettings{
-			Priority:    1,
-			Distance:    2,
-			Concurrency: 3,
+	expectedChanges2 := ServiceChanges{
+		Changed: []ServiceChange{
+			{
+				TargetID: 2,
+				Name:     "test:myservice",
+				Settings: PublishSettings{
+					Priority:    1,
+					Distance:    2,
+					Concurrency: 3,
+				},
+			},
 		},
-		Valid: true,
 	}
-	expectedChange3 := ServiceChange{
-		TargetID: 1,
-		Name:     "test:myservice",
-		Settings: PublishSettings{
-			Priority: 0,
-		},
-		Valid: false,
+	expectedChanges3 := ServiceChanges{
+		Removed: []int64{1},
 	}
-	expectedChange4 := ServiceChange{
-		TargetID: 2,
-		Name:     "test:myservice",
-		Settings: PublishSettings{
-			Priority: 1,
-		},
-		Valid: false,
+	expectedChanges4 := ServiceChanges{
+		Removed: []int64{2},
 	}
 
 	runClientServerRaw(
@@ -196,9 +191,9 @@ func TestPublishPriorities(t *testing.T) {
 				return
 			}
 
-			change, err := changes.Read()
-			if err != nil || change != expectedChange1 {
-				log.Fatalf("client: changes(1): %#v, %v", change, err)
+			changes1, err := changes.Read()
+			if err != nil || !reflect.DeepEqual(changes1, expectedChanges1) {
+				log.Fatalf("client: changes(1): %#v, %v", changes1, err)
 			}
 
 			publish2 <- 1
@@ -206,9 +201,9 @@ func TestPublishPriorities(t *testing.T) {
 				return
 			}
 
-			change, err = changes.Read()
-			if err != nil || change != expectedChange2 {
-				log.Fatalf("client: changes(2): %#v, %v", change, err)
+			changes2, err := changes.Read()
+			if err != nil || !reflect.DeepEqual(changes2, expectedChanges2) {
+				log.Fatalf("client: changes(2): %#v, %v", changes2, err)
 			}
 
 			unpublish1 <- 1
@@ -216,9 +211,9 @@ func TestPublishPriorities(t *testing.T) {
 				return
 			}
 
-			change, err = changes.Read()
-			if err != nil || change != expectedChange3 {
-				log.Fatalf("client: changes(3): %#v, %v", change, err)
+			changes3, err := changes.Read()
+			if err != nil || !reflect.DeepEqual(changes3, expectedChanges3) {
+				log.Fatalf("client: changes(3): %#v, %v", changes3, err)
 			}
 
 			unpublish2 <- 1
@@ -226,9 +221,9 @@ func TestPublishPriorities(t *testing.T) {
 				return
 			}
 
-			change, err = changes.Read()
-			if err != nil || change != expectedChange4 {
-				log.Fatalf("client: changes(4): %#v, %v", change, err)
+			changes4, err := changes.Read()
+			if err != nil || !reflect.DeepEqual(changes4, expectedChanges4) {
+				log.Fatalf("client: changes(4): %#v, %v", changes4, err)
 			}
 		},
 		func(server Client) {
