@@ -13,7 +13,8 @@ type clientConn struct {
 
 var _ Client = &clientConn{}
 
-func newClient(conn net.Conn) *clientConn {
+// NewClient wraps an existing connection and returns a copperd client
+func NewClient(conn net.Conn) Client {
 	hmap := copper.NewStreamHandlerMap(nil)
 	return &clientConn{
 		rpcClient: rpcClient{
@@ -22,14 +23,6 @@ func newClient(conn net.Conn) *clientConn {
 		},
 		hmap: hmap,
 	}
-}
-
-func dialClient(network, address string) (*clientConn, error) {
-	conn, err := net.Dial(network, address)
-	if err != nil {
-		return nil, err
-	}
-	return newClient(conn), nil
 }
 
 type clientSubscription struct {

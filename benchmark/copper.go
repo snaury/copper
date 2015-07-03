@@ -63,14 +63,14 @@ func (s *server) Stop() {
 func (s *server) HandleStream(stream copper.Stream) {
 	var buf [8]byte
 	_, err := io.ReadFull(stream, buf[:])
-	if err != nil {
+	if err != nil && err != io.EOF {
 		stream.CloseWithError(err)
 		return
 	}
 	stream.Write(buf[:])
 }
 
-func startServer(addr string) (string, func()) {
+func startRawServer(addr string) (string, func()) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("Failed to listen: %s", err)
@@ -83,7 +83,7 @@ func startServer(addr string) (string, func()) {
 	}
 }
 
-func dial(addr string) copper.Conn {
+func dialRawServer(addr string) copper.Conn {
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		log.Fatalf("Failed to Dial: %s", err)
@@ -91,7 +91,7 @@ func dial(addr string) copper.Conn {
 	return copper.NewConn(c, nil, false)
 }
 
-func call(conn copper.Conn) {
+func callRawServer(conn copper.Conn) {
 	stream, err := conn.Open(0)
 	if err != nil {
 		log.Fatalf("Failed to Open: %s", err)

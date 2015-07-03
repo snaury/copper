@@ -123,25 +123,23 @@ func (s *server) acceptor(listener net.Listener) {
 	}
 }
 
-func (s *server) AddPeer(network, address string, distance uint32) error {
+func (s *server) AddPeer(client Client, distance uint32) error {
 	return ErrUnsupported
 }
 
-func (s *server) AddUpstream(network, address string) error {
+func (s *server) AddUpstream(upstream Client) error {
 	return ErrUnsupported
 }
 
-func (s *server) AddListeners(listeners ...net.Listener) error {
+func (s *server) AddListener(listener net.Listener) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if s.failure != nil {
 		return s.failure
 	}
-	for _, listener := range listeners {
-		s.listeners = append(s.listeners, listener)
-		s.listenwg.Add(1)
-		go s.acceptor(listener)
-	}
+	s.listeners = append(s.listeners, listener)
+	s.listenwg.Add(1)
+	go s.acceptor(listener)
 	return nil
 }
 

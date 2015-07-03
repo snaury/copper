@@ -16,7 +16,7 @@ func runServer(address string) (string, func()) {
 	if err != nil {
 		log.Fatalf("Failed to listen: %s", err)
 	}
-	err = server.AddListeners(listener)
+	err = server.AddListener(listener)
 	if err != nil {
 		log.Fatalf("Failed to add listeners: %s", err)
 	}
@@ -27,11 +27,11 @@ func runServer(address string) (string, func()) {
 }
 
 func connect(address string) Client {
-	client, err := dialClient("tcp", address)
+	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		log.Fatalf("Failed to connect: %s", err)
 	}
-	return client
+	return NewClient(conn)
 }
 
 func runClientServerRaw(clientfunc func(conn Client), serverfunc func(conn Client)) {

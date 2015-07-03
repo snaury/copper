@@ -116,6 +116,9 @@ type Client interface {
 	// ServiceChanges returns a stream of service changes
 	ServiceChanges() (ServiceChangesStream, error)
 
+	// RemoteAddr returns the remote address of the client
+	RemoteAddr() net.Addr
+
 	// Close closes the connection to the server
 	Close() error
 }
@@ -123,13 +126,13 @@ type Client interface {
 // Server interface allows you to work with an in-process copperd server
 type Server interface {
 	// AddPeer adds a peer to the server
-	AddPeer(network, address string, distance uint32) error
+	AddPeer(client Client, distance uint32) error
 
 	// AddUpstream adds an upstream to the server
-	AddUpstream(network, address string) error
+	AddUpstream(upstream Client) error
 
-	// Add given network listeners to the pool of listeners
-	AddListeners(listeners ...net.Listener) error
+	// Add given network listener to the pool of listeners
+	AddListener(listener net.Listener) error
 
 	// Shutdown shuts down a running server
 	Shutdown() error
