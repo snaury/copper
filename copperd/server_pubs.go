@@ -61,10 +61,9 @@ type serverPublication struct {
 	name     string
 	targetID int64
 
-	endpoints     map[localEndpointKey]*localEndpoint
-	distances     map[uint32]int
-	maxqueuesizes map[uint32]int
-	settings      PublishSettings
+	endpoints map[localEndpointKey]*localEndpoint
+	distances map[uint32]int
+	settings  PublishSettings
 
 	ready map[*localEndpoint]struct{}
 	queue map[*sync.Cond]struct{}
@@ -137,10 +136,9 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 			name:     name,
 			targetID: s.allocateTargetID(),
 
-			endpoints:     make(map[localEndpointKey]*localEndpoint),
-			distances:     make(map[uint32]int),
-			maxqueuesizes: make(map[uint32]int),
-			settings:      settings,
+			endpoints: make(map[localEndpointKey]*localEndpoint),
+			distances: make(map[uint32]int),
+			settings:  settings,
 
 			ready: make(map[*localEndpoint]struct{}),
 			queue: make(map[*sync.Cond]struct{}),
@@ -152,11 +150,23 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 		for sub := range s.subsByName[pub.name] {
 			sub.addPublicationLocked(pub)
 		}
+	} else {
+		if pub.endpoints[key] != nil {
+			return nil, fmt.Errorf("new endpoint with target=%d conflicts with a previous publication", key.targetID)
+		}
+		if pub.settings.Concurrency+settings.Concurrency < pub.settings.Concurrency {
+			return nil, fmt.Errorf("new endpoint with target=%d overflows maximum capacity", key.targetID)
+		}
+		if pub.settings.MaxQueueSize+settings.MaxQueueSize < pub.settings.MaxQueueSize {
+			return nil, fmt.Errorf("new endpoint with target=%d overflows maximum queue size", key.targetID)
+		}
+		if pub.settings.Distance < settings.Distance {
+			pub.settings.Distance = settings.Distance
+		}
+		pub.settings.Concurrency += settings.Concurrency
+		pub.settings.MaxQueueSize += settings.MaxQueueSize
 	}
-
-	if pub.endpoints[key] != nil {
-		return nil, fmt.Errorf("endpoint with key [target=%d] is already published", key.targetID)
-	}
+	pub.distances[settings.Distance]++
 
 	endpoint := &localEndpoint{
 		owner:    s,
@@ -167,23 +177,13 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 	}
 
 	pub.endpoints[endpoint.key] = endpoint
-	if len(pub.endpoints) != 1 {
-		if pub.settings.Distance < endpoint.settings.Distance {
-			pub.settings.Distance = endpoint.settings.Distance
-		}
-		pub.settings.Concurrency += endpoint.settings.Concurrency
-		if pub.settings.MaxQueueSize < endpoint.settings.MaxQueueSize {
-			pub.settings.MaxQueueSize = endpoint.settings.MaxQueueSize
-		}
-	}
-	pub.distances[endpoint.settings.Distance]++
-	pub.maxqueuesizes[endpoint.settings.MaxQueueSize]++
 	pub.ready[endpoint] = struct{}{}
-	pub.wakeupWaitersLocked(int(endpoint.settings.Concurrency))
 
+	pub.wakeupWaitersLocked(int(settings.Concurrency))
 	for watcher := range pub.owner.pubWatchers {
 		watcher.addChangedLocked(pub)
 	}
+
 	return endpoint, nil
 }
 
@@ -204,17 +204,9 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 		}
 	}
 	pub.settings.Concurrency -= endpoint.settings.Concurrency
-	if decrementCounterUint32(pub.maxqueuesizes, endpoint.settings.MaxQueueSize) {
-		pub.settings.MaxQueueSize = 0
-		for maxqueuesize := range pub.maxqueuesizes {
-			if pub.settings.MaxQueueSize < maxqueuesize {
-				pub.settings.MaxQueueSize = maxqueuesize
-			}
-		}
-	}
+	pub.settings.MaxQueueSize -= endpoint.settings.MaxQueueSize
 	delete(pub.endpoints, endpoint.key)
 
-	pub.wakeupWaitersLocked(len(pub.queue))
 	if len(pub.endpoints) == 0 {
 		delete(pub.owner.pubByTarget, pub.targetID)
 		if pubs := pub.owner.pubsByName[pub.name]; pubs != nil {
@@ -223,6 +215,9 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 				delete(pub.owner.pubsByName, pub.name)
 			}
 		}
+		for waiter := range pub.queue {
+			waiter.Signal()
+		}
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addRemovedLocked(pub)
 		}
@@ -230,6 +225,9 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 			sub.removePublicationLocked(pub)
 		}
 	} else {
+		if len(pub.queue) > int(pub.settings.MaxQueueSize) {
+			pub.wakeupWaitersLocked(int(pub.settings.MaxQueueSize) - len(pub.queue))
+		}
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addChangedLocked(pub)
 		}
