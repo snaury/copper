@@ -24,10 +24,8 @@ type lowLevelServer interface {
 }
 
 type endpointReference interface {
-	open() (copper.Stream, error)
-	decref() bool
 	getEndpointsLocked() []Endpoint
-	selectEndpointLocked() (endpointReference, error)
+	handleRequestLocked(client copper.Stream) bool
 }
 
 type server struct {

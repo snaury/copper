@@ -34,53 +34,53 @@ func newServerClient(s *server, conn net.Conn) *serverClient {
 	return c
 }
 
-func (c *serverClient) selectUpstream(targetID int64) (upstream endpointReference, err error) {
+func (c *serverClient) handleControl(client copper.Stream) error {
+	err := rpcWrapServer(client, c)
+	if err != nil {
+		_, ok := err.(copper.Error)
+		if !ok {
+			err = rpcError{
+				error: err,
+				code:  copper.EINTERNAL,
+			}
+		}
+	}
+	return err
+}
+
+func (c *serverClient) handleRequest(client copper.Stream) error {
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
 	if c.failure != nil {
-		return nil, c.failure
+		return c.failure
 	}
-	if sub := c.subscriptions[targetID]; sub != nil {
+	if sub := c.subscriptions[client.TargetID()]; sub != nil {
 		// This is a subscription
-		return sub.selectEndpointLocked()
+		if sub.handleRequestLocked(client) {
+			return nil
+		}
+		return copper.ENOROUTE
 	}
-	if pub := c.owner.pubByTarget[targetID]; pub != nil {
-		// This is a direct connection
-		return pub.selectEndpointLocked()
+	if pub := c.owner.pubByTarget[client.TargetID()]; pub != nil {
+		// THis is a direct connection
+		if pub.handleRequestLocked(client) {
+			return nil
+		}
+		return copper.ENOROUTE
 	}
-	return nil, copper.ENOTARGET
+	return copper.ENOTARGET
 }
 
 func (c *serverClient) HandleStream(stream copper.Stream) {
+	var err error
 	if stream.TargetID() == 0 {
-		// This is our rpc control target
-		err := rpcWrapServer(stream, c)
-		if err != nil {
-			_, ok := err.(copper.Error)
-			if !ok {
-				err = rpcError{
-					error: err,
-					code:  copper.EINTERNAL,
-				}
-			}
-			stream.CloseWithError(err)
-		}
-		return
+		err = c.handleControl(stream)
+	} else {
+		err = c.handleRequest(stream)
 	}
-	// Need to find an upstream and forward the data
-	upstream, err := c.selectUpstream(stream.TargetID())
 	if err != nil {
 		stream.CloseWithError(err)
-		return
 	}
-	defer upstream.decref()
-
-	remote, err := upstream.open()
-	if err != nil {
-		stream.CloseWithError(err)
-		return
-	}
-	passthruBoth(stream, remote)
 }
 
 func (c *serverClient) failWithErrorLocked(err error) {

@@ -4,6 +4,7 @@ import (
 	"log"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/snaury/copper"
 )
@@ -487,6 +488,119 @@ func TestSubscribeEndpoints(t *testing.T) {
 		PublishSettings{
 			Distance:    1,
 			Concurrency: 2,
+		},
+	)
+}
+
+func isOverCapacity(err error) bool {
+	if e, ok := err.(copper.Error); ok {
+		return e.ErrorCode() == EOVERCAPACITY
+	}
+	return false
+}
+
+func TestSubscribeQueueFull(t *testing.T) {
+	runClientServerService(
+		func(client Client) {
+			sub, err := client.Subscribe(SubscribeSettings{
+				Options: []SubscribeOption{
+					{Service: "test:myservice"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("client: Subscribe: %s", err)
+			}
+			defer sub.Stop()
+
+			stream1, err := sub.Open()
+			if err != nil {
+				t.Fatalf("client: Open(1): %s", err)
+			}
+			defer stream1.Close()
+			n, err := stream1.Read(make([]byte, 16))
+			if n != 5 || err != nil {
+				t.Fatalf("client: Read(1): %d, %v", n, err)
+			}
+
+			stream2, err := sub.Open()
+			if err != nil {
+				t.Fatalf("client: Open(2): %s", err)
+			}
+			defer stream2.Close()
+			n, err = stream2.Read(make([]byte, 16))
+			if n != 0 || !isOverCapacity(err) {
+				t.Fatalf("client: Read(2): %d, %v", n, err)
+			}
+		},
+		func(stream copper.Stream) {
+			stream.Write([]byte("hello"))
+			stream.Peek()
+		},
+		"test:myservice",
+		PublishSettings{
+			Concurrency: 1,
+		},
+	)
+}
+
+func isTimeout(err error) bool {
+	if e, ok := err.(net.Error); ok {
+		return e.Timeout()
+	}
+	return false
+}
+
+func TestSubscribeQueueWorks(t *testing.T) {
+	runClientServerService(
+		func(client Client) {
+			sub, err := client.Subscribe(SubscribeSettings{
+				Options: []SubscribeOption{
+					{Service: "test:myservice"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("client: Subscribe: %s", err)
+			}
+			defer sub.Stop()
+
+			stream1, err := sub.Open()
+			if err != nil {
+				t.Fatalf("client: Open(1): %s", err)
+			}
+			defer stream1.Close()
+
+			n, err := stream1.Read(make([]byte, 16))
+			if n != 5 || err != nil {
+				t.Fatalf("client: Read(1): %d, %v", n, err)
+			}
+
+			stream2, err := sub.Open()
+			if err != nil {
+				t.Fatalf("client: Open(2): %s", err)
+			}
+			defer stream2.Close()
+
+			stream2.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+			n, err = stream2.Read(make([]byte, 16))
+			if n != 0 || !isTimeout(err) {
+				t.Fatalf("client: Read(2): %d, %v", n, err)
+			}
+
+			stream1.Close()
+			stream2.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+			n, err = stream2.Read(make([]byte, 16))
+			if n != 5 || err != nil {
+				t.Fatalf("client: Read(3): %d, %v", n, err)
+			}
+		},
+		func(stream copper.Stream) {
+			stream.Write([]byte("hello"))
+			stream.Peek()
+		},
+		"test:myservice",
+		PublishSettings{
+			Concurrency:  1,
+			MaxQueueSize: 1,
 		},
 	)
 }

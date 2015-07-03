@@ -23,14 +23,6 @@ type serverRoute struct {
 
 var _ endpointReference = &serverRoute{}
 
-func (r *serverRoute) open() (copper.Stream, error) {
-	return nil, ErrUnsupported
-}
-
-func (r *serverRoute) decref() bool {
-	return false
-}
-
 func (r *serverRoute) getEndpointsLocked() []Endpoint {
 	var result []Endpoint
 	for _, c := range r.cases {
@@ -41,7 +33,7 @@ func (r *serverRoute) getEndpointsLocked() []Endpoint {
 	return result
 }
 
-func (r *serverRoute) selectEndpointLocked() (endpointReference, error) {
+func (r *serverRoute) handleRequestLocked(client copper.Stream) bool {
 	sum := int64(0)
 	for _, c := range r.cases {
 		if c.weight > 0 && c.sub.isActiveLocked() {
@@ -50,19 +42,19 @@ func (r *serverRoute) selectEndpointLocked() (endpointReference, error) {
 	}
 	if sum == 0 {
 		// There are no routes
-		return nil, copper.ENOROUTE
+		return false
 	}
 	bin := r.owner.random.Int63n(sum)
 	for _, c := range r.cases {
 		if c.weight > 0 && c.sub.isActiveLocked() {
 			if bin < int64(c.weight) {
-				return c.sub.selectEndpointLocked()
+				return c.sub.handleRequestLocked(client)
 			}
 			bin -= int64(c.weight)
 		}
 	}
-	// this should never happen, might replace it with a panic!
-	return nil, fmt.Errorf("random number %d didn't match the %d sum", bin, sum)
+	// this should never happen!
+	panic(fmt.Errorf("random number %d didn't match the sum %d", bin, sum))
 }
 
 func (s *server) setRouteLocked(name string, routes []Route) error {

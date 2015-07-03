@@ -20,14 +20,6 @@ type serverSubscription struct {
 
 var _ endpointReference = &serverSubscription{}
 
-func (sub *serverSubscription) open() (copper.Stream, error) {
-	return nil, ErrUnsupported
-}
-
-func (sub *serverSubscription) decref() bool {
-	return false
-}
-
 func (sub *serverSubscription) getEndpointsLocked() []Endpoint {
 	if sub.active < len(sub.settings.Options) {
 		if route := sub.routes[sub.active]; route != nil {
@@ -42,18 +34,19 @@ func (sub *serverSubscription) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (sub *serverSubscription) selectEndpointLocked() (endpointReference, error) {
+func (sub *serverSubscription) handleRequestLocked(client copper.Stream) bool {
 	if sub.active < len(sub.settings.Options) {
 		if route := sub.routes[sub.active]; route != nil {
-			return route.selectEndpointLocked()
+			return route.handleRequestLocked(client)
 		}
 		if local := sub.locals[sub.active]; local != nil {
-			return local.selectEndpointLocked()
+			return local.handleRequestLocked(client)
 		}
 		// TODO: support remote services
 	}
 	// TODO: support upstream
-	return nil, copper.ENOROUTE
+	client.CloseWithError(copper.ENOROUTE)
+	return true
 }
 
 func (sub *serverSubscription) isActiveLocked() bool {

@@ -22,36 +22,38 @@ type localEndpoint struct {
 
 var _ endpointReference = &localEndpoint{}
 
-func (endpoint *localEndpoint) open() (copper.Stream, error) {
-	return endpoint.key.client.conn.Open(endpoint.key.targetID)
-}
-
-func (endpoint *localEndpoint) decref() bool {
-	endpoint.owner.lock.Lock()
-	defer endpoint.owner.lock.Unlock()
-	pub := endpoint.pub
-	if pub == nil {
-		return false
-	}
-	endpoint.active--
-	pub.ready[endpoint] = struct{}{}
-	pub.hasready.Signal()
-	return true
-}
-
 func (endpoint *localEndpoint) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (endpoint *localEndpoint) selectEndpointLocked() (endpointReference, error) {
+func (endpoint *localEndpoint) handleRequestLocked(client copper.Stream) bool {
 	if endpoint.pub != nil && endpoint.active < endpoint.settings.Concurrency {
-		endpoint.active++
-		if endpoint.active == endpoint.settings.Concurrency {
-			delete(endpoint.pub.ready, endpoint)
-		}
-		return endpoint, nil
+		return endpoint.passthruRequestLocked(client)
 	}
-	return nil, ErrOverCapacity
+	return false
+}
+
+func (endpoint *localEndpoint) passthruRequestLocked(client copper.Stream) bool {
+	endpoint.active++
+	if endpoint.active == endpoint.settings.Concurrency {
+		delete(endpoint.pub.ready, endpoint)
+	}
+	defer func() {
+		if endpoint.pub != nil {
+			endpoint.active--
+			endpoint.pub.ready[endpoint] = struct{}{}
+			endpoint.pub.wakeupWaitersLocked(1)
+		}
+	}()
+	endpoint.owner.lock.Unlock()
+	defer endpoint.owner.lock.Lock()
+	remote, err := endpoint.key.client.conn.Open(endpoint.key.targetID)
+	if err != nil {
+		// this client has already disconnected
+		return false
+	}
+	passthruBoth(client, remote)
+	return true
 }
 
 type serverPublication struct {
@@ -64,20 +66,29 @@ type serverPublication struct {
 	maxqueuesizes map[uint32]int
 	settings      PublishSettings
 
-	ready    map[*localEndpoint]struct{}
-	hasready sync.Cond
+	ready map[*localEndpoint]struct{}
+	queue map[*sync.Cond]struct{}
 
 	subscriptions map[*serverSubscription]struct{}
 }
 
 var _ endpointReference = &serverPublication{}
 
-func (pub *serverPublication) open() (copper.Stream, error) {
-	return nil, ErrUnsupported
+func (pub *serverPublication) waitInQueueLocked(waiter *sync.Cond) {
+	pub.queue[waiter] = struct{}{}
+	waiter.Wait()
+	delete(pub.queue, waiter)
 }
 
-func (pub *serverPublication) decref() bool {
-	return false
+func (pub *serverPublication) wakeupWaitersLocked(n int) {
+	for waiter := range pub.queue {
+		delete(pub.queue, waiter)
+		waiter.Signal()
+		n--
+		if n == 0 {
+			break
+		}
+	}
 }
 
 func (pub *serverPublication) getEndpointsLocked() []Endpoint {
@@ -90,17 +101,26 @@ func (pub *serverPublication) getEndpointsLocked() []Endpoint {
 	}
 }
 
-func (pub *serverPublication) selectEndpointLocked() (endpointReference, error) {
-	if len(pub.endpoints) == 0 {
-		return nil, copper.ENOROUTE
-	}
-	for endpoint := range pub.ready {
-		if target, err := endpoint.selectEndpointLocked(); err == nil {
-			return target, nil
+func (pub *serverPublication) handleRequestLocked(client copper.Stream) bool {
+	var waiter *sync.Cond
+	for len(pub.endpoints) > 0 {
+		for endpoint := range pub.ready {
+			if endpoint.handleRequestLocked(client) {
+				return true
+			}
 		}
+		if len(pub.queue) >= int(pub.settings.MaxQueueSize) {
+			// Queue for this publication is already full
+			client.CloseWithError(ErrOverCapacity)
+			return true
+		}
+		if waiter == nil {
+			// TODO: support for timeout and cancellation
+			waiter = sync.NewCond(&pub.owner.lock)
+		}
+		pub.waitInQueueLocked(waiter)
 	}
-	// TODO: support for queues, but need timeouts and cancellation
-	return nil, ErrOverCapacity
+	return false
 }
 
 func (s *server) publishLocked(name string, key localEndpointKey, settings PublishSettings) (*localEndpoint, error) {
@@ -123,10 +143,10 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 			settings:      settings,
 
 			ready: make(map[*localEndpoint]struct{}),
+			queue: make(map[*sync.Cond]struct{}),
 
 			subscriptions: make(map[*serverSubscription]struct{}),
 		}
-		pub.hasready.L = &s.lock
 		pubs[settings.Priority] = pub
 		s.pubByTarget[pub.targetID] = pub
 		for sub := range s.subsByName[pub.name] {
@@ -159,7 +179,7 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 	pub.distances[endpoint.settings.Distance]++
 	pub.maxqueuesizes[endpoint.settings.MaxQueueSize]++
 	pub.ready[endpoint] = struct{}{}
-	pub.hasready.Broadcast()
+	pub.wakeupWaitersLocked(int(endpoint.settings.Concurrency))
 
 	for watcher := range pub.owner.pubWatchers {
 		watcher.addChangedLocked(pub)
@@ -194,6 +214,7 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 	}
 	delete(pub.endpoints, endpoint.key)
 
+	pub.wakeupWaitersLocked(len(pub.queue))
 	if len(pub.endpoints) == 0 {
 		delete(pub.owner.pubByTarget, pub.targetID)
 		if pubs := pub.owner.pubsByName[pub.name]; pubs != nil {
