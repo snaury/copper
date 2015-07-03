@@ -119,6 +119,10 @@ type Client interface {
 	// RemoteAddr returns the remote address of the client
 	RemoteAddr() net.Addr
 
+	// Serve runs the client until it is closed.  This is primarily for servers
+	// that publish services and then serve incoming requests.
+	Serve() error
+
 	// Close closes the connection to the server
 	Close() error
 }
@@ -126,7 +130,7 @@ type Client interface {
 // Server interface allows you to work with an in-process copperd server
 type Server interface {
 	// AddPeer adds a peer to the server
-	AddPeer(client Client, distance uint32) error
+	AddPeer(network, address string, distance uint32) error
 
 	// AddUpstream adds an upstream to the server
 	AddUpstream(upstream Client) error

@@ -34,6 +34,8 @@ type server struct {
 
 	lastTargetID int64
 
+	peers map[serverPeerKey]*serverPeer
+
 	subsByName map[string]map[*serverSubscription]struct{}
 
 	pubByTarget map[int64]*serverPublication
@@ -45,13 +47,16 @@ type server struct {
 	failure   error
 	listenwg  sync.WaitGroup
 	listeners []net.Listener
-	clients   map[*serverClient]struct{}
+
+	clients map[*serverClient]struct{}
 }
 
 // NewServer returns a new local server
 func NewServer() Server {
 	s := &server{
 		random: rand.New(rand.NewSource(time.Now().UnixNano())),
+
+		peers: make(map[serverPeerKey]*serverPeer),
 
 		subsByName: make(map[string]map[*serverSubscription]struct{}),
 
@@ -70,7 +75,7 @@ func (s *server) allocateTargetID() int64 {
 	return atomic.AddInt64(&s.lastTargetID, 1)
 }
 
-func (s *server) failWithError(err error) error {
+func (s *server) closeWithError(err error) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if err == nil {
@@ -84,9 +89,13 @@ func (s *server) failWithError(err error) error {
 		for _, listener := range listeners {
 			listener.Close()
 		}
+		for key, peer := range s.peers {
+			delete(s.peers, key)
+			peer.closeWithErrorLocked(err)
+		}
 		for client := range s.clients {
 			delete(s.clients, client)
-			client.failWithErrorLocked(err)
+			client.closeWithErrorLocked(err)
 		}
 		for cs := range s.pubWatchers {
 			cs.stopLocked()
@@ -112,19 +121,24 @@ func (s *server) acceptor(listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			s.failWithError(err)
+			s.closeWithError(err)
 			return
 		}
 		err = s.addClient(conn)
 		if err != nil {
-			s.failWithError(err)
+			s.closeWithError(err)
 			return
 		}
 	}
 }
 
-func (s *server) AddPeer(client Client, distance uint32) error {
-	return ErrUnsupported
+func (s *server) AddPeer(network, address string, distance uint32) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.failure != nil {
+		return s.failure
+	}
+	return s.addPeerLocked(network, address, distance)
 }
 
 func (s *server) AddUpstream(upstream Client) error {
@@ -144,7 +158,7 @@ func (s *server) AddListener(listener net.Listener) error {
 }
 
 func (s *server) Shutdown() error {
-	return s.failWithError(ErrShutdown)
+	return s.closeWithError(ErrShutdown)
 }
 
 func (s *server) Serve() error {

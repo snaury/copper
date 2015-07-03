@@ -125,8 +125,8 @@ func (sub *serverSubscription) removePublicationLocked(pub *serverPublication) {
 			if sub.locals[index] == pub {
 				sub.locals[index] = nil
 				// Select a new lower priority publication
-				for priority, candidate := range sub.tracked[index] {
-					if old := sub.locals[index]; old == nil || priority < old.settings.Priority {
+				for _, candidate := range sub.tracked[index] {
+					if old := sub.locals[index]; old == nil || candidate.settings.Priority < old.settings.Priority {
 						sub.locals[index] = candidate
 					}
 				}
@@ -137,6 +137,18 @@ func (sub *serverSubscription) removePublicationLocked(pub *serverPublication) {
 	if changed {
 		sub.updateActiveIndexLocked()
 	}
+}
+
+func (sub *serverSubscription) addRemoteLocked(remote *serverPeerRemote) {
+	// TODO
+}
+
+func (sub *serverSubscription) updateRemoteLocked(remote *serverPeerRemote) {
+	// TODO
+}
+
+func (sub *serverSubscription) removeRemoteLocked(remote *serverPeerRemote) {
+	// TODO
 }
 
 func (s *server) subscribeLocked(settings SubscribeSettings) (*serverSubscription, error) {
@@ -172,11 +184,10 @@ func (s *server) subscribeLocked(settings SubscribeSettings) (*serverSubscriptio
 		if option.MinDistance == 0 {
 			// This option allows local services, look them up
 			sub.tracked[index] = make(map[uint32]*serverPublication)
-			for priority, pub := range sub.owner.pubsByName[option.Service] {
-				// FIXME: pub needs to change back and forth
-				sub.tracked[index][priority] = pub
+			for _, pub := range sub.owner.pubsByName[option.Service] {
 				pub.subscriptions[sub] = struct{}{}
-				if old := sub.locals[index]; old == nil || priority < old.settings.Priority {
+				sub.tracked[index][pub.settings.Priority] = pub
+				if old := sub.locals[index]; old == nil || pub.settings.Priority < old.settings.Priority {
 					sub.locals[index] = pub
 				}
 			}

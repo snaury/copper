@@ -83,7 +83,7 @@ func (c *serverClient) HandleStream(stream copper.Stream) {
 	}
 }
 
-func (c *serverClient) failWithErrorLocked(err error) {
+func (c *serverClient) closeWithErrorLocked(err error) {
 	if c.failure == nil {
 		c.failure = err
 		c.conn.Close()
@@ -106,7 +106,7 @@ func (c *serverClient) serve() {
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
 	delete(c.owner.clients, c)
-	c.failWithErrorLocked(err)
+	c.closeWithErrorLocked(err)
 }
 
 func (c *serverClient) subscribe(settings SubscribeSettings) (int64, error) {

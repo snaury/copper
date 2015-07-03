@@ -13,8 +13,7 @@ type clientConn struct {
 
 var _ Client = &clientConn{}
 
-// NewClient wraps an existing connection and returns a copperd client
-func NewClient(conn net.Conn) Client {
+func newClient(conn net.Conn) *clientConn {
 	hmap := copper.NewStreamHandlerMap(nil)
 	return &clientConn{
 		rpcClient: rpcClient{
@@ -23,6 +22,11 @@ func NewClient(conn net.Conn) Client {
 		},
 		hmap: hmap,
 	}
+}
+
+// NewClient wraps an existing connection and returns a copperd client
+func NewClient(conn net.Conn) Client {
+	return newClient(conn)
 }
 
 type clientSubscription struct {
@@ -91,4 +95,8 @@ func (c *clientConn) LookupRoute(name string) ([]Route, error) {
 
 func (c *clientConn) ServiceChanges() (ServiceChangesStream, error) {
 	return c.streamServices()
+}
+
+func (c *clientConn) Serve() error {
+	return c.Conn.Wait()
 }
