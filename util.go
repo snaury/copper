@@ -1,4 +1,4 @@
-package copperd
+package copper
 
 func decrementCounterUint32(counters map[uint32]int, key uint32) bool {
 	newValue := counters[key] - 1

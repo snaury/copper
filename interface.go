@@ -1,4 +1,4 @@
-package copperd
+package copper
 
 import (
 	"net"
@@ -48,7 +48,7 @@ type EndpointChangesStream interface {
 	Stop() error
 }
 
-// Subscription is a handle to a set of copperd services
+// Subscription is a handle to a set of copper services
 type Subscription interface {
 	// Endpoints returns a list of currently active endpoints
 	Endpoints() ([]Endpoint, error)
@@ -63,7 +63,7 @@ type Subscription interface {
 	Stop() error
 }
 
-// PublishSettings describes how far is copperd allowed to advertise the
+// PublishSettings describes how far is copper allowed to advertise the
 // service and how many concurrent streams an instance is able to handle.
 type PublishSettings struct {
 	Priority    uint32
@@ -72,7 +72,7 @@ type PublishSettings struct {
 	QueueSize   uint32
 }
 
-// Publication is a handle to a copperd publication
+// Publication is a handle to a copper publication
 type Publication interface {
 	// Stop unpublishes the service
 	Stop() error
@@ -99,7 +99,7 @@ type ServiceChangesStream interface {
 	Stop() error
 }
 
-// Client interface allows you to work with copperd servers
+// Client interface allows you to work with copper servers
 type Client interface {
 	// Subscribe subscribes to a named service
 	Subscribe(settings SubscribeSettings) (Subscription, error)
@@ -127,7 +127,7 @@ type Client interface {
 	Close() error
 }
 
-// Server interface allows you to work with an in-process copperd server
+// Server interface allows you to work with an in-process copper server
 type Server interface {
 	// AddPeer adds a peer to the server
 	AddPeer(network, address string, distance uint32) error

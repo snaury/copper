@@ -8,20 +8,20 @@ import (
 	"google.golang.org/grpc/benchmark/stats"
 )
 
-func runCopperdCalls(b *testing.B, maxConcurrentCalls int) {
+func runCopperCalls(b *testing.B, maxConcurrentCalls int) {
 	s := stats.AddStats(b, 38)
 	b.StopTimer()
-	addr, stopper := startCopperd("localhost:0")
+	addr, stopper := startCopper("localhost:0")
 	defer stopper()
 
-	pubStopper := publishCopperdService(addr, maxConcurrentCalls)
+	pubStopper := publishCopperService(addr, maxConcurrentCalls)
 	defer pubStopper()
 
-	sub, subStopper := subscribeCopperdService(addr)
+	sub, subStopper := subscribeCopperService(addr)
 	defer subStopper()
 
 	for i := 0; i < 10; i++ {
-		callCopperdService(sub)
+		callCopperService(sub)
 	}
 
 	var lock sync.Mutex
@@ -34,7 +34,7 @@ func runCopperdCalls(b *testing.B, maxConcurrentCalls int) {
 			defer wg.Done()
 			for _ = range ch {
 				start := time.Now()
-				callCopperdService(sub)
+				callCopperService(sub)
 				elapsed := time.Since(start)
 
 				lock.Lock()
@@ -52,18 +52,18 @@ func runCopperdCalls(b *testing.B, maxConcurrentCalls int) {
 	wg.Wait()
 }
 
-func BenchmarkCopperdCall1(b *testing.B) {
-	runCopperdCalls(b, 1)
+func BenchmarkCopperCall1(b *testing.B) {
+	runCopperCalls(b, 1)
 }
 
-func BenchmarkCopperdCall8(b *testing.B) {
-	runCopperdCalls(b, 8)
+func BenchmarkCopperCall8(b *testing.B) {
+	runCopperCalls(b, 8)
 }
 
-func BenchmarkCopperdCall64(b *testing.B) {
-	runCopperdCalls(b, 64)
+func BenchmarkCopperCall64(b *testing.B) {
+	runCopperCalls(b, 64)
 }
 
-func BenchmarkCopperdCall512(b *testing.B) {
-	runCopperdCalls(b, 512)
+func BenchmarkCopperCall512(b *testing.B) {
+	runCopperCalls(b, 512)
 }

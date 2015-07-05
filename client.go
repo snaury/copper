@@ -1,4 +1,4 @@
-package copperd
+package copper
 
 import (
 	"net"
@@ -24,7 +24,7 @@ func newClient(conn net.Conn) *clientConn {
 	}
 }
 
-// NewClient wraps an existing connection and returns a copperd client
+// NewClient wraps an existing connection and returns a copper client
 func NewClient(conn net.Conn) Client {
 	return newClient(conn)
 }

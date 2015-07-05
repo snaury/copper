@@ -1,4 +1,4 @@
-package copperd
+package copper
 
 import (
 	"github.com/snaury/copper/raw"

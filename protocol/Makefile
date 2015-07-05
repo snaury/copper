@@ -2,8 +2,8 @@
 
 all: install
 
-copperd.pb.go: copperd.proto
+copper.pb.go: copper.proto
 	protoc --go_out=. $<
 
-install: copperd.pb.go
+install: copper.pb.go
 	go install

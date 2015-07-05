@@ -1,11 +1,11 @@
-package copperd
+package copper
 
 import (
 	"encoding/binary"
 	"io"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/snaury/copper/copperd/protocol"
+	"github.com/snaury/copper/protocol"
 	"github.com/snaury/copper/raw"
 )
 

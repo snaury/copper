@@ -7,16 +7,16 @@ import (
 	"net"
 	"time"
 
-	"github.com/snaury/copper/copperd"
+	"github.com/snaury/copper"
 	"github.com/snaury/copper/raw"
 )
 
-func startCopperd(addr string) (string, func()) {
+func startCopper(addr string) (string, func()) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("Failed to listen: %s", err)
 	}
-	srv := copperd.NewServer()
+	srv := copper.NewServer()
 	err = srv.AddListener(listener)
 	if err != nil {
 		log.Fatalf("Failed to add a listener: %s", err)
@@ -27,19 +27,19 @@ func startCopperd(addr string) (string, func()) {
 	}
 }
 
-func connectCopperd(addr string) copperd.Client {
+func connectCopper(addr string) copper.Client {
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		log.Fatalf("Failed to connect: %s", err)
 	}
-	return copperd.NewClient(conn)
+	return copper.NewClient(conn)
 }
 
-func publishCopperdService(addr string, concurrency int) func() {
-	client := connectCopperd(addr)
+func publishCopperService(addr string, concurrency int) func() {
+	client := connectCopper(addr)
 	pub, err := client.Publish(
 		"test:myservice",
-		copperd.PublishSettings{
+		copper.PublishSettings{
 			Concurrency: uint32(concurrency),
 			QueueSize:   uint32(concurrency * 2),
 		},
@@ -62,10 +62,10 @@ func publishCopperdService(addr string, concurrency int) func() {
 	}
 }
 
-func subscribeCopperdService(addr string) (copperd.Subscription, func()) {
-	client := connectCopperd(addr)
-	sub, err := client.Subscribe(copperd.SubscribeSettings{
-		Options: []copperd.SubscribeOption{
+func subscribeCopperService(addr string) (copper.Subscription, func()) {
+	client := connectCopper(addr)
+	sub, err := client.Subscribe(copper.SubscribeSettings{
+		Options: []copper.SubscribeOption{
 			{Service: "test:myservice"},
 		},
 	})
@@ -78,7 +78,7 @@ func subscribeCopperdService(addr string) (copperd.Subscription, func()) {
 	}
 }
 
-func callCopperdService(sub copperd.Subscription) {
+func callCopperService(sub copper.Subscription) {
 	stream, err := sub.Open()
 	if err != nil {
 		log.Fatalf("Failed to open stream: %s", err)

@@ -1,8 +1,8 @@
-package copperd
+package copper
 
 import (
 	"github.com/golang/protobuf/proto"
-	"github.com/snaury/copper/copperd/protocol"
+	"github.com/snaury/copper/protocol"
 )
 
 func rpcProtoToSubscribeOptions(poptions []*protocol.SubscribeOption) []SubscribeOption {
