@@ -2,11 +2,12 @@ package main
 
 import (
 	"flag"
-	"github.com/snaury/copper"
 	"io"
 	"log"
 	"net"
 	"time"
+
+	"github.com/snaury/copper/raw"
 )
 
 const (
@@ -14,7 +15,7 @@ const (
 	gb       = 1024 * 1024 * 1024
 )
 
-func process(stream copper.Stream, delay int) {
+func process(stream raw.Stream, delay int) {
 	defer stream.Close()
 	addr := stream.RemoteAddr()
 	log.Printf("connected to %s", addr)
@@ -43,7 +44,7 @@ func process(stream copper.Stream, delay int) {
 	}
 }
 
-func measurePing(conn copper.Conn) {
+func measurePing(conn raw.Conn) {
 	defer conn.Close()
 	var maxlatency int64
 	var sumlatency int64
@@ -76,7 +77,7 @@ func measurePing(conn copper.Conn) {
 	}
 }
 
-func measureLatency(conn copper.Conn) {
+func measureLatency(conn raw.Conn) {
 	var err error
 	defer conn.Close()
 	stream, err := conn.Open(1)
@@ -121,7 +122,7 @@ func measureLatency(conn copper.Conn) {
 	}
 }
 
-func measureLatencyOneShots(conn copper.Conn) {
+func measureLatencyOneShots(conn raw.Conn) {
 	defer conn.Close()
 	var buf [8]byte
 	var maxlatency int64
@@ -180,7 +181,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	conn := copper.NewConn(rawconn, nil, false)
+	conn := raw.NewConn(rawconn, nil, false)
 	defer conn.Close()
 
 	if *ping {

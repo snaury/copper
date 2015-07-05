@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/snaury/copper"
+	"github.com/snaury/copper/raw"
 )
 
 type lowLevelServer interface {
@@ -40,7 +40,7 @@ const (
 
 type endpointReference interface {
 	getEndpointsLocked() []Endpoint
-	handleRequestLocked(client copper.Stream) handleRequestStatus
+	handleRequestLocked(client raw.Stream) handleRequestStatus
 }
 
 type server struct {

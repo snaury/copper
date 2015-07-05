@@ -1,4 +1,4 @@
-package copper
+package raw
 
 // minpow2 returns the minimum power of 2 greater than or equal to n
 func minpow2(n int) int {

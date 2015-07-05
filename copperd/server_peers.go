@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/snaury/copper"
+	"github.com/snaury/copper/raw"
 )
 
 type serverPeerKey struct {
@@ -38,7 +38,7 @@ func (remote *serverPeerRemote) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (remote *serverPeerRemote) handleRequestLocked(client copper.Stream) handleRequestStatus {
+func (remote *serverPeerRemote) handleRequestLocked(client raw.Stream) handleRequestStatus {
 	if peer := remote.peer; peer != nil {
 		peer.owner.lock.Unlock()
 		defer peer.owner.lock.Lock()
@@ -161,7 +161,7 @@ func (peer *serverPeer) serveClient(client *clientConn) {
 	defer peer.detachClient(client)
 	stream, err := client.ServiceChanges()
 	if err != nil {
-		if err != copper.ECONNCLOSED {
+		if err != raw.ECONNCLOSED {
 			log.Printf("peer changes stream: %s", err)
 		}
 		return
@@ -170,7 +170,7 @@ func (peer *serverPeer) serveClient(client *clientConn) {
 	for {
 		changes, err := stream.Read()
 		if err != nil {
-			if err != io.EOF && err != copper.ECONNCLOSED {
+			if err != io.EOF && err != raw.ECONNCLOSED {
 				log.Printf("peer changes stream: %s", err)
 			}
 			break

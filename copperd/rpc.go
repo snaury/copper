@@ -1,16 +1,16 @@
 package copperd
 
 import (
-	"github.com/snaury/copper"
+	"github.com/snaury/copper/raw"
 )
 
 type rpcError struct {
 	error
-	code copper.ErrorCode
+	code raw.ErrorCode
 }
 
-var _ copper.Error = rpcError{}
+var _ raw.Error = rpcError{}
 
-func (e rpcError) ErrorCode() copper.ErrorCode {
+func (e rpcError) ErrorCode() raw.ErrorCode {
 	return e.code
 }

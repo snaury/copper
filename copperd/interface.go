@@ -3,7 +3,7 @@ package copperd
 import (
 	"net"
 
-	"github.com/snaury/copper"
+	"github.com/snaury/copper/raw"
 )
 
 // Endpoint describes access endpoints for services
@@ -57,7 +57,7 @@ type Subscription interface {
 	EndpointChanges() (EndpointChangesStream, error)
 
 	// Open opens a stream to an instance of a service
-	Open() (copper.Stream, error)
+	Open() (raw.Stream, error)
 
 	// Stop unsubscribes from services
 	Stop() error
@@ -105,7 +105,7 @@ type Client interface {
 	Subscribe(settings SubscribeSettings) (Subscription, error)
 
 	// Publish publishes a named service
-	Publish(name string, settings PublishSettings, handler copper.StreamHandler) (Publication, error)
+	Publish(name string, settings PublishSettings, handler raw.StreamHandler) (Publication, error)
 
 	// SetRoute sets a route on the server
 	SetRoute(name string, routes ...Route) error

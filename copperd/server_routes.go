@@ -3,7 +3,7 @@ package copperd
 import (
 	"fmt"
 
-	"github.com/snaury/copper"
+	"github.com/snaury/copper/raw"
 )
 
 type serverRouteCase struct {
@@ -33,7 +33,7 @@ func (r *serverRoute) getEndpointsLocked() []Endpoint {
 	return result
 }
 
-func (r *serverRoute) handleRequestLocked(client copper.Stream) handleRequestStatus {
+func (r *serverRoute) handleRequestLocked(client raw.Stream) handleRequestStatus {
 	sum := int64(0)
 	for _, c := range r.cases {
 		if c.weight > 0 && c.sub.isActiveLocked() {

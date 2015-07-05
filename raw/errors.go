@@ -1,4 +1,4 @@
-package copper
+package raw
 
 import (
 	"errors"

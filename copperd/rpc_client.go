@@ -4,12 +4,12 @@ import (
 	"io"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/snaury/copper"
 	"github.com/snaury/copper/copperd/protocol"
+	"github.com/snaury/copper/raw"
 )
 
 type rpcClient struct {
-	copper.Conn
+	raw.Conn
 	targetID int64
 }
 
@@ -52,7 +52,7 @@ func (c *rpcClient) getEndpoints(targetID int64) ([]Endpoint, error) {
 }
 
 type rpcEndpointChangesStream struct {
-	stream  copper.Stream
+	stream  raw.Stream
 	results chan EndpointChanges
 	err     error
 }
@@ -210,7 +210,7 @@ func (c *rpcClient) lookupRoute(name string) ([]Route, error) {
 }
 
 type rpcServiceChangesStream struct {
-	stream  copper.Stream
+	stream  raw.Stream
 	results chan ServiceChanges
 	err     error
 }

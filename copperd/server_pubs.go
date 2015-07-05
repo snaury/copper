@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/snaury/copper"
+	"github.com/snaury/copper/raw"
 )
 
 type localEndpointKey struct {
@@ -26,14 +26,14 @@ func (endpoint *localEndpoint) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (endpoint *localEndpoint) handleRequestLocked(client copper.Stream) handleRequestStatus {
+func (endpoint *localEndpoint) handleRequestLocked(client raw.Stream) handleRequestStatus {
 	if endpoint.pub != nil && endpoint.active < endpoint.settings.Concurrency {
 		return endpoint.passthruRequestLocked(client)
 	}
 	return handleRequestStatusOverCapacity
 }
 
-func (endpoint *localEndpoint) passthruRequestLocked(client copper.Stream) handleRequestStatus {
+func (endpoint *localEndpoint) passthruRequestLocked(client raw.Stream) handleRequestStatus {
 	endpoint.active++
 	if endpoint.active == endpoint.settings.Concurrency {
 		delete(endpoint.pub.ready, endpoint)
@@ -100,7 +100,7 @@ func (pub *serverPublication) getEndpointsLocked() []Endpoint {
 	}
 }
 
-func (pub *serverPublication) handleRequestLocked(client copper.Stream) handleRequestStatus {
+func (pub *serverPublication) handleRequestLocked(client raw.Stream) handleRequestStatus {
 	var waiter *sync.Cond
 reqloop:
 	for len(pub.endpoints) > 0 {

@@ -1,18 +1,19 @@
 package main
 
 import (
-	"github.com/snaury/copper"
 	"io"
 	"log"
 	"net"
 	"os"
+
+	"github.com/snaury/copper/raw"
 )
 
 const (
 	listenAddr = "./listen_copper.sock"
 )
 
-func process(stream copper.Stream) {
+func process(stream raw.Stream) {
 	var err error
 	defer stream.Close()
 	addr := stream.RemoteAddr()
@@ -27,7 +28,7 @@ func process(stream copper.Stream) {
 	}
 }
 
-func provideLatency(stream copper.Stream) {
+func provideLatency(stream raw.Stream) {
 	var err error
 	defer stream.Close()
 	addr := stream.RemoteAddr()
@@ -48,21 +49,21 @@ func provideLatency(stream copper.Stream) {
 	}
 }
 
-func handleStream(stream copper.Stream) {
+func handleStream(stream raw.Stream) {
 	switch stream.TargetID() {
 	case 0:
 		process(stream)
 	case 1:
 		provideLatency(stream)
 	default:
-		stream.CloseWithError(copper.ENOTARGET)
+		stream.CloseWithError(raw.ENOTARGET)
 	}
 }
 
 func handleConn(rawconn net.Conn) {
 	addr := rawconn.RemoteAddr()
 	log.Printf("accepted connection from %s", addr)
-	conn := copper.NewConn(rawconn, copper.StreamHandlerFunc(handleStream), true)
+	conn := raw.NewConn(rawconn, raw.StreamHandlerFunc(handleStream), true)
 	defer conn.Close()
 	err := conn.Wait()
 	log.Printf("connection from %s closed: %s", addr, err)

@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/snaury/copper"
+	"github.com/snaury/copper/raw"
 )
 
 type serverClient struct {
 	owner   *server
-	conn    copper.Conn
+	conn    raw.Conn
 	failure error
 
 	subscriptions map[int64]*serverSubscription
@@ -29,32 +29,32 @@ func newServerClient(s *server, conn net.Conn) *serverClient {
 		published:   make(map[int64]*localEndpoint),
 		pubWatchers: make(map[*serverServiceChangesStream]struct{}),
 	}
-	c.conn = copper.NewConn(conn, c, true)
+	c.conn = raw.NewConn(conn, c, true)
 	go c.serve()
 	return c
 }
 
-func (c *serverClient) handleControl(client copper.Stream) error {
+func (c *serverClient) handleControl(client raw.Stream) error {
 	err := rpcWrapServer(client, c)
 	if err != nil {
-		_, ok := err.(copper.Error)
+		_, ok := err.(raw.Error)
 		if !ok {
 			err = rpcError{
 				error: err,
-				code:  copper.EINTERNAL,
+				code:  raw.EINTERNAL,
 			}
 		}
 	}
 	return err
 }
 
-func (c *serverClient) handleRequestWith(client copper.Stream, endpoint endpointReference) error {
+func (c *serverClient) handleRequestWith(client raw.Stream, endpoint endpointReference) error {
 	switch status := endpoint.handleRequestLocked(client); status {
 	case handleRequestStatusDone:
 		return nil
 	case handleRequestStatusFailure, handleRequestStatusNoRoute:
 		// request failed or couldn't be routed
-		return copper.ENOROUTE
+		return raw.ENOROUTE
 	case handleRequestStatusOverCapacity:
 		// there is not enough capacity to handle the request
 		return ErrOverCapacity
@@ -63,7 +63,7 @@ func (c *serverClient) handleRequestWith(client copper.Stream, endpoint endpoint
 	}
 }
 
-func (c *serverClient) handleRequest(client copper.Stream) error {
+func (c *serverClient) handleRequest(client raw.Stream) error {
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
 	if c.failure != nil {
@@ -77,10 +77,10 @@ func (c *serverClient) handleRequest(client copper.Stream) error {
 		// This is a direct connection
 		return c.handleRequestWith(client, pub)
 	}
-	return copper.ENOTARGET
+	return raw.ENOTARGET
 }
 
-func (c *serverClient) HandleStream(stream copper.Stream) {
+func (c *serverClient) HandleStream(stream raw.Stream) {
 	var err error
 	if stream.TargetID() == 0 {
 		err = c.handleControl(stream)

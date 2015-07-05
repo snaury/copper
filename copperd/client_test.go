@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/snaury/copper"
+	"github.com/snaury/copper/raw"
 )
 
 func runServer(address string) (string, func()) {
@@ -399,7 +399,7 @@ func TestSubscribePriorities(t *testing.T) {
 	)
 }
 
-func runClientServerService(clientfunc func(conn Client), serverfunc func(stream copper.Stream), name string, settings PublishSettings) {
+func runClientServerService(clientfunc func(conn Client), serverfunc func(stream raw.Stream), name string, settings PublishSettings) {
 	published := make(chan int, 1)
 	unpublish := make(chan int, 1)
 	runClientServerRaw(
@@ -420,7 +420,7 @@ func runClientServerService(clientfunc func(conn Client), serverfunc func(stream
 			pub, err := server.Publish(
 				name,
 				settings,
-				copper.StreamHandlerFunc(serverfunc),
+				raw.StreamHandlerFunc(serverfunc),
 			)
 			if err != nil {
 				log.Fatalf("server: Publish: %s", err)
@@ -476,7 +476,7 @@ func TestSubscribeEndpoints(t *testing.T) {
 				t.Fatalf("client: Endpoints(2): %#v, %v", endpoints2, err)
 			}
 		},
-		func(stream copper.Stream) {
+		func(stream raw.Stream) {
 			// nothing
 		},
 		"test:myservice",
@@ -488,7 +488,7 @@ func TestSubscribeEndpoints(t *testing.T) {
 }
 
 func isOverCapacity(err error) bool {
-	if e, ok := err.(copper.Error); ok {
+	if e, ok := err.(raw.Error); ok {
 		return e.ErrorCode() == EOVERCAPACITY
 	}
 	return false
@@ -527,7 +527,7 @@ func TestSubscribeQueueFull(t *testing.T) {
 				t.Fatalf("client: Read(2): %d, %v", n, err)
 			}
 		},
-		func(stream copper.Stream) {
+		func(stream raw.Stream) {
 			stream.Write([]byte("hello"))
 			stream.Peek()
 		},
@@ -588,7 +588,7 @@ func TestSubscribeQueueWorks(t *testing.T) {
 				t.Fatalf("client: Read(3): %d, %v", n, err)
 			}
 		},
-		func(stream copper.Stream) {
+		func(stream raw.Stream) {
 			stream.Write([]byte("hello"))
 			stream.Peek()
 		},
@@ -600,7 +600,7 @@ func TestSubscribeQueueWorks(t *testing.T) {
 	)
 }
 
-func runClientServerStream(clientfunc func(stream copper.Stream), serverfunc func(stream copper.Stream)) {
+func runClientServerStream(clientfunc func(stream raw.Stream), serverfunc func(stream raw.Stream)) {
 	runClientServerService(
 		func(client Client) {
 			sub, err := client.Subscribe(SubscribeSettings{
@@ -632,7 +632,7 @@ func runClientServerStream(clientfunc func(stream copper.Stream), serverfunc fun
 
 func TestClientServerStream(t *testing.T) {
 	runClientServerStream(
-		func(stream copper.Stream) {
+		func(stream raw.Stream) {
 			n, err := stream.Write([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 			if n != 8 || err != nil {
 				t.Fatalf("failed to write: %d, %v", n, err)
@@ -642,19 +642,19 @@ func TestClientServerStream(t *testing.T) {
 			if err == nil {
 				_, err = stream.Peek()
 			}
-			if n != 8 || err != copper.EINTERNAL {
+			if n != 8 || err != raw.EINTERNAL {
 				t.Fatalf("failed to read: %d, %v", n, err)
 			}
 			stream.Close()
 		},
-		func(stream copper.Stream) {
+		func(stream raw.Stream) {
 			var buf [8]byte
 			n, err := stream.Read(buf[:])
 			if n != 8 || err != nil {
 				t.Fatalf("server read: %d, %v", n, err)
 			}
 			stream.Write(buf[:n])
-			stream.CloseWithError(copper.EINTERNAL)
+			stream.CloseWithError(raw.EINTERNAL)
 		},
 	)
 }
@@ -666,7 +666,7 @@ func TestClientServerCloseRead(t *testing.T) {
 	mayCloseClient := make(chan int, 1)
 	mayCloseServer := make(chan int, 1)
 	runClientServerStream(
-		func(stream copper.Stream) {
+		func(stream raw.Stream) {
 			defer close(mayReadResponse)
 			defer close(mayCloseServer)
 
@@ -677,7 +677,7 @@ func TestClientServerCloseRead(t *testing.T) {
 			if 1 != <-mayCloseRead {
 				return
 			}
-			stream.CloseReadError(copper.EINTERNAL)
+			stream.CloseReadError(raw.EINTERNAL)
 
 			if 1 != <-mayWriteResponse {
 				return
@@ -695,7 +695,7 @@ func TestClientServerCloseRead(t *testing.T) {
 			<-mayCloseClient
 			mayCloseServer <- 1
 		},
-		func(stream copper.Stream) {
+		func(stream raw.Stream) {
 			defer close(mayCloseRead)
 			defer close(mayWriteResponse)
 			defer close(mayCloseClient)
@@ -711,7 +711,7 @@ func TestClientServerCloseRead(t *testing.T) {
 			mayCloseRead <- 1
 
 			err = stream.WaitWriteClosed()
-			if err != copper.EINTERNAL {
+			if err != raw.EINTERNAL {
 				t.Fatalf("server: WaitWriteClosed: %v", err)
 			}
 
@@ -734,7 +734,7 @@ func TestClientServerCloseReadBig(t *testing.T) {
 	serverMayClose := make(chan int, 1)
 
 	runClientServerStream(
-		func(client copper.Stream) {
+		func(client raw.Stream) {
 			defer close(serverMayCloseRead)
 			defer close(serverMayClose)
 
@@ -746,13 +746,13 @@ func TestClientServerCloseReadBig(t *testing.T) {
 			serverMayCloseRead <- 1
 
 			n, err = client.WaitAck()
-			if n != 16 || err != copper.EINTERNAL {
+			if n != 16 || err != raw.EINTERNAL {
 				t.Fatalf("client: Write: %d, %v", n, err)
 			}
 
 			serverMayClose <- 1
 		},
-		func(server copper.Stream) {
+		func(server raw.Stream) {
 			buf, err := server.Peek()
 			if len(buf) != 65536 || err != nil {
 				t.Fatalf("server: Peek: %d, %v", len(buf), err)
@@ -762,7 +762,7 @@ func TestClientServerCloseReadBig(t *testing.T) {
 				return
 			}
 
-			server.CloseReadError(copper.EINTERNAL)
+			server.CloseReadError(raw.EINTERNAL)
 
 			<-serverMayClose
 		},

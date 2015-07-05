@@ -5,21 +5,21 @@ import (
 	"io"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/snaury/copper"
 	"github.com/snaury/copper/copperd/protocol"
+	"github.com/snaury/copper/raw"
 )
 
-func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
+func rpcWrapServer(stream raw.Stream, server lowLevelServer) error {
 	rtype, err := rpcReadRequestType(stream)
 	if err != nil {
-		return copper.EINVALIDDATA
+		return raw.EINVALIDDATA
 	}
 	switch rtype {
 	case protocol.RequestType_Subscribe:
 		var request protocol.SubscribeRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		targetID, err := server.subscribe(SubscribeSettings{
 			Options:       rpcProtoToSubscribeOptions(request.GetOptions()),
@@ -36,7 +36,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		var request protocol.GetEndpointsRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		endpoints, err := server.getEndpoints(request.GetTargetId())
 		if err != nil {
@@ -49,7 +49,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		var request protocol.StreamEndpointsRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		changes, err := server.streamEndpoints(request.GetTargetId())
 		if err != nil {
@@ -82,7 +82,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		var request protocol.UnsubscribeRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		err = server.unsubscribe(request.GetTargetId())
 		if err != nil {
@@ -93,7 +93,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		var request protocol.PublishRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		err = server.publish(
 			request.GetTargetId(),
@@ -108,7 +108,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		var request protocol.UnpublishRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		err = server.unpublish(request.GetTargetId())
 		if err != nil {
@@ -119,7 +119,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		var request protocol.SetRouteRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		err = server.setRoute(request.GetName(), rpcProtoToRoutes(request.GetRoutes())...)
 		if err != nil {
@@ -130,7 +130,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		var request protocol.ListRoutesRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		names, err := server.listRoutes()
 		if err != nil {
@@ -143,7 +143,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		var request protocol.LookupRouteRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		routes, err := server.lookupRoute(request.GetName())
 		if err != nil {
@@ -156,7 +156,7 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 		var request protocol.StreamServicesRequest
 		err = rpcReadMessage(stream, &request)
 		if err != nil {
-			return copper.EINVALIDDATA
+			return raw.EINVALIDDATA
 		}
 		changes, err := server.streamServices()
 		if err != nil {
@@ -188,6 +188,6 @@ func rpcWrapServer(stream copper.Stream, server lowLevelServer) error {
 	}
 	return rpcError{
 		error: fmt.Errorf("unsupported request type %d", rtype),
-		code:  copper.EUNSUPPORTED,
+		code:  raw.EUNSUPPORTED,
 	}
 }
