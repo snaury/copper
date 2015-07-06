@@ -157,24 +157,44 @@ func (peer *serverPeer) detachClient(client *clientConn) {
 func (peer *serverPeer) serveClient(client *clientConn) {
 	defer client.Close()
 	defer peer.detachClient(client)
+	for {
+		if !peer.listenChanges(client) {
+			break
+		}
+		peer.owner.lock.Lock()
+		active := peer.client == client && peer.failure == nil
+		peer.owner.lock.Unlock()
+		if !active {
+			break
+		}
+	}
+}
+
+func (peer *serverPeer) listenChanges(client *clientConn) bool {
 	stream, err := client.ServiceChanges()
 	if err != nil {
 		if err != ECONNCLOSED {
 			log.Printf("peer changes stream: %s", err)
 		}
-		return
+		return false
 	}
 	defer stream.Stop()
 	for {
 		changes, err := stream.Read()
 		if err != nil {
-			if err != io.EOF && err != ECONNCLOSED {
+			if err == ECONNCLOSED {
+				return false
+			}
+			if err != io.EOF {
 				log.Printf("peer changes stream: %s", err)
 			}
-			break
+			// TODO: Theoretically we may receive an error if we are not reading
+			// changes fast enough, in which case we may try to reconnect, but
+			// for that we need to forget all currently active services first.
+			return false
 		}
 		if !peer.processChanges(client, changes) {
-			break
+			return false
 		}
 	}
 }
@@ -193,30 +213,21 @@ func (peer *serverPeer) processChanges(client *clientConn, changes ServiceChange
 	}
 	for _, change := range changes.Changed {
 		peer.addRemoteLocked(change)
-		remote := peer.remotesByTarget[change.TargetID]
-		if remote != nil && remote.name != change.Name {
-			// target id changed to a new name, we treat as a removal
-			remote.removeLocked()
-			remote = nil
-		}
 	}
 	return true
 }
 
 func (peer *serverPeer) addRemoteLocked(change ServiceChange) {
 	if remote := peer.remotesByTarget[change.TargetID]; remote != nil {
-		if remote.name == change.Name && change.Settings.Distance >= peer.distance {
+		if remote.name == change.Name && change.Settings.Priority == remote.settings.Priority && change.Settings.Distance == remote.settings.Distance {
+			// This remote changed neigher priority nor distance
 			remote.settings = change.Settings
-			// Notify subscriptions in case priority changed
-			for sub := range remote.subscriptions {
-				sub.updateRemoteLocked(remote)
-			}
 			return
 		}
 		// Either target id was reused for a different name (shouldn't happen
-		// in practice), or we are not allowed to reach this remote anymore (its
-		// maximum allowed distance is too small). We remove the old remote and
-		// maybe readd it below.
+		// in practice), or priority and/or distance changed. The easiest way
+		// to update subscriptions is to simply remove this peer and re-add
+		// it again below.
 		remote.removeLocked()
 		remote = nil
 	}
