@@ -1,25 +1,25 @@
-package raw
+package copper
 
 import (
 	"bufio"
 	"time"
 )
 
-type connWriter struct {
+type rawConnWriter struct {
 	owner  *rawConn
 	buffer *bufio.Writer
 	writes int
 }
 
-func newConnWriter(owner *rawConn) *connWriter {
-	w := &connWriter{
+func newRawConnWriter(owner *rawConn) *rawConnWriter {
+	w := &rawConnWriter{
 		owner: owner,
 	}
 	w.buffer = bufio.NewWriter(w)
 	return w
 }
 
-func (w *connWriter) Write(p []byte) (int, error) {
+func (w *rawConnWriter) Write(p []byte) (int, error) {
 	w.writes++
 	w.owner.lock.Unlock()
 	defer w.owner.lock.Lock()

@@ -6,8 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/snaury/copper/raw"
 )
 
 type lowLevelServer interface {
@@ -40,7 +38,7 @@ const (
 
 type endpointReference interface {
 	getEndpointsLocked() []Endpoint
-	handleRequestLocked(client raw.Stream) handleRequestStatus
+	handleRequestLocked(client Stream) handleRequestStatus
 }
 
 type server struct {
@@ -94,7 +92,7 @@ func (s *server) closeWithError(err error) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if err == nil {
-		err = ErrShutdown
+		err = ESHUTDOWN
 	}
 	preverror := s.failure
 	if s.failure == nil {
@@ -157,7 +155,7 @@ func (s *server) AddPeer(network, address string, distance uint32) error {
 }
 
 func (s *server) AddUpstream(upstream Client) error {
-	return ErrUnsupported
+	return EUNSUPPORTED
 }
 
 func (s *server) AddListener(listener net.Listener) error {
@@ -173,7 +171,7 @@ func (s *server) AddListener(listener net.Listener) error {
 }
 
 func (s *server) Shutdown() error {
-	return s.closeWithError(ErrShutdown)
+	return s.closeWithError(ESHUTDOWN)
 }
 
 func (s *server) Serve() error {

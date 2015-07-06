@@ -6,8 +6,6 @@ import (
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/snaury/copper/raw"
 )
 
 func runServer(address string) (string, func()) {
@@ -26,7 +24,7 @@ func runServer(address string) (string, func()) {
 	}
 }
 
-func connect(address string) Client {
+func connectClient(address string) Client {
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		log.Fatalf("Failed to connect: %s", err)
@@ -34,7 +32,7 @@ func connect(address string) Client {
 	return NewClient(conn)
 }
 
-func runClientServerRaw(clientfunc func(conn Client), serverfunc func(conn Client)) {
+func runClientServer(clientfunc func(conn Client), serverfunc func(conn Client)) {
 	target, stopper := runServer("localhost:0")
 	defer stopper()
 
@@ -42,13 +40,13 @@ func runClientServerRaw(clientfunc func(conn Client), serverfunc func(conn Clien
 
 	go func() {
 		defer close(serverFinished)
-		conn := connect(target)
+		conn := connectClient(target)
 		defer conn.Close()
 		serverfunc(conn)
 	}()
 
 	func() {
-		conn := connect(target)
+		conn := connectClient(target)
 		defer conn.Close()
 		clientfunc(conn)
 	}()
@@ -77,7 +75,7 @@ func TestPublishChanges(t *testing.T) {
 		Removed: []int64{1},
 	}
 
-	runClientServerRaw(
+	runClientServer(
 		func(client Client) {
 			defer close(unpublish)
 
@@ -175,7 +173,7 @@ func TestPublishPriorities(t *testing.T) {
 		Removed: []int64{2},
 	}
 
-	runClientServerRaw(
+	runClientServer(
 		func(client Client) {
 			defer close(publish2)
 			defer close(unpublish1)
@@ -297,7 +295,7 @@ func TestSubscribePriorities(t *testing.T) {
 	unpublish2 := make(chan int, 1)
 	unpublished2 := make(chan int, 1)
 
-	runClientServerRaw(
+	runClientServer(
 		func(client Client) {
 			defer close(unpublish1)
 			defer close(unpublish2)
@@ -399,10 +397,10 @@ func TestSubscribePriorities(t *testing.T) {
 	)
 }
 
-func runClientServerService(clientfunc func(conn Client), serverfunc func(stream raw.Stream), name string, settings PublishSettings) {
+func runClientServerService(clientfunc func(conn Client), serverfunc func(stream Stream), name string, settings PublishSettings) {
 	published := make(chan int, 1)
 	unpublish := make(chan int, 1)
-	runClientServerRaw(
+	runClientServer(
 		func(client Client) {
 			defer close(unpublish)
 
@@ -420,7 +418,7 @@ func runClientServerService(clientfunc func(conn Client), serverfunc func(stream
 			pub, err := server.Publish(
 				name,
 				settings,
-				raw.StreamHandlerFunc(serverfunc),
+				HandlerFunc(serverfunc),
 			)
 			if err != nil {
 				log.Fatalf("server: Publish: %s", err)
@@ -476,7 +474,7 @@ func TestSubscribeEndpoints(t *testing.T) {
 				t.Fatalf("client: Endpoints(2): %#v, %v", endpoints2, err)
 			}
 		},
-		func(stream raw.Stream) {
+		func(stream Stream) {
 			// nothing
 		},
 		"test:myservice",
@@ -485,13 +483,6 @@ func TestSubscribeEndpoints(t *testing.T) {
 			Concurrency: 2,
 		},
 	)
-}
-
-func isOverCapacity(err error) bool {
-	if e, ok := err.(raw.Error); ok {
-		return e.ErrorCode() == EOVERCAPACITY
-	}
-	return false
 }
 
 func TestSubscribeQueueFull(t *testing.T) {
@@ -527,7 +518,7 @@ func TestSubscribeQueueFull(t *testing.T) {
 				t.Fatalf("client: Read(2): %d, %v", n, err)
 			}
 		},
-		func(stream raw.Stream) {
+		func(stream Stream) {
 			stream.Write([]byte("hello"))
 			stream.Peek()
 		},
@@ -536,13 +527,6 @@ func TestSubscribeQueueFull(t *testing.T) {
 			Concurrency: 1,
 		},
 	)
-}
-
-func isTimeout(err error) bool {
-	if e, ok := err.(net.Error); ok {
-		return e.Timeout()
-	}
-	return false
 }
 
 func TestSubscribeQueueWorks(t *testing.T) {
@@ -588,7 +572,7 @@ func TestSubscribeQueueWorks(t *testing.T) {
 				t.Fatalf("client: Read(3): %d, %v", n, err)
 			}
 		},
-		func(stream raw.Stream) {
+		func(stream Stream) {
 			stream.Write([]byte("hello"))
 			stream.Peek()
 		},
@@ -600,7 +584,7 @@ func TestSubscribeQueueWorks(t *testing.T) {
 	)
 }
 
-func runClientServerStream(clientfunc func(stream raw.Stream), serverfunc func(stream raw.Stream)) {
+func runClientServerStream(clientfunc func(stream Stream), serverfunc func(stream Stream)) {
 	runClientServerService(
 		func(client Client) {
 			sub, err := client.Subscribe(SubscribeSettings{
@@ -632,7 +616,7 @@ func runClientServerStream(clientfunc func(stream raw.Stream), serverfunc func(s
 
 func TestClientServerStream(t *testing.T) {
 	runClientServerStream(
-		func(stream raw.Stream) {
+		func(stream Stream) {
 			n, err := stream.Write([]byte{1, 2, 3, 4, 5, 6, 7, 8})
 			if n != 8 || err != nil {
 				t.Fatalf("failed to write: %d, %v", n, err)
@@ -642,19 +626,19 @@ func TestClientServerStream(t *testing.T) {
 			if err == nil {
 				_, err = stream.Peek()
 			}
-			if n != 8 || err != raw.EINTERNAL {
+			if n != 8 || err != EINTERNAL {
 				t.Fatalf("failed to read: %d, %v", n, err)
 			}
 			stream.Close()
 		},
-		func(stream raw.Stream) {
+		func(stream Stream) {
 			var buf [8]byte
 			n, err := stream.Read(buf[:])
 			if n != 8 || err != nil {
 				t.Fatalf("server read: %d, %v", n, err)
 			}
 			stream.Write(buf[:n])
-			stream.CloseWithError(raw.EINTERNAL)
+			stream.CloseWithError(EINTERNAL)
 		},
 	)
 }
@@ -666,7 +650,7 @@ func TestClientServerCloseRead(t *testing.T) {
 	mayCloseClient := make(chan int, 1)
 	mayCloseServer := make(chan int, 1)
 	runClientServerStream(
-		func(stream raw.Stream) {
+		func(stream Stream) {
 			defer close(mayReadResponse)
 			defer close(mayCloseServer)
 
@@ -677,7 +661,7 @@ func TestClientServerCloseRead(t *testing.T) {
 			if 1 != <-mayCloseRead {
 				return
 			}
-			stream.CloseReadError(raw.EINTERNAL)
+			stream.CloseReadError(EINTERNAL)
 
 			if 1 != <-mayWriteResponse {
 				return
@@ -695,7 +679,7 @@ func TestClientServerCloseRead(t *testing.T) {
 			<-mayCloseClient
 			mayCloseServer <- 1
 		},
-		func(stream raw.Stream) {
+		func(stream Stream) {
 			defer close(mayCloseRead)
 			defer close(mayWriteResponse)
 			defer close(mayCloseClient)
@@ -711,7 +695,7 @@ func TestClientServerCloseRead(t *testing.T) {
 			mayCloseRead <- 1
 
 			err = stream.WaitWriteClosed()
-			if err != raw.EINTERNAL {
+			if err != EINTERNAL {
 				t.Fatalf("server: WaitWriteClosed: %v", err)
 			}
 
@@ -734,7 +718,7 @@ func TestClientServerCloseReadBig(t *testing.T) {
 	serverMayClose := make(chan int, 1)
 
 	runClientServerStream(
-		func(client raw.Stream) {
+		func(client Stream) {
 			defer close(serverMayCloseRead)
 			defer close(serverMayClose)
 
@@ -746,13 +730,13 @@ func TestClientServerCloseReadBig(t *testing.T) {
 			serverMayCloseRead <- 1
 
 			n, err = client.WaitAck()
-			if n != 16 || err != raw.EINTERNAL {
+			if n != 16 || err != EINTERNAL {
 				t.Fatalf("client: Write: %d, %v", n, err)
 			}
 
 			serverMayClose <- 1
 		},
-		func(server raw.Stream) {
+		func(server Stream) {
 			buf, err := server.Peek()
 			if len(buf) != 65536 || err != nil {
 				t.Fatalf("server: Peek: %d, %v", len(buf), err)
@@ -762,7 +746,7 @@ func TestClientServerCloseReadBig(t *testing.T) {
 				return
 			}
 
-			server.CloseReadError(raw.EINTERNAL)
+			server.CloseReadError(EINTERNAL)
 
 			<-serverMayClose
 		},

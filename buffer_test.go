@@ -1,4 +1,4 @@
-package raw
+package copper
 
 import (
 	"reflect"

@@ -5,11 +5,10 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/snaury/copper/protocol"
-	"github.com/snaury/copper/raw"
 )
 
 type rpcClient struct {
-	raw.Conn
+	RawConn
 	targetID int64
 }
 
@@ -18,7 +17,7 @@ var _ lowLevelServer = &rpcClient{}
 func (c *rpcClient) subscribe(settings SubscribeSettings) (int64, error) {
 	var response protocol.SubscribeResponse
 	err := rpcSimpleRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_Subscribe,
 		&protocol.SubscribeRequest{
@@ -37,7 +36,7 @@ func (c *rpcClient) subscribe(settings SubscribeSettings) (int64, error) {
 func (c *rpcClient) getEndpoints(targetID int64) ([]Endpoint, error) {
 	var response protocol.GetEndpointsResponse
 	err := rpcSimpleRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_GetEndpoints,
 		&protocol.GetEndpointsRequest{
@@ -52,7 +51,7 @@ func (c *rpcClient) getEndpoints(targetID int64) ([]Endpoint, error) {
 }
 
 type rpcEndpointChangesStream struct {
-	stream  raw.Stream
+	stream  Stream
 	results chan EndpointChanges
 	err     error
 }
@@ -87,7 +86,7 @@ func (s *rpcEndpointChangesStream) Stop() error {
 
 func (c *rpcClient) streamEndpoints(targetID int64) (EndpointChangesStream, error) {
 	stream, err := rpcStreamingRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_StreamEndpoints,
 		&protocol.StreamEndpointsRequest{
@@ -109,7 +108,7 @@ func (c *rpcClient) streamEndpoints(targetID int64) (EndpointChangesStream, erro
 func (c *rpcClient) unsubscribe(targetID int64) error {
 	var response protocol.UnsubscribeResponse
 	err := rpcSimpleRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_Unsubscribe,
 		&protocol.UnsubscribeRequest{
@@ -126,7 +125,7 @@ func (c *rpcClient) unsubscribe(targetID int64) error {
 func (c *rpcClient) publish(targetID int64, name string, settings PublishSettings) error {
 	var response protocol.PublishResponse
 	err := rpcSimpleRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_Publish,
 		&protocol.PublishRequest{
@@ -145,7 +144,7 @@ func (c *rpcClient) publish(targetID int64, name string, settings PublishSetting
 func (c *rpcClient) unpublish(targetID int64) error {
 	var response protocol.UnpublishResponse
 	err := rpcSimpleRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_Unpublish,
 		&protocol.UnpublishRequest{
@@ -162,7 +161,7 @@ func (c *rpcClient) unpublish(targetID int64) error {
 func (c *rpcClient) setRoute(name string, routes ...Route) error {
 	var response protocol.SetRouteResponse
 	err := rpcSimpleRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_SetRoute,
 		&protocol.SetRouteRequest{
@@ -180,7 +179,7 @@ func (c *rpcClient) setRoute(name string, routes ...Route) error {
 func (c *rpcClient) listRoutes() ([]string, error) {
 	var response protocol.ListRoutesResponse
 	err := rpcSimpleRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_ListRoutes,
 		&protocol.ListRoutesRequest{},
@@ -195,7 +194,7 @@ func (c *rpcClient) listRoutes() ([]string, error) {
 func (c *rpcClient) lookupRoute(name string) ([]Route, error) {
 	var response protocol.LookupRouteResponse
 	err := rpcSimpleRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_LookupRoute,
 		&protocol.LookupRouteRequest{
@@ -210,7 +209,7 @@ func (c *rpcClient) lookupRoute(name string) ([]Route, error) {
 }
 
 type rpcServiceChangesStream struct {
-	stream  raw.Stream
+	stream  Stream
 	results chan ServiceChanges
 	err     error
 }
@@ -245,7 +244,7 @@ func (s *rpcServiceChangesStream) Stop() error {
 
 func (c *rpcClient) streamServices() (ServiceChangesStream, error) {
 	stream, err := rpcStreamingRequest(
-		c.Conn,
+		c.RawConn,
 		c.targetID,
 		protocol.RequestType_StreamServices,
 		&protocol.StreamServicesRequest{},

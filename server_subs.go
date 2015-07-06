@@ -2,8 +2,6 @@ package copper
 
 import (
 	"fmt"
-
-	"github.com/snaury/copper/raw"
 )
 
 type serverSubscription struct {
@@ -34,7 +32,7 @@ func (sub *serverSubscription) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (sub *serverSubscription) handleRequestLocked(client raw.Stream) handleRequestStatus {
+func (sub *serverSubscription) handleRequestLocked(client Stream) handleRequestStatus {
 	if sub.active < len(sub.settings.Options) {
 		if route := sub.routes[sub.active]; route != nil {
 			return route.handleRequestLocked(client)

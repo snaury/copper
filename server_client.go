@@ -3,13 +3,11 @@ package copper
 import (
 	"fmt"
 	"net"
-
-	"github.com/snaury/copper/raw"
 )
 
 type serverClient struct {
 	owner   *server
-	conn    raw.Conn
+	conn    RawConn
 	failure error
 
 	subscriptions map[int64]*serverSubscription
@@ -29,41 +27,41 @@ func newServerClient(s *server, conn net.Conn) *serverClient {
 		published:   make(map[int64]*localEndpoint),
 		pubWatchers: make(map[*serverServiceChangesStream]struct{}),
 	}
-	c.conn = raw.NewConn(conn, c, true)
+	c.conn = NewRawConn(conn, c, true)
 	go c.serve()
 	return c
 }
 
-func (c *serverClient) handleControl(client raw.Stream) error {
+func (c *serverClient) handleControl(client Stream) error {
 	err := rpcWrapServer(client, c)
 	if err != nil {
-		_, ok := err.(raw.Error)
+		_, ok := err.(Error)
 		if !ok {
-			err = rpcError{
+			err = copperError{
 				error: err,
-				code:  raw.EINTERNAL,
+				code:  EINTERNAL,
 			}
 		}
 	}
 	return err
 }
 
-func (c *serverClient) handleRequestWith(client raw.Stream, endpoint endpointReference) error {
+func (c *serverClient) handleRequestWith(client Stream, endpoint endpointReference) error {
 	switch status := endpoint.handleRequestLocked(client); status {
 	case handleRequestStatusDone:
 		return nil
 	case handleRequestStatusFailure, handleRequestStatusNoRoute:
 		// request failed or couldn't be routed
-		return raw.ENOROUTE
+		return ENOROUTE
 	case handleRequestStatusOverCapacity:
 		// there is not enough capacity to handle the request
-		return ErrOverCapacity
+		return EOVERCAPACITY
 	default:
 		return fmt.Errorf("unhandled request status: %d", status)
 	}
 }
 
-func (c *serverClient) handleRequest(client raw.Stream) error {
+func (c *serverClient) handleRequest(client Stream) error {
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
 	if c.failure != nil {
@@ -77,10 +75,10 @@ func (c *serverClient) handleRequest(client raw.Stream) error {
 		// This is a direct connection
 		return c.handleRequestWith(client, pub)
 	}
-	return raw.ENOTARGET
+	return ENOTARGET
 }
 
-func (c *serverClient) HandleStream(stream raw.Stream) {
+func (c *serverClient) Handle(stream Stream) {
 	var err error
 	if stream.TargetID() == 0 {
 		err = c.handleControl(stream)
@@ -146,7 +144,7 @@ func (c *serverClient) getEndpoints(targetID int64) ([]Endpoint, error) {
 }
 
 func (c *serverClient) streamEndpoints(targetID int64) (EndpointChangesStream, error) {
-	return nil, ErrUnsupported
+	return nil, EUNSUPPORTED
 }
 
 func (c *serverClient) unsubscribe(targetID int64) error {

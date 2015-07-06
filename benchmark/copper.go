@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/snaury/copper"
-	"github.com/snaury/copper/raw"
 )
 
 func startCopper(addr string) (string, func()) {
@@ -43,7 +42,7 @@ func publishCopperService(addr string, concurrency int) func() {
 			Concurrency: uint32(concurrency),
 			QueueSize:   uint32(concurrency * 2),
 		},
-		raw.StreamHandlerFunc(func(stream raw.Stream) {
+		copper.HandlerFunc(func(stream copper.Stream) {
 			var buf [8]byte
 			_, err := io.ReadFull(stream, buf[:])
 			if err != nil && err != io.EOF {

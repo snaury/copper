@@ -1,4 +1,4 @@
-package raw
+package copper
 
 import (
 	"bufio"
@@ -10,21 +10,14 @@ import (
 	"time"
 )
 
-func toHandler(handler func(stream Stream)) StreamHandler {
-	if handler != nil {
-		return StreamHandlerFunc(handler)
-	}
-	return nil
-}
-
-func runClientServerStream(clientfunc func(client Stream), serverfunc func(stream Stream)) {
+func runRawClientServerStream(clientfunc func(client Stream), serverfunc func(stream Stream)) {
 	closeClient := make(chan int, 1)
 	rawserver, rawclient := net.Pipe()
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		client := NewConn(rawclient, nil, false)
+		client := NewRawConn(rawclient, nil, false)
 		defer client.Close()
 		func() {
 			stream, err := client.Open(0)
@@ -38,37 +31,37 @@ func runClientServerStream(clientfunc func(client Stream), serverfunc func(strea
 	}()
 	go func() {
 		defer wg.Done()
-		handler := StreamHandlerFunc(func(stream Stream) {
+		handler := HandlerFunc(func(stream Stream) {
 			defer close(closeClient)
 			serverfunc(stream)
 		})
-		server := NewConn(rawserver, toHandler(handler), true)
+		server := NewRawConn(rawserver, toHandlerFunc(handler), true)
 		defer server.Close()
 		server.Wait()
 	}()
 	wg.Wait()
 }
 
-func runClientServerHandler(clientfunc func(client Conn), handler func(stream Stream)) {
+func runRawClientServerHandler(clientfunc func(client RawConn), handler func(stream Stream)) {
 	rawserver, rawclient := net.Pipe()
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		client := NewConn(rawclient, nil, false)
+		client := NewRawConn(rawclient, nil, false)
 		defer client.Close()
 		clientfunc(client)
 	}()
 	go func() {
 		defer wg.Done()
-		server := NewConn(rawserver, toHandler(handler), true)
+		server := NewRawConn(rawserver, toHandlerFunc(handler), true)
 		defer server.Close()
 		server.Wait()
 	}()
 	wg.Wait()
 }
 
-func TestConnStreams(t *testing.T) {
+func TestRawConnStreams(t *testing.T) {
 	serverReady := make(chan int, 1)
 
 	var wg sync.WaitGroup
@@ -83,7 +76,7 @@ func TestConnStreams(t *testing.T) {
 			2: ENOROUTE,
 			3: ENOTARGET,
 		}
-		handler := StreamHandlerFunc(func(stream Stream) {
+		handler := HandlerFunc(func(stream Stream) {
 			r := bufio.NewReader(stream)
 			line, err := r.ReadString('\n')
 			if err != io.EOF {
@@ -100,11 +93,11 @@ func TestConnStreams(t *testing.T) {
 			// the other side when we close the stream!
 			stream.CloseWithError(closeErrors[stream.TargetID()])
 		})
-		hmap := NewStreamHandlerMap(nil)
+		hmap := NewHandlerMap(nil)
 		hmap.Add(handler)
 		hmap.Add(handler)
 		hmap.Add(handler)
-		server := NewConn(serverconn, hmap, true)
+		server := NewRawConn(serverconn, hmap, true)
 		defer server.Close()
 
 		stream, err := server.Open(51)
@@ -124,7 +117,7 @@ func TestConnStreams(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		client := NewConn(clientconn, nil, false)
+		client := NewRawConn(clientconn, nil, false)
 		defer client.Close()
 		if 1 != <-serverReady {
 			return
@@ -189,27 +182,27 @@ func TestConnStreams(t *testing.T) {
 }
 
 // TODO: remove and switch to new functions
-func runClientServer(handler StreamHandler, clientfunc func(client Conn)) {
+func runRawClientServer(handler Handler, clientfunc func(client RawConn)) {
 	rawserver, rawclient := net.Pipe()
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		server := NewConn(rawserver, handler, true)
+		server := NewRawConn(rawserver, handler, true)
 		defer server.Close()
 		server.Wait()
 	}()
 	go func() {
 		defer wg.Done()
-		client := NewConn(rawclient, nil, false)
+		client := NewRawConn(rawclient, nil, false)
 		defer client.Close()
 		clientfunc(client)
 	}()
 	wg.Wait()
 }
 
-func TestConnPing(t *testing.T) {
-	runClientServer(nil, func(client Conn) {
+func TestRawConnPing(t *testing.T) {
+	runRawClientServer(nil, func(client RawConn) {
 		var ch1, ch2 <-chan error
 		// simple ping
 		if err := <-client.Ping(123); err != nil {
@@ -243,11 +236,11 @@ func TestConnPing(t *testing.T) {
 	})
 }
 
-func TestConnSync(t *testing.T) {
-	runClientServer(StreamHandlerFunc(func(stream Stream) {
+func TestRawConnSync(t *testing.T) {
+	runRawClientServer(HandlerFunc(func(stream Stream) {
 		stream.Read(make([]byte, 16))
 		stream.CloseWithError(ENOROUTE)
-	}), func(client Conn) {
+	}), func(client RawConn) {
 		stream, err := client.Open(42)
 		if err != nil {
 			t.Fatalf("client: Open: %s", err)
@@ -279,11 +272,11 @@ func TestConnSync(t *testing.T) {
 	})
 }
 
-func TestStreamBigWrite(t *testing.T) {
-	runClientServer(StreamHandlerFunc(func(stream Stream) {
+func TestRawStreamBigWrite(t *testing.T) {
+	runRawClientServer(HandlerFunc(func(stream Stream) {
 		stream.Peek()
 		stream.CloseWithError(ENOROUTE)
-	}), func(client Conn) {
+	}), func(client RawConn) {
 		stream, err := client.Open(0)
 		if err != nil {
 			t.Fatalf("client: Open: %s", err)
@@ -296,17 +289,10 @@ func TestStreamBigWrite(t *testing.T) {
 	})
 }
 
-func isTimeout(err error) bool {
-	if e, ok := err.(net.Error); ok {
-		return e.Timeout()
-	}
-	return false
-}
-
-func TestStreamReadDeadline(t *testing.T) {
-	runClientServer(StreamHandlerFunc(func(stream Stream) {
+func TestRawStreamReadDeadline(t *testing.T) {
+	runRawClientServer(HandlerFunc(func(stream Stream) {
 		stream.Read(make([]byte, 256))
-	}), func(client Conn) {
+	}), func(client RawConn) {
 		var deadline time.Time
 		stream, err := client.Open(0)
 		if err != nil {
@@ -326,10 +312,10 @@ func TestStreamReadDeadline(t *testing.T) {
 	})
 }
 
-func TestStreamWriteDeadline(t *testing.T) {
-	runClientServer(StreamHandlerFunc(func(stream Stream) {
+func TestRawStreamWriteDeadline(t *testing.T) {
+	runRawClientServer(HandlerFunc(func(stream Stream) {
 		stream.Write(make([]byte, 65536+16))
-	}), func(client Conn) {
+	}), func(client RawConn) {
 		var deadline time.Time
 		stream, err := client.Open(0)
 		if err != nil {
@@ -359,13 +345,13 @@ func TestStreamWriteDeadline(t *testing.T) {
 	})
 }
 
-func TestStreamWaitAck(t *testing.T) {
+func TestRawStreamWaitAck(t *testing.T) {
 	var lock sync.Mutex
 	var dataseen bool
 	var waitdone sync.Cond
 	waitdone.L = &lock
 	var wg sync.WaitGroup
-	runClientServer(StreamHandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) {
 		defer wg.Done()
 		switch stream.TargetID() {
 		case 1:
@@ -409,7 +395,7 @@ func TestStreamWaitAck(t *testing.T) {
 				t.Fatalf("server: CloseWithError: %s", err)
 			}
 		}
-	}), func(client Conn) {
+	}), func(client RawConn) {
 		for target := int64(1); target <= 3; target++ {
 			wg.Add(1)
 			stream, err := client.Open(target)
@@ -449,12 +435,12 @@ func TestStreamWaitAck(t *testing.T) {
 	})
 }
 
-func TestStreamCloseRead(t *testing.T) {
+func TestRawStreamCloseRead(t *testing.T) {
 	var goahead1 sync.Mutex
 	var goahead2 sync.Mutex
 	goahead1.Lock()
 	goahead2.Lock()
-	runClientServer(StreamHandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) {
 		_, err := stream.Peek()
 		if err != nil {
 			t.Fatalf("server: Peek: %v", err)
@@ -473,7 +459,7 @@ func TestStreamCloseRead(t *testing.T) {
 			t.Fatalf("server: WaitAck: %d, %v", n, err)
 		}
 		goahead2.Unlock()
-	}), func(client Conn) {
+	}), func(client RawConn) {
 		stream, err := client.Open(0)
 		if err != nil {
 			t.Fatalf("client: Open: %v", err)
@@ -494,12 +480,12 @@ func TestStreamCloseRead(t *testing.T) {
 	})
 }
 
-func TestStreamCloseWithData(t *testing.T) {
+func TestRawStreamCloseWithData(t *testing.T) {
 	var goahead1 sync.Mutex
 	var goahead2 sync.Mutex
 	goahead1.Lock()
 	goahead2.Lock()
-	runClientServer(StreamHandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) {
 		goahead1.Unlock()
 		defer goahead2.Unlock()
 		n, err := stream.Read(make([]byte, 16))
@@ -511,7 +497,7 @@ func TestStreamCloseWithData(t *testing.T) {
 		if n != 5 || err != ENOROUTE {
 			t.Fatalf("server: Read: %d, %v", n, err)
 		}
-	}), func(client Conn) {
+	}), func(client RawConn) {
 		stream, err := client.Open(0)
 		if err != nil {
 			t.Fatalf("server: Open: %v", err)
@@ -530,14 +516,14 @@ func TestStreamCloseWithData(t *testing.T) {
 	})
 }
 
-func TestStreamCloseAfterData(t *testing.T) {
+func TestRawStreamCloseAfterData(t *testing.T) {
 	var goahead1 sync.Mutex
 	var goahead2 sync.Mutex
 	var goahead3 sync.Mutex
 	goahead1.Lock()
 	goahead2.Lock()
 	goahead3.Lock()
-	runClientServer(StreamHandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) {
 		goahead1.Unlock()
 		n, err := stream.Read(make([]byte, 16))
 		goahead2.Unlock()
@@ -549,7 +535,7 @@ func TestStreamCloseAfterData(t *testing.T) {
 		if err != ENOROUTE {
 			t.Fatalf("server Peek: %v", err)
 		}
-	}), func(client Conn) {
+	}), func(client RawConn) {
 		stream, err := client.Open(0)
 		if err != nil {
 			t.Fatalf("server: Open: %v", err)
@@ -570,8 +556,8 @@ func TestStreamCloseAfterData(t *testing.T) {
 	})
 }
 
-func TestConnClose(t *testing.T) {
-	runClientServer(StreamHandlerFunc(func(stream Stream) {
+func TestRawStreamConnClose(t *testing.T) {
+	runRawClientServer(HandlerFunc(func(stream Stream) {
 		n, err := stream.Write([]byte("Hello, world!"))
 		if n != 13 || err != nil {
 			t.Fatalf("server: Write: %d, %v", n, err)
@@ -580,7 +566,7 @@ func TestConnClose(t *testing.T) {
 		if n != 5 || err != ECONNCLOSED {
 			t.Fatalf("server: WaitAck: %d, %v", n, err)
 		}
-	}), func(client Conn) {
+	}), func(client RawConn) {
 		stream, err := client.Open(0)
 		if err != nil {
 			t.Fatalf("client: Open: %v", err)
@@ -608,10 +594,10 @@ func TestConnClose(t *testing.T) {
 	})
 }
 
-func TestStreamCloseReadError(t *testing.T) {
+func TestRawStreamCloseReadError(t *testing.T) {
 	startClosingRead := make(chan int, 1)
 	startWritingBack := make(chan int, 1)
-	runClientServerStream(
+	runRawClientServerStream(
 		func(client Stream) {
 			if 1 != <-startClosingRead {
 				return
@@ -646,10 +632,10 @@ func TestStreamCloseReadError(t *testing.T) {
 	)
 }
 
-func TestStreamCloseReadErrorWithError(t *testing.T) {
+func TestRawStreamCloseReadErrorWithError(t *testing.T) {
 	startClosingRead := make(chan int, 1)
 	startWritingBack := make(chan int, 1)
-	runClientServerStream(
+	runRawClientServerStream(
 		func(client Stream) {
 			if 1 != <-startClosingRead {
 				return
@@ -685,10 +671,10 @@ func TestStreamCloseReadErrorWithError(t *testing.T) {
 	)
 }
 
-func TestStreamFlush(t *testing.T) {
+func TestRawStreamFlush(t *testing.T) {
 	clientMayClose := make(chan int, 1)
 	serverMayClose := make(chan int, 1)
-	runClientServerStream(
+	runRawClientServerStream(
 		func(client Stream) {
 			defer close(serverMayClose)
 			n, err := client.Write([]byte("Hello, world!"))
@@ -718,11 +704,11 @@ func TestStreamFlush(t *testing.T) {
 	)
 }
 
-func TestStreamWaitAckAny(t *testing.T) {
+func TestRawStreamWaitAckAny(t *testing.T) {
 	serverMayRead := make(chan int, 1)
 	clientMayClose := make(chan int, 1)
 	clientFinished := make(chan int, 1)
-	runClientServerStream(
+	runRawClientServerStream(
 		func(client Stream) {
 			defer close(serverMayRead)
 			defer close(clientFinished)

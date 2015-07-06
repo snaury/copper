@@ -1,4 +1,4 @@
-package raw
+package copper
 
 import (
 	"fmt"
@@ -20,8 +20,8 @@ const (
 	defaultInactivityTimeout = 60 * time.Second
 )
 
-// Conn is a multiplexed connection implementing the copper protocol
-type Conn interface {
+// RawConn is a multiplexed connection implementing the copper protocol
+type RawConn interface {
 	Wait() error
 	Close() error
 	LocalAddr() net.Addr
@@ -35,13 +35,13 @@ type rawConn struct {
 	lock                    sync.Mutex
 	waitready               sync.Cond
 	conn                    net.Conn
-	creader                 *connReader
-	cwriter                 *connWriter
+	creader                 *rawConnReader
+	cwriter                 *rawConnWriter
 	isserver                bool
 	closed                  bool
 	failure                 error
 	signal                  chan struct{}
-	handler                 StreamHandler
+	handler                 Handler
 	streams                 map[uint32]*rawStream
 	deadstreams             map[uint32]struct{}
 	freestreams             map[uint32]struct{}
@@ -70,10 +70,10 @@ type rawConn struct {
 	closeunblocked          sync.Cond
 }
 
-var _ Conn = &rawConn{}
+var _ RawConn = &rawConn{}
 
-// NewConn wraps the underlying network connection with the copper protocol
-func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
+// NewRawConn wraps the underlying network connection with the copper protocol
+func NewRawConn(conn net.Conn, handler Handler, isserver bool) RawConn {
 	c := &rawConn{
 		conn:                    conn,
 		isserver:                isserver,
@@ -96,8 +96,8 @@ func NewConn(conn net.Conn, handler StreamHandler, isserver bool) Conn {
 		localInactivityTimeout:  defaultInactivityTimeout,
 		remoteInactivityTimeout: defaultInactivityTimeout,
 	}
-	c.creader = newConnReader(c)
-	c.cwriter = newConnWriter(c)
+	c.creader = newRawConnReader(c)
+	c.cwriter = newRawConnWriter(c)
 	if isserver {
 		c.nextnewstream = 2
 	} else {
@@ -317,7 +317,7 @@ func (c *rawConn) handleStream(stream Stream) {
 		return
 	}
 	defer stream.Close()
-	c.handler.HandleStream(stream)
+	c.handler.Handle(stream)
 }
 
 func (c *rawConn) cleanupStreamLocked(s *rawStream) {

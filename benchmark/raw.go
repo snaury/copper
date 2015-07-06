@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/snaury/copper/raw"
+	"github.com/snaury/copper"
 )
 
 type server struct {
 	lock     sync.Mutex
 	listener net.Listener
-	clients  map[raw.Conn]struct{}
+	clients  map[copper.RawConn]struct{}
 }
 
 func (s *server) handle(rawConn net.Conn) error {
@@ -24,7 +24,7 @@ func (s *server) handle(rawConn net.Conn) error {
 		rawConn.Close()
 		return nil
 	}
-	conn := raw.NewConn(rawConn, s, true)
+	conn := copper.NewRawConn(rawConn, s, true)
 	s.clients[conn] = struct{}{}
 	s.lock.Unlock()
 	defer func() {
@@ -60,7 +60,7 @@ func (s *server) Stop() {
 	}
 }
 
-func (s *server) HandleStream(stream raw.Stream) {
+func (s *server) Handle(stream copper.Stream) {
 	var buf [8]byte
 	_, err := io.ReadFull(stream, buf[:])
 	if err != nil && err != io.EOF {
@@ -76,22 +76,22 @@ func startRawServer(addr string) (string, func()) {
 		log.Fatalf("Failed to listen: %s", err)
 	}
 	s := &server{}
-	s.clients = make(map[raw.Conn]struct{})
+	s.clients = make(map[copper.RawConn]struct{})
 	go s.Serve(listener)
 	return listener.Addr().String(), func() {
 		s.Stop()
 	}
 }
 
-func dialRawServer(addr string) raw.Conn {
+func dialRawServer(addr string) copper.RawConn {
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		log.Fatalf("Failed to Dial: %s", err)
 	}
-	return raw.NewConn(c, nil, false)
+	return copper.NewRawConn(c, nil, false)
 }
 
-func callRawServer(conn raw.Conn) {
+func callRawServer(conn copper.RawConn) {
 	stream, err := conn.Open(0)
 	if err != nil {
 		log.Fatalf("Failed to Open: %s", err)

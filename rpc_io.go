@@ -6,7 +6,6 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/snaury/copper/protocol"
-	"github.com/snaury/copper/raw"
 )
 
 func rpcReadRequestType(r io.Reader) (rtype protocol.RequestType, err error) {
@@ -39,7 +38,7 @@ func rpcReadMessage(r io.Reader, pb proto.Message) error {
 			return err
 		}
 	} else if size < 0 {
-		return raw.EINVALIDDATA
+		return EINVALIDDATA
 	}
 	return proto.Unmarshal(data, pb)
 }
@@ -71,7 +70,7 @@ func rpcWriteMessage(w io.Writer, pb proto.Message) error {
 	return nil
 }
 
-func rpcSimpleRequest(conn raw.Conn, targetID int64, rtype protocol.RequestType, request proto.Message, response proto.Message) error {
+func rpcSimpleRequest(conn RawConn, targetID int64, rtype protocol.RequestType, request proto.Message, response proto.Message) error {
 	stream, err := conn.Open(targetID)
 	if err != nil {
 		return err
@@ -96,7 +95,7 @@ func rpcSimpleRequest(conn raw.Conn, targetID int64, rtype protocol.RequestType,
 	return nil
 }
 
-func rpcStreamingRequest(conn raw.Conn, targetID int64, rtype protocol.RequestType, request proto.Message) (raw.Stream, error) {
+func rpcStreamingRequest(conn RawConn, targetID int64, rtype protocol.RequestType, request proto.Message) (Stream, error) {
 	stream, err := conn.Open(targetID)
 	if err != nil {
 		return nil, err

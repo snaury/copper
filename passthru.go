@@ -4,11 +4,9 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
-
-	"github.com/snaury/copper/raw"
 )
 
-func passthru(dst, src raw.Stream) {
+func passthru(dst, src Stream) {
 	var write sync.Mutex
 	var writeclosed uint32
 	go func() {
@@ -16,7 +14,7 @@ func passthru(dst, src raw.Stream) {
 		write.Lock()
 		defer write.Unlock()
 		atomic.AddUint32(&writeclosed, 1)
-		if err == raw.ESTREAMCLOSED {
+		if err == ESTREAMCLOSED {
 			src.CloseRead()
 		} else {
 			src.CloseReadError(err)
@@ -36,7 +34,7 @@ func passthru(dst, src raw.Stream) {
 			}
 			write.Unlock()
 			if werr != nil {
-				if werr == raw.ESTREAMCLOSED {
+				if werr == ESTREAMCLOSED {
 					src.CloseRead()
 				} else {
 					src.CloseReadError(werr)
@@ -55,16 +53,13 @@ func passthru(dst, src raw.Stream) {
 	}
 }
 
-func passthruBoth(local, remote raw.Stream) {
+func passthruBoth(local, remote Stream) {
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		passthru(remote, local)
 	}()
-	go func() {
-		defer wg.Done()
-		passthru(local, remote)
-	}()
+	passthru(local, remote)
 	wg.Wait()
 }

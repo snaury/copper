@@ -2,22 +2,20 @@ package copper
 
 import (
 	"net"
-
-	"github.com/snaury/copper/raw"
 )
 
 type clientConn struct {
 	rpcClient
-	hmap *raw.StreamHandlerMap
+	hmap *HandlerMap
 }
 
 var _ Client = &clientConn{}
 
 func newClient(conn net.Conn) *clientConn {
-	hmap := raw.NewStreamHandlerMap(nil)
+	hmap := NewHandlerMap(nil)
 	return &clientConn{
 		rpcClient: rpcClient{
-			Conn:     raw.NewConn(conn, hmap, false),
+			RawConn:  NewRawConn(conn, hmap, false),
 			targetID: 0,
 		},
 		hmap: hmap,
@@ -42,7 +40,7 @@ func (sub *clientSubscription) EndpointChanges() (EndpointChangesStream, error) 
 	return sub.owner.streamEndpoints(sub.targetID)
 }
 
-func (sub *clientSubscription) Open() (raw.Stream, error) {
+func (sub *clientSubscription) Open() (Stream, error) {
 	return sub.owner.Open(sub.targetID)
 }
 
@@ -72,7 +70,7 @@ func (pub *clientPublication) Stop() error {
 	return err
 }
 
-func (c *clientConn) Publish(name string, settings PublishSettings, handler raw.StreamHandler) (Publication, error) {
+func (c *clientConn) Publish(name string, settings PublishSettings, handler Handler) (Publication, error) {
 	targetID := c.hmap.Add(handler)
 	err := c.publish(targetID, name, settings)
 	if err != nil {
@@ -98,5 +96,5 @@ func (c *clientConn) ServiceChanges() (ServiceChangesStream, error) {
 }
 
 func (c *clientConn) Serve() error {
-	return c.Conn.Wait()
+	return c.RawConn.Wait()
 }
