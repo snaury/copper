@@ -1,5 +1,0 @@
-*.sock
-/listen_usock/listen_usock
-/listen_copper/listen_copper
-/readspeed_usock/readspeed_usock
-/readspeed_copper/readspeed_copper
