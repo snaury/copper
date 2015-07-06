@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func runServer(address string) (string, func()) {
+func runServer(address string) (Server, string) {
 	server := NewServer()
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -19,9 +19,7 @@ func runServer(address string) (string, func()) {
 		log.Fatalf("Failed to add listeners: %s", err)
 	}
 	go server.Serve()
-	return listener.Addr().String(), func() {
-		server.Shutdown()
-	}
+	return server, listener.Addr().String()
 }
 
 func connectClient(address string) Client {
@@ -33,20 +31,20 @@ func connectClient(address string) Client {
 }
 
 func runClientServer(clientfunc func(conn Client), serverfunc func(conn Client)) {
-	target, stopper := runServer("localhost:0")
-	defer stopper()
+	server, addr := runServer("localhost:0")
+	defer server.Shutdown()
 
 	serverFinished := make(chan int, 1)
 
 	go func() {
 		defer close(serverFinished)
-		conn := connectClient(target)
+		conn := connectClient(addr)
 		defer conn.Close()
 		serverfunc(conn)
 	}()
 
 	func() {
-		conn := connectClient(target)
+		conn := connectClient(addr)
 		defer conn.Close()
 		clientfunc(conn)
 	}()
@@ -751,4 +749,99 @@ func TestClientServerCloseReadBig(t *testing.T) {
 			<-serverMayClose
 		},
 	)
+}
+
+func TestClientServerPeers(t *testing.T) {
+	server1, addr1 := runServer("localhost:0")
+	defer server1.Shutdown()
+	server2, addr2 := runServer("localhost:0")
+	defer server2.Shutdown()
+	server2.AddPeer("tcp", addr1, 1)
+
+	published := make(chan int, 1)
+	serverMayClose := make(chan int, 1)
+
+	go func() {
+		defer close(published)
+		client := connectClient(addr1)
+		defer client.Close()
+
+		pub1, err := client.Publish(
+			"test:myservice1",
+			PublishSettings{
+				Concurrency: 1,
+				Distance:    1,
+			},
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("server1: Publish(1): %s", err)
+		}
+		defer pub1.Stop()
+
+		pub2, err := client.Publish(
+			"test:myservice2",
+			PublishSettings{
+				Concurrency: 1,
+				Distance:    0,
+			},
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("server1: Publish(2): %s", err)
+		}
+		defer pub2.Stop()
+
+		published <- 1
+		<-serverMayClose
+	}()
+
+	expectedEndpoints1 := []Endpoint{
+		{Network: "tcp", Address: addr1, TargetID: 1},
+	}
+	expectedEndpoints2 := []Endpoint(nil)
+
+	func() {
+		defer close(serverMayClose)
+		client := connectClient(addr2)
+
+		if 1 != <-published {
+			return
+		}
+		// TODO: need to synchronize properly! The challenge is to wait for
+		// publication changes to reach the second server.
+		time.Sleep(5 * time.Millisecond)
+
+		sub1, err := client.Subscribe(SubscribeSettings{
+			Options: []SubscribeOption{
+				{Service: "test:myservice1", MaxDistance: 1},
+			},
+		})
+		if err != nil {
+			t.Fatalf("server2: Subscribe(1): %s", err)
+		}
+		defer sub1.Stop()
+
+		endpoints1, err := sub1.Endpoints()
+		if err != nil || !reflect.DeepEqual(endpoints1, expectedEndpoints1) {
+			t.Fatalf("server2: Endpoints(1): %#v, %s (expected %#v)", endpoints1, err, expectedEndpoints1)
+		}
+
+		sub2, err := client.Subscribe(SubscribeSettings{
+			Options: []SubscribeOption{
+				{Service: "test:myservice2", MaxDistance: 1},
+			},
+		})
+		if err != nil {
+			t.Fatalf("server2: Subscribe(2): %s", err)
+		}
+		defer sub2.Stop()
+
+		endpoints2, err := sub2.Endpoints()
+		if err != nil || !reflect.DeepEqual(endpoints2, expectedEndpoints2) {
+			t.Fatalf("server2: Endpoints(2): %#v, %s (expected %#v)", endpoints2, err, expectedEndpoints2)
+		}
+
+		serverMayClose <- 1
+	}()
 }

@@ -218,6 +218,7 @@ func (s *server) subscribeLocked(settings SubscribeSettings) (*serverSubscriptio
 		indexByName:    make(map[string][]int),
 		trackedPubs:    make([]map[uint32]*serverPublication, len(settings.Options)),
 		trackedRemotes: make([]map[*serverPeerRemote]struct{}, len(settings.Options)),
+		remotePriority: make([]uint32, len(settings.Options)),
 
 		routes:  make([]*serverRoute, len(settings.Options)),
 		locals:  make([]*serverPublication, len(settings.Options)),
