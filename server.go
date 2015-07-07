@@ -117,19 +117,19 @@ func (s *server) closeWithError(err error) error {
 	return preverror
 }
 
-func (s *server) addClient(conn net.Conn) error {
+func (s *server) addClient(conn net.Conn, allowChanges bool) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if s.failure != nil {
 		conn.Close()
 		return s.failure
 	}
-	client := newServerClient(s, conn)
+	client := newServerClient(s, conn, allowChanges)
 	s.clients[client] = struct{}{}
 	return nil
 }
 
-func (s *server) acceptor(listener net.Listener) {
+func (s *server) acceptor(listener net.Listener, allowChanges bool) {
 	defer listener.Close()
 	for {
 		conn, err := listener.Accept()
@@ -137,7 +137,7 @@ func (s *server) acceptor(listener net.Listener) {
 			s.closeWithError(err)
 			return
 		}
-		err = s.addClient(conn)
+		err = s.addClient(conn, allowChanges)
 		if err != nil {
 			s.closeWithError(err)
 			return
@@ -158,7 +158,7 @@ func (s *server) AddUpstream(upstream Client) error {
 	return EUNSUPPORTED
 }
 
-func (s *server) AddListener(listener net.Listener) error {
+func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if s.failure != nil {
@@ -166,7 +166,7 @@ func (s *server) AddListener(listener net.Listener) error {
 	}
 	s.listeners = append(s.listeners, listener)
 	s.listenwg.Add(1)
-	go s.acceptor(listener)
+	go s.acceptor(listener, allowChanges)
 	return nil
 }
 

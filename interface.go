@@ -134,7 +134,7 @@ type Server interface {
 	AddUpstream(upstream Client) error
 
 	// Add given network listener to the pool of listeners
-	AddListener(listener net.Listener) error
+	AddListener(listener net.Listener, allowChanges bool) error
 
 	// Shutdown shuts down a running server
 	Shutdown() error

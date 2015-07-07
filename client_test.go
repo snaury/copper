@@ -14,7 +14,7 @@ func runServer(address string) (Server, string) {
 	if err != nil {
 		log.Fatalf("Failed to listen: %s", err)
 	}
-	err = server.AddListener(listener)
+	err = server.AddListener(listener, true)
 	if err != nil {
 		log.Fatalf("Failed to add listeners: %s", err)
 	}

@@ -10,6 +10,8 @@ type serverClient struct {
 	conn    RawConn
 	failure error
 
+	allowChanges bool
+
 	subscriptions map[int64]*serverSubscription
 
 	published   map[int64]*localEndpoint
@@ -18,9 +20,11 @@ type serverClient struct {
 
 var _ lowLevelServer = &serverClient{}
 
-func newServerClient(s *server, conn net.Conn) *serverClient {
+func newServerClient(s *server, conn net.Conn, allowChanges bool) *serverClient {
 	c := &serverClient{
 		owner: s,
+
+		allowChanges: allowChanges,
 
 		subscriptions: make(map[int64]*serverSubscription),
 
@@ -168,6 +172,9 @@ func (c *serverClient) publish(targetID int64, name string, settings PublishSett
 	if c.failure != nil {
 		return c.failure
 	}
+	if !c.allowChanges {
+		return fmt.Errorf("publishing is not allowed")
+	}
 	if old := c.published[targetID]; old != nil && old.pub != nil {
 		return fmt.Errorf("target %d is already published as %q", targetID, old.pub.name)
 	}
@@ -210,6 +217,9 @@ func (c *serverClient) setRoute(name string, routes ...Route) error {
 	defer c.owner.lock.Unlock()
 	if c.failure != nil {
 		return c.failure
+	}
+	if !c.allowChanges {
+		return fmt.Errorf("setting routes is not allowed")
 	}
 	return c.owner.setRouteLocked(name, routes)
 }
