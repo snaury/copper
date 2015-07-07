@@ -11,13 +11,13 @@ import (
 	"github.com/snaury/copper"
 )
 
-type server struct {
+type rawServer struct {
 	lock     sync.Mutex
 	listener net.Listener
 	clients  map[copper.RawConn]struct{}
 }
 
-func (s *server) handle(rawConn net.Conn) error {
+func (s *rawServer) handle(rawConn net.Conn) error {
 	s.lock.Lock()
 	if s.listener == nil {
 		s.lock.Unlock()
@@ -35,7 +35,7 @@ func (s *server) handle(rawConn net.Conn) error {
 	return conn.Wait()
 }
 
-func (s *server) Serve(listener net.Listener) error {
+func (s *rawServer) Serve(listener net.Listener) error {
 	s.listener = listener
 	defer listener.Close()
 	for {
@@ -47,7 +47,7 @@ func (s *server) Serve(listener net.Listener) error {
 	}
 }
 
-func (s *server) Stop() {
+func (s *rawServer) Stop() {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if s.listener != nil {
@@ -60,14 +60,27 @@ func (s *server) Stop() {
 	}
 }
 
-func (s *server) Handle(stream copper.Stream) {
-	var buf [8]byte
-	_, err := io.ReadFull(stream, buf[:])
-	if err != nil && err != io.EOF {
-		stream.CloseWithError(err)
-		return
+func (s *rawServer) Handle(stream copper.Stream) {
+	switch stream.TargetID() {
+	case 1:
+		var buf [8]byte
+		_, err := io.ReadFull(stream, buf[:])
+		if err != nil && err != io.EOF {
+			stream.CloseWithError(err)
+			return
+		}
+		stream.Write(buf[:])
+	case 2:
+		var buf [65536]byte
+		for {
+			_, err := stream.Write(buf[:])
+			if err != nil {
+				break
+			}
+		}
+	default:
+		stream.CloseWithError(copper.ENOTARGET)
 	}
-	stream.Write(buf[:])
 }
 
 func startRawServer(addr string) (string, func()) {
@@ -75,7 +88,7 @@ func startRawServer(addr string) (string, func()) {
 	if err != nil {
 		log.Fatalf("Failed to listen: %s", err)
 	}
-	s := &server{}
+	s := &rawServer{}
 	s.clients = make(map[copper.RawConn]struct{})
 	go s.Serve(listener)
 	return listener.Addr().String(), func() {
@@ -92,7 +105,7 @@ func dialRawServer(addr string) copper.RawConn {
 }
 
 func callRawServer(conn copper.RawConn) {
-	stream, err := conn.Open(0)
+	stream, err := conn.Open(1)
 	if err != nil {
 		log.Fatalf("Failed to Open: %s", err)
 	}
@@ -107,5 +120,21 @@ func callRawServer(conn copper.RawConn) {
 	_, err = io.ReadFull(stream, buf[:])
 	if err != nil {
 		log.Fatalf("Failed to ReadFull: %s", err)
+	}
+}
+
+func benchreadRawServer(conn copper.RawConn, totalBytes int64) {
+	stream, err := conn.Open(2)
+	if err != nil {
+		log.Fatalf("Failed to Open: %s", err)
+	}
+	defer stream.Close()
+	var buf [65536]byte
+	for totalBytes > 0 {
+		n, err := stream.Read(buf[:])
+		if err != nil {
+			log.Fatalf("Failed to Read: %s", err)
+		}
+		totalBytes -= int64(n)
 	}
 }

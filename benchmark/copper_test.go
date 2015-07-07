@@ -67,3 +67,22 @@ func BenchmarkCopperCall64(b *testing.B) {
 func BenchmarkCopperCall512(b *testing.B) {
 	runCopperCalls(b, 512)
 }
+
+func BenchmarkCopperRead(b *testing.B) {
+	b.StopTimer()
+	totalBytes := 65536 * int64(b.N)
+	b.SetBytes(65536)
+
+	addr, stopper := startCopper("localhost:0")
+	defer stopper()
+
+	pubStopper := publishCopperWriter(addr)
+	defer pubStopper()
+
+	sub, subStopper := subscribeCopperService(addr)
+	defer subStopper()
+
+	b.StartTimer()
+	benchreadCopperService(sub, totalBytes)
+	b.StopTimer()
+}

@@ -64,3 +64,16 @@ func BenchmarkRawCall64(b *testing.B) {
 func BenchmarkRawCall512(b *testing.B) {
 	runRawCalls(b, 64)
 }
+
+func BenchmarkRawRead(b *testing.B) {
+	b.StopTimer()
+	totalBytes := 65536 * int64(b.N)
+	b.SetBytes(65536)
+	target, stopper := startRawServer("localhost:0")
+	defer stopper()
+	conn := dialRawServer(target)
+	defer conn.Close()
+	b.StartTimer()
+	benchreadRawServer(conn, totalBytes)
+	b.StopTimer()
+}

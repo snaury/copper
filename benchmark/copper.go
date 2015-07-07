@@ -61,6 +61,33 @@ func publishCopperService(addr string, concurrency int) func() {
 	}
 }
 
+func publishCopperWriter(addr string) func() {
+	client := connectCopper(addr)
+	pub, err := client.Publish(
+		"test:myservice",
+		copper.PublishSettings{
+			Concurrency: 1,
+			QueueSize:   1,
+		},
+		copper.HandlerFunc(func(stream copper.Stream) {
+			var buf [65536]byte
+			for {
+				_, err := stream.Write(buf[:])
+				if err != nil {
+					break
+				}
+			}
+		}),
+	)
+	if err != nil {
+		log.Fatalf("Failed to publish: %s", err)
+	}
+	return func() {
+		pub.Stop()
+		client.Close()
+	}
+}
+
 func subscribeCopperService(addr string) (copper.Subscription, func()) {
 	client := connectCopper(addr)
 	sub, err := client.Subscribe(copper.SubscribeSettings{
@@ -93,5 +120,21 @@ func callCopperService(sub copper.Subscription) {
 	_, err = io.ReadFull(stream, buf[:])
 	if err != nil {
 		log.Fatalf("Failed to read: %s", err)
+	}
+}
+
+func benchreadCopperService(sub copper.Subscription, totalBytes int64) {
+	stream, err := sub.Open()
+	if err != nil {
+		log.Fatalf("Failed to open stream: %s", err)
+	}
+	defer stream.Close()
+	var buf [65536]byte
+	for totalBytes > 0 {
+		n, err := stream.Read(buf[:])
+		if err != nil {
+			log.Fatalf("Failed to read: %s", err)
+		}
+		totalBytes -= int64(n)
 	}
 }
