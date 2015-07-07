@@ -136,9 +136,9 @@ type Server interface {
 	// Add given network listener to the pool of listeners
 	AddListener(listener net.Listener, allowChanges bool) error
 
-	// Shutdown shuts down a running server
-	Shutdown() error
-
 	// Serve runs the server until it is shut down
 	Serve() error
+
+	// Close closes a running server
+	Close() error
 }

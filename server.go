@@ -92,7 +92,7 @@ func (s *server) closeWithError(err error) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if err == nil {
-		err = ESHUTDOWN
+		err = ECONNCLOSED
 	}
 	preverror := s.failure
 	if s.failure == nil {
@@ -170,13 +170,13 @@ func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
 	return nil
 }
 
-func (s *server) Shutdown() error {
-	return s.closeWithError(ESHUTDOWN)
-}
-
 func (s *server) Serve() error {
 	s.listenwg.Wait()
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	return s.failure
+}
+
+func (s *server) Close() error {
+	return s.closeWithError(ESHUTDOWN)
 }

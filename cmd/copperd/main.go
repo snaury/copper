@@ -41,7 +41,7 @@ func main() {
 	}
 
 	server := copper.NewServer()
-	defer server.Shutdown()
+	defer server.Close()
 
 	var hostports []string
 	for _, listen := range config.Listen {

@@ -16,13 +16,13 @@ func startCopper(addr string) (string, func()) {
 		log.Fatalf("Failed to listen: %s", err)
 	}
 	srv := copper.NewServer()
-	err = srv.AddListener(listener)
+	err = srv.AddListener(listener, true)
 	if err != nil {
 		log.Fatalf("Failed to add a listener: %s", err)
 	}
 	go srv.Serve()
 	return listener.Addr().String(), func() {
-		srv.Shutdown()
+		srv.Close()
 	}
 }
 

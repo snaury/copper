@@ -32,7 +32,7 @@ func connectClient(address string) Client {
 
 func runClientServer(clientfunc func(conn Client), serverfunc func(conn Client)) {
 	server, addr := runServer("localhost:0")
-	defer server.Shutdown()
+	defer server.Close()
 
 	serverFinished := make(chan int, 1)
 
@@ -753,9 +753,9 @@ func TestClientServerCloseReadBig(t *testing.T) {
 
 func TestClientServerPeers(t *testing.T) {
 	server1, addr1 := runServer("localhost:0")
-	defer server1.Shutdown()
+	defer server1.Close()
 	server2, addr2 := runServer("localhost:0")
-	defer server2.Shutdown()
+	defer server2.Close()
 	server2.AddPeer("tcp", addr1, 1)
 
 	published := make(chan int, 1)
