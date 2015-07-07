@@ -5,7 +5,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/snaury/copper"
 )
@@ -91,6 +93,14 @@ func main() {
 			log.Printf("Added remote peer %s (distance=%d)", addr, distance)
 		}
 	}
+
+	signals := make(chan os.Signal, 16)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-signals
+		log.Printf("Shutting down due to signal: %s", sig)
+		server.Close()
+	}()
 
 	log.Printf("Serving clients...")
 	server.Serve()

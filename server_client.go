@@ -32,6 +32,7 @@ func newServerClient(s *server, conn net.Conn, allowChanges bool) *serverClient 
 		pubWatchers: make(map[*serverServiceChangesStream]struct{}),
 	}
 	c.conn = NewRawConn(conn, c, true)
+	s.clientwg.Add(1)
 	go c.serve()
 	return c
 }
@@ -113,6 +114,7 @@ func (c *serverClient) closeWithErrorLocked(err error) {
 }
 
 func (c *serverClient) serve() {
+	defer c.owner.clientwg.Done()
 	err := c.conn.Wait()
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()

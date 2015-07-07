@@ -59,6 +59,7 @@ type server struct {
 
 	failure   error
 	listenwg  sync.WaitGroup
+	clientwg  sync.WaitGroup
 	listeners []net.Listener
 
 	clients map[*serverClient]struct{}
@@ -102,12 +103,10 @@ func (s *server) closeWithError(err error) error {
 		for _, listener := range listeners {
 			listener.Close()
 		}
-		for key, peer := range s.peers {
-			delete(s.peers, key)
+		for _, peer := range s.peers {
 			peer.closeWithErrorLocked(err)
 		}
 		for client := range s.clients {
-			delete(s.clients, client)
 			client.closeWithErrorLocked(err)
 		}
 		for cs := range s.pubWatchers {
@@ -130,6 +129,7 @@ func (s *server) addClient(conn net.Conn, allowChanges bool) error {
 }
 
 func (s *server) acceptor(listener net.Listener, allowChanges bool) {
+	defer s.listenwg.Done()
 	defer listener.Close()
 	for {
 		conn, err := listener.Accept()
@@ -172,6 +172,7 @@ func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
 
 func (s *server) Serve() error {
 	s.listenwg.Wait()
+	s.clientwg.Wait()
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	return s.failure
