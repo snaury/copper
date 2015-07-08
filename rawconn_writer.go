@@ -15,7 +15,7 @@ func newRawConnWriter(owner *rawConn) *rawConnWriter {
 	w := &rawConnWriter{
 		owner: owner,
 	}
-	w.buffer = bufio.NewWriter(w)
+	w.buffer = bufio.NewWriterSize(w, defaultConnBufferSize)
 	return w
 }
 

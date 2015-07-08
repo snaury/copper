@@ -14,7 +14,7 @@ func newRawConnReader(owner *rawConn) *rawConnReader {
 	r := &rawConnReader{
 		owner: owner,
 	}
-	r.buffer = bufio.NewReader(r)
+	r.buffer = bufio.NewReaderSize(r, defaultConnBufferSize)
 	return r
 }
 

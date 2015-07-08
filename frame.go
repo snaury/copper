@@ -260,17 +260,14 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 	if err != nil {
 		return nil, err
 	}
-	lr := &io.LimitedReader{
-		R: r,
-		N: int64(hdr.Size()),
-	}
+	size := hdr.Size()
 	switch hdr.frameType {
 	case pingFrameID:
-		if hdr.streamID != 0 || lr.N != 8 {
+		if hdr.streamID != 0 || size != 8 {
 			return nil, EINVALIDFRAME
 		}
 		var buf [8]byte
-		_, err = io.ReadFull(lr, buf[0:8])
+		_, err = io.ReadFull(r, buf[0:8])
 		if err != nil {
 			return
 		}
@@ -279,22 +276,23 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 			value: int64(binary.LittleEndian.Uint64(buf[0:8])),
 		}, nil
 	case openFrameID:
-		if hdr.streamID&0x80000000 != 0 || lr.N < 8 {
+		if hdr.streamID&0x80000000 != 0 || size < 8 {
 			return nil, EINVALIDFRAME
 		}
 		var buf [8]byte
-		_, err = io.ReadFull(lr, buf[0:8])
+		_, err = io.ReadFull(r, buf[0:8])
 		if err != nil {
 			return
 		}
+		size -= 8
 		var data []byte
-		if lr.N > 0 {
-			if int(lr.N) > len(scratch) {
-				data = make([]byte, int(lr.N))
+		if size > 0 {
+			if size > len(scratch) {
+				data = make([]byte, size)
 			} else {
-				data = scratch[:int(lr.N)]
+				data = scratch[:size]
 			}
-			_, err = io.ReadFull(lr, data)
+			_, err = io.ReadFull(r, data)
 			if err != nil {
 				return
 			}
@@ -310,13 +308,13 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 			return nil, EINVALIDFRAME
 		}
 		var data []byte
-		if lr.N > 0 {
-			if int(lr.N) > len(scratch) {
-				data = make([]byte, int(lr.N))
+		if size > 0 {
+			if size > len(scratch) {
+				data = make([]byte, size)
 			} else {
-				data = scratch[:int(lr.N)]
+				data = scratch[:size]
 			}
-			_, err = io.ReadFull(lr, data)
+			_, err = io.ReadFull(r, data)
 			if err != nil {
 				return
 			}
@@ -327,22 +325,23 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 			data:     data,
 		}, nil
 	case resetFrameID:
-		if hdr.streamID&0x80000000 != 0 || lr.N < 4 {
+		if hdr.streamID&0x80000000 != 0 || size < 4 {
 			return nil, EINVALIDFRAME
 		}
 		var buf [4]byte
-		_, err = io.ReadFull(lr, buf[0:4])
+		_, err = io.ReadFull(r, buf[0:4])
 		if err != nil {
 			return
 		}
+		size -= 4
 		var message []byte
-		if lr.N > 0 {
-			if int(lr.N) > len(scratch) {
-				message = make([]byte, int(lr.N))
+		if size > 0 {
+			if size > len(scratch) {
+				message = make([]byte, size)
 			} else {
-				message = scratch[:int(lr.N)]
+				message = scratch[:size]
 			}
-			_, err = io.ReadFull(lr, message)
+			_, err = io.ReadFull(r, message)
 			if err != nil {
 				return
 			}
@@ -354,11 +353,11 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 			message:  message,
 		}, nil
 	case windowFrameID:
-		if hdr.streamID&0x80000000 != 0 || lr.N != 4 {
+		if hdr.streamID&0x80000000 != 0 || size != 4 {
 			return nil, EINVALIDFRAME
 		}
 		var buf [4]byte
-		_, err = io.ReadFull(lr, buf[0:4])
+		_, err = io.ReadFull(r, buf[0:4])
 		if err != nil {
 			return
 		}
@@ -373,18 +372,18 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 		}
 		var values map[int]int
 		if hdr.Flags()&flagAck != 0 {
-			if lr.N != 0 {
+			if size != 0 {
 				return nil, EINVALIDFRAME
 			}
 		} else {
-			if lr.N > maxSettingsFramePayloadSize || (lr.N%8) != 0 {
+			if size > maxSettingsFramePayloadSize || (size%8) != 0 {
 				return nil, EINVALIDFRAME
 			}
 			var buf [8]byte
-			count := int(lr.N / 8)
+			count := int(size / 8)
 			values = make(map[int]int, count)
 			for count > 0 {
-				_, err = io.ReadFull(lr, buf[0:8])
+				_, err = io.ReadFull(r, buf[0:8])
 				if err != nil {
 					return
 				}

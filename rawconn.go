@@ -18,6 +18,7 @@ const (
 	defaultConnWindowSize    = 65536
 	defaultStreamWindowSize  = 65536
 	defaultInactivityTimeout = 60 * time.Second
+	defaultConnBufferSize    = 4096
 )
 
 // RawConn is a multiplexed connection implementing the copper protocol
