@@ -140,8 +140,7 @@ func (p *dataFrame) writeFrameTo(w io.Writer) (err error) {
 type resetFrame struct {
 	streamID uint32
 	flags    uint8
-	code     ErrorCode
-	message  []byte
+	err      error
 }
 
 func (p *resetFrame) String() string {
@@ -149,39 +148,41 @@ func (p *resetFrame) String() string {
 	if p.flags&flagFin != 0 {
 		flagstring += "(FIN)"
 	}
-	return fmt.Sprintf("RESET[stream:%d flags:%s code:%s message:%q]", p.streamID, flagstring, p.code.String(), p.message)
+	return fmt.Sprintf("RESET[stream:%d flags:%s error:%s]", p.streamID, flagstring, p.err)
 }
 
 func (p *resetFrame) writeFrameTo(w io.Writer) (err error) {
-	if len(p.message) > maxResetFrameMessageSize {
+	var code ErrorCode
+	var message []byte
+	switch e := p.err.(type) {
+	case ErrorCode:
+		code = e
+	case Error:
+		code = e.ErrorCode()
+		message = []byte(e.Error())
+	default:
+		code = EUNKNOWN
+		message = []byte(e.Error())
+	}
+	if len(message) > maxResetFrameMessageSize {
 		return EINVALIDFRAME
 	}
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  p.streamID,
-		flagsSize: uint32(p.flags)<<24 | uint32(len(p.message)+4),
+		flagsSize: uint32(p.flags)<<24 | uint32(len(message)+4),
 		frameType: resetFrameID,
 	})
 	if err == nil {
 		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[0:4], uint32(p.code))
+		binary.LittleEndian.PutUint32(buf[0:4], uint32(code))
 		_, err = w.Write(buf[0:4])
 		if err == nil {
-			if len(p.message) > 0 {
-				_, err = w.Write(p.message)
+			if len(message) > 0 {
+				_, err = w.Write(message)
 			}
 		}
 	}
 	return
-}
-
-func (p *resetFrame) toError() error {
-	if len(p.message) == 0 {
-		return p.code
-	}
-	return copperError{
-		error: errors.New(string(p.message)),
-		code:  p.code,
-	}
 }
 
 type windowFrame struct {
@@ -346,11 +347,20 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 				return
 			}
 		}
+		code := ErrorCode(int32(binary.LittleEndian.Uint32(buf[0:4])))
+		var err error
+		if len(message) > 0 {
+			err = &copperError{
+				error: errors.New(string(message)),
+				code:  code,
+			}
+		} else {
+			err = code
+		}
 		return &resetFrame{
 			flags:    hdr.Flags(),
 			streamID: hdr.streamID,
-			code:     ErrorCode(int32(binary.LittleEndian.Uint32(buf[0:4]))),
-			message:  message,
+			err:      err,
 		}, nil
 	case windowFrameID:
 		if hdr.streamID&0x80000000 != 0 || size != 4 {

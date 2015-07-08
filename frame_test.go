@@ -2,6 +2,7 @@ package copper
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -31,14 +32,15 @@ var decodedFrames = []frame{
 	&resetFrame{
 		streamID: 0x42,
 		flags:    0x25,
-		code:     0x55,
-		message:  nil,
+		err:      ENOROUTE,
 	},
 	&resetFrame{
 		streamID: 0x42,
 		flags:    0x25,
-		code:     0x55,
-		message:  []byte{'t', 'e', 's', 't'},
+		err: &copperError{
+			error: errors.New("test"),
+			code:  ENOROUTE,
+		},
 	},
 	&windowFrame{
 		streamID:  0x42,
@@ -54,7 +56,7 @@ var decodedFrames = []frame{
 		values: nil,
 	},
 	&resetFrame{
-		code: EUNKNOWN,
+		err: EUNKNOWN,
 	},
 }
 
@@ -63,12 +65,12 @@ var printedFrames = []string{
 	`PING[flags:0x01(ACK) value:1234605616436508552]`,
 	`OPEN[stream:66 flags:0x25(FIN) target:1234605616436508552 data:ff fe fd fc fb fa f9 f8]`,
 	`DATA[stream:66 flags:0x25(FIN) data:ff fe fd fc fb fa f9 f8]`,
-	`RESET[stream:66 flags:0x25(FIN) code:ERROR_85 message:""]`,
-	`RESET[stream:66 flags:0x25(FIN) code:ERROR_85 message:"test"]`,
+	`RESET[stream:66 flags:0x25(FIN) error:no route to target]`,
+	`RESET[stream:66 flags:0x25(FIN) error:test]`,
 	`WINDOW[stream:66 flags:0x25(ACK) increment:287454020]`,
 	`SETTINGS[flags:0x00 values:map[2:3]]`,
 	`SETTINGS[flags:0x01(ACK) values:map[]]`,
-	`RESET[stream:0 flags:0x00 code:EUNKNOWN message:""]`,
+	`RESET[stream:0 flags:0x00 error:unknown error]`,
 }
 
 var rawFrameData = []byte{
@@ -87,10 +89,10 @@ var rawFrameData = []byte{
 	0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8,
 	// a RESET frame
 	0x42, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x25, 0x03,
-	0x55, 0x00, 0x00, 0x00,
+	0x0d, 0x00, 0x00, 0x00,
 	// a RESET frame + message
 	0x42, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x25, 0x03,
-	0x55, 0x00, 0x00, 0x00,
+	0x0d, 0x00, 0x00, 0x00,
 	't', 'e', 's', 't',
 	// a WINDOW frame
 	0x42, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x25, 0x04,

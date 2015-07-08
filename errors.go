@@ -20,7 +20,9 @@ type ErrorCode int
 var _ Error = EOK
 
 const (
-	// EOK is returned when operation finishes normally
+	// EUNKNOWN is used for unknown errors
+	EUNKNOWN ErrorCode = -1
+	// EOK is not an error and should not be returned
 	EOK ErrorCode = iota
 	// EUNKNOWNFRAME is returned when frame type is unknown
 	EUNKNOWNFRAME
@@ -52,8 +54,6 @@ const (
 	ESHUTDOWN
 	// EOVERCAPACITY is returned when server is over capacity
 	EOVERCAPACITY
-	// EUNKNOWN is used for unknown errors
-	EUNKNOWN = -1
 )
 
 var errorMessages = map[ErrorCode]string{
@@ -73,6 +73,7 @@ var errorMessages = map[ErrorCode]string{
 	ETIMEOUT:        "operation timed out",
 	ESHUTDOWN:       "server is shutting down",
 	EOVERCAPACITY:   "server is over capacity",
+	EUNKNOWN:        "unknown error",
 }
 
 var errorNames = map[ErrorCode]string{
@@ -121,9 +122,9 @@ type copperError struct {
 	code ErrorCode
 }
 
-var _ Error = copperError{}
+var _ Error = &copperError{}
 
-func (e copperError) ErrorCode() ErrorCode { return e.code }
+func (e *copperError) ErrorCode() ErrorCode { return e.code }
 
 type unknownFrameError struct {
 	frameType uint8
@@ -143,28 +144,3 @@ func (e *timeoutError) Error() string        { return "i/o timeout" }
 func (e *timeoutError) Timeout() bool        { return true }
 func (e *timeoutError) Temporary() bool      { return true }
 func (e *timeoutError) ErrorCode() ErrorCode { return ETIMEOUT }
-
-func errorToResetFrame(flags uint8, streamID uint32, err error) *resetFrame {
-	if e, ok := err.(ErrorCode); ok {
-		return &resetFrame{
-			flags:    flags,
-			streamID: streamID,
-			code:     e,
-			message:  nil,
-		}
-	}
-	if e, ok := err.(Error); ok {
-		return &resetFrame{
-			flags:    flags,
-			streamID: streamID,
-			code:     e.ErrorCode(),
-			message:  []byte(e.Error()),
-		}
-	}
-	return &resetFrame{
-		flags:    flags,
-		streamID: streamID,
-		code:     EUNKNOWN,
-		message:  []byte(err.Error()),
-	}
-}

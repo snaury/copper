@@ -435,7 +435,7 @@ func (c *rawConn) processResetFrameLocked(frame *resetFrame) error {
 				// send ECONNCLOSED unless other error is pending
 				c.outgoingFailure = ECONNCLOSED
 			}
-			return frame.toError()
+			return frame.err
 		}
 		// it's ok to receive RESET for a dead stream
 		return nil
@@ -546,9 +546,6 @@ func (c *rawConn) processFrame(rawFrame frame, scratch *[]byte) bool {
 		}
 	case *resetFrame:
 		err = c.processResetFrameLocked(frame)
-		if len(frame.message) > len(*scratch) {
-			*scratch = frame.message
-		}
 	case *windowFrame:
 		err = c.processWindowFrameLocked(frame)
 	case *settingsFrame:
@@ -724,7 +721,11 @@ writeloop:
 			// Attempt to notify the other side that we have an error
 			// It's ok if any of this fails, the read side will stop
 			// when we close the connection.
-			c.writeFrameLocked(errorToResetFrame(flagFin, 0, c.outgoingFailure))
+			c.writeFrameLocked(&resetFrame{
+				streamID: 0,
+				flags:    flagFin,
+				err:      c.outgoingFailure,
+			})
 			return false
 		}
 		if len(c.outgoingCtrl) > 0 {

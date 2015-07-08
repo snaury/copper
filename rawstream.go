@@ -194,10 +194,10 @@ func (s *rawStream) processDataFrameLocked(frame *dataFrame) error {
 }
 
 func (s *rawStream) processResetFrameLocked(frame *resetFrame) error {
-	reset := frame.toError()
-	s.setWriteError(reset)
+	s.setWriteError(frame.err)
 	s.clearWriteBuffer()
 	if frame.flags&flagFin != 0 {
+		reset := frame.err
 		if reset == ESTREAMCLOSED {
 			// ESTREAMCLOSED is special, it translates to a normal EOF
 			reset = io.EOF
@@ -317,11 +317,11 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 		// side from sending us more data. Second with EOF, after sending all
 		// our pending data, to convey the error message to the other side.
 		s.flags |= flagStreamSentReset
-		err := s.owner.writeFrameLocked(errorToResetFrame(
-			flags,
-			s.streamID,
-			reset,
-		))
+		err := s.owner.writeFrameLocked(&resetFrame{
+			streamID: s.streamID,
+			flags:    flags,
+			err:      reset,
+		})
 		if err != nil {
 			return err
 		}
