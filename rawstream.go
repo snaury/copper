@@ -42,7 +42,7 @@ type rawStream struct {
 
 var _ Stream = &rawStream{}
 
-func newIncomingStream(owner *rawConn, frame openFrame, readwindow, writewindow int) *rawStream {
+func newIncomingStream(owner *rawConn, frame *openFrame, readwindow, writewindow int) *rawStream {
 	s := &rawStream{
 		streamID:   frame.streamID,
 		targetID:   frame.targetID,
@@ -166,7 +166,7 @@ func (s *rawStream) waitAckLocked(n int) error {
 	return s.writeerror
 }
 
-func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
+func (s *rawStream) processDataFrameLocked(frame *dataFrame) error {
 	if s.flags&flagStreamSeenEOF != 0 {
 		return copperError{
 			error: fmt.Errorf("stream 0x%08x cannot have DATA after EOF"),
@@ -193,7 +193,7 @@ func (s *rawStream) processDataFrameLocked(frame dataFrame) error {
 	return nil
 }
 
-func (s *rawStream) processResetFrameLocked(frame resetFrame) error {
+func (s *rawStream) processResetFrameLocked(frame *resetFrame) error {
 	reset := frame.toError()
 	s.setWriteError(reset)
 	s.clearWriteBuffer()
@@ -221,7 +221,7 @@ func (s *rawStream) changeWindowLocked(diff int) {
 	}
 }
 
-func (s *rawStream) processWindowFrameLocked(frame windowFrame) error {
+func (s *rawStream) processWindowFrameLocked(frame *windowFrame) error {
 	if frame.increment <= 0 {
 		return copperError{
 			error: fmt.Errorf("stream 0x%08x received invalid increment %d", s.streamID, frame.increment),
@@ -278,7 +278,7 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 	if s.outgoingSendOpen() {
 		s.flags &^= flagStreamNeedOpen
 		data := s.prepareDataLocked(maxOpenFramePayloadSize)
-		err := s.owner.writeFrameLocked(openFrame{
+		err := s.owner.writeFrameLocked(&openFrame{
 			streamID: s.streamID,
 			flags:    s.outgoingFlags(),
 			targetID: s.targetID,
@@ -329,7 +329,7 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 	if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
 		s.flags &^= flagStreamNeedEOF
 		s.flags |= flagStreamSentEOF
-		err := s.owner.writeFrameLocked(dataFrame{
+		err := s.owner.writeFrameLocked(&dataFrame{
 			streamID: s.streamID,
 			flags:    flagFin,
 		})
@@ -345,7 +345,7 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 func (s *rawStream) writeOutgoingDataLocked() error {
 	data := s.prepareDataLocked(maxDataFramePayloadSize)
 	if len(data) > 0 {
-		err := s.owner.writeFrameLocked(dataFrame{
+		err := s.owner.writeFrameLocked(&dataFrame{
 			streamID: s.streamID,
 			flags:    s.outgoingFlags(),
 			data:     data,

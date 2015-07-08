@@ -338,7 +338,7 @@ func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 	}
 }
 
-func (c *rawConn) processPingFrameLocked(frame pingFrame) error {
+func (c *rawConn) processPingFrameLocked(frame *pingFrame) error {
 	if (frame.flags & flagAck) == 0 {
 		if len(c.pingAcks) == 0 {
 			c.wakeupLocked()
@@ -360,7 +360,7 @@ func (c *rawConn) processPingFrameLocked(frame pingFrame) error {
 	return nil
 }
 
-func (c *rawConn) processOpenFrameLocked(frame openFrame) error {
+func (c *rawConn) processOpenFrameLocked(frame *openFrame) error {
 	if frame.streamID <= 0 || isServerStreamID(frame.streamID) == c.isserver {
 		return copperError{
 			error: fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.streamID),
@@ -394,7 +394,7 @@ func (c *rawConn) processOpenFrameLocked(frame openFrame) error {
 	return nil
 }
 
-func (c *rawConn) processDataFrameLocked(frame dataFrame) error {
+func (c *rawConn) processDataFrameLocked(frame *dataFrame) error {
 	stream := c.streams[frame.streamID]
 	if stream == nil {
 		if frame.streamID == 0 {
@@ -426,7 +426,7 @@ func (c *rawConn) processDataFrameLocked(frame dataFrame) error {
 	return nil
 }
 
-func (c *rawConn) processResetFrameLocked(frame resetFrame) error {
+func (c *rawConn) processResetFrameLocked(frame *resetFrame) error {
 	stream := c.streams[frame.streamID]
 	if stream == nil {
 		if frame.streamID == 0 {
@@ -451,7 +451,7 @@ func (c *rawConn) processResetFrameLocked(frame resetFrame) error {
 	return nil
 }
 
-func (c *rawConn) processWindowFrameLocked(frame windowFrame) error {
+func (c *rawConn) processWindowFrameLocked(frame *windowFrame) error {
 	if frame.streamID == 0 {
 		if frame.flags&flagInc != 0 {
 			if len(c.outgoingData) > 0 && c.writeleft <= 0 {
@@ -468,7 +468,7 @@ func (c *rawConn) processWindowFrameLocked(frame windowFrame) error {
 	return nil
 }
 
-func (c *rawConn) processSettingsFrameLocked(frame settingsFrame) error {
+func (c *rawConn) processSettingsFrameLocked(frame *settingsFrame) error {
 	if frame.flags&flagAck != 0 {
 		l := len(c.settingsCallbacks)
 		if l > 0 {
@@ -532,26 +532,26 @@ func (c *rawConn) processFrame(rawFrame frame, scratch *[]byte) bool {
 
 	var err error
 	switch frame := rawFrame.(type) {
-	case pingFrame:
+	case *pingFrame:
 		err = c.processPingFrameLocked(frame)
-	case openFrame:
+	case *openFrame:
 		err = c.processOpenFrameLocked(frame)
 		if len(frame.data) > len(*scratch) {
 			*scratch = frame.data
 		}
-	case dataFrame:
+	case *dataFrame:
 		err = c.processDataFrameLocked(frame)
 		if len(frame.data) > len(*scratch) {
 			*scratch = frame.data
 		}
-	case resetFrame:
+	case *resetFrame:
 		err = c.processResetFrameLocked(frame)
 		if len(frame.message) > len(*scratch) {
 			*scratch = frame.message
 		}
-	case windowFrame:
+	case *windowFrame:
 		err = c.processWindowFrameLocked(frame)
-	case settingsFrame:
+	case *settingsFrame:
 		err = c.processSettingsFrameLocked(frame)
 	default:
 		err = EUNKNOWNFRAME
@@ -627,7 +627,7 @@ func (c *rawConn) writeOutgoingFrames(datarequired bool, timeout *time.Duration)
 	defer func() {
 		if result && datarequired && writesInitial == c.cwriter.writes && c.cwriter.buffer.Buffered() <= 0 {
 			// we haven't written anything on the wire, but it is required
-			err := c.writeFrameLocked(dataFrame{})
+			err := c.writeFrameLocked(&dataFrame{})
 			if err != nil {
 				c.closeWithErrorLocked(err, false)
 				result = false
@@ -653,7 +653,7 @@ writeloop:
 			pingAcks := c.pingAcks
 			c.pingAcks = nil
 			for _, value := range pingAcks {
-				err := c.writeFrameLocked(pingFrame{
+				err := c.writeFrameLocked(&pingFrame{
 					flags: flagAck,
 					value: value,
 				})
@@ -671,7 +671,7 @@ writeloop:
 			pingQueue := c.pingQueue
 			c.pingQueue = nil
 			for _, value := range pingQueue {
-				err := c.writeFrameLocked(pingFrame{
+				err := c.writeFrameLocked(&pingFrame{
 					value: value,
 				})
 				if err != nil {
@@ -686,7 +686,7 @@ writeloop:
 		}
 		if c.settingsAcks > 0 {
 			c.settingsAcks--
-			err := c.writeFrameLocked(settingsFrame{
+			err := c.writeFrameLocked(&settingsFrame{
 				flags: flagAck,
 			})
 			if err != nil {
@@ -705,7 +705,7 @@ writeloop:
 				if c.streamCanReceive(streamID) {
 					flags |= flagInc
 				}
-				err := c.writeFrameLocked(windowFrame{
+				err := c.writeFrameLocked(&windowFrame{
 					streamID:  streamID,
 					flags:     flags,
 					increment: increment,

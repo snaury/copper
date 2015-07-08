@@ -144,9 +144,9 @@ func (e *timeoutError) Timeout() bool        { return true }
 func (e *timeoutError) Temporary() bool      { return true }
 func (e *timeoutError) ErrorCode() ErrorCode { return ETIMEOUT }
 
-func errorToResetFrame(flags uint8, streamID uint32, err error) resetFrame {
+func errorToResetFrame(flags uint8, streamID uint32, err error) *resetFrame {
 	if e, ok := err.(ErrorCode); ok {
-		return resetFrame{
+		return &resetFrame{
 			flags:    flags,
 			streamID: streamID,
 			code:     e,
@@ -154,14 +154,14 @@ func errorToResetFrame(flags uint8, streamID uint32, err error) resetFrame {
 		}
 	}
 	if e, ok := err.(Error); ok {
-		return resetFrame{
+		return &resetFrame{
 			flags:    flags,
 			streamID: streamID,
 			code:     e.ErrorCode(),
 			message:  []byte(e.Error()),
 		}
 	}
-	return resetFrame{
+	return &resetFrame{
 		flags:    flags,
 		streamID: streamID,
 		code:     EUNKNOWN,

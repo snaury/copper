@@ -48,7 +48,7 @@ type pingFrame struct {
 	value int64
 }
 
-func (p pingFrame) String() string {
+func (p *pingFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
 	if p.flags&flagAck != 0 {
 		flagstring += "(ACK)"
@@ -56,7 +56,7 @@ func (p pingFrame) String() string {
 	return fmt.Sprintf("PING[flags:%s value:%d]", flagstring, p.value)
 }
 
-func (p pingFrame) writeFrameTo(w io.Writer) (err error) {
+func (p *pingFrame) writeFrameTo(w io.Writer) (err error) {
 	err = writeFrameHeader(w, frameHeader{
 		flagsSize: uint32(p.flags)<<24 | 8,
 		frameType: pingFrameID,
@@ -76,7 +76,7 @@ type openFrame struct {
 	data     []byte
 }
 
-func (p openFrame) String() string {
+func (p *openFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
 	if p.flags&flagFin != 0 {
 		flagstring += "(FIN)"
@@ -84,7 +84,7 @@ func (p openFrame) String() string {
 	return fmt.Sprintf("OPEN[stream:%d flags:%s target:%d data:% x]", p.streamID, flagstring, p.targetID, p.data)
 }
 
-func (p openFrame) writeFrameTo(w io.Writer) (err error) {
+func (p *openFrame) writeFrameTo(w io.Writer) (err error) {
 	if len(p.data) > maxOpenFramePayloadSize {
 		return EINVALIDFRAME
 	}
@@ -112,7 +112,7 @@ type dataFrame struct {
 	data     []byte
 }
 
-func (p dataFrame) String() string {
+func (p *dataFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
 	if p.flags&flagFin != 0 {
 		flagstring += "(FIN)"
@@ -120,7 +120,7 @@ func (p dataFrame) String() string {
 	return fmt.Sprintf("DATA[stream:%d flags:%s data:% x]", p.streamID, flagstring, p.data)
 }
 
-func (p dataFrame) writeFrameTo(w io.Writer) (err error) {
+func (p *dataFrame) writeFrameTo(w io.Writer) (err error) {
 	if len(p.data) > maxDataFramePayloadSize {
 		return EINVALIDFRAME
 	}
@@ -144,7 +144,7 @@ type resetFrame struct {
 	message  []byte
 }
 
-func (p resetFrame) String() string {
+func (p *resetFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
 	if p.flags&flagFin != 0 {
 		flagstring += "(FIN)"
@@ -152,7 +152,7 @@ func (p resetFrame) String() string {
 	return fmt.Sprintf("RESET[stream:%d flags:%s code:%s message:%q]", p.streamID, flagstring, p.code.String(), p.message)
 }
 
-func (p resetFrame) writeFrameTo(w io.Writer) (err error) {
+func (p *resetFrame) writeFrameTo(w io.Writer) (err error) {
 	if len(p.message) > maxResetFrameMessageSize {
 		return EINVALIDFRAME
 	}
@@ -174,7 +174,7 @@ func (p resetFrame) writeFrameTo(w io.Writer) (err error) {
 	return
 }
 
-func (p resetFrame) toError() error {
+func (p *resetFrame) toError() error {
 	if len(p.message) == 0 {
 		return p.code
 	}
@@ -190,7 +190,7 @@ type windowFrame struct {
 	increment uint32
 }
 
-func (p windowFrame) String() string {
+func (p *windowFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
 	if p.flags&flagAck != 0 {
 		if p.flags&flagInc != 0 {
@@ -204,7 +204,7 @@ func (p windowFrame) String() string {
 	return fmt.Sprintf("WINDOW[stream:%d flags:%s increment:%d]", p.streamID, flagstring, p.increment)
 }
 
-func (p windowFrame) writeFrameTo(w io.Writer) (err error) {
+func (p *windowFrame) writeFrameTo(w io.Writer) (err error) {
 	err = writeFrameHeader(w, frameHeader{
 		streamID:  p.streamID,
 		flagsSize: uint32(p.flags)<<24 | uint32(4),
@@ -223,7 +223,7 @@ type settingsFrame struct {
 	values map[int]int
 }
 
-func (p settingsFrame) String() string {
+func (p *settingsFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
 	if p.flags&flagAck != 0 {
 		flagstring += "(ACK)"
@@ -231,7 +231,7 @@ func (p settingsFrame) String() string {
 	return fmt.Sprintf("SETTINGS[flags:%s values:%v]", flagstring, p.values)
 }
 
-func (p settingsFrame) writeFrameTo(w io.Writer) (err error) {
+func (p *settingsFrame) writeFrameTo(w io.Writer) (err error) {
 	size := len(p.values) * 8
 	if size > maxSettingsFramePayloadSize {
 		return EINVALIDFRAME
@@ -271,7 +271,7 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 		if err != nil {
 			return
 		}
-		return pingFrame{
+		return &pingFrame{
 			flags: hdr.Flags(),
 			value: int64(binary.LittleEndian.Uint64(buf[0:8])),
 		}, nil
@@ -297,7 +297,7 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 				return
 			}
 		}
-		return openFrame{
+		return &openFrame{
 			flags:    hdr.Flags(),
 			streamID: hdr.streamID,
 			targetID: int64(binary.LittleEndian.Uint64(buf[0:8])),
@@ -319,7 +319,7 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 				return
 			}
 		}
-		return dataFrame{
+		return &dataFrame{
 			flags:    hdr.Flags(),
 			streamID: hdr.streamID,
 			data:     data,
@@ -346,7 +346,7 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 				return
 			}
 		}
-		return resetFrame{
+		return &resetFrame{
 			flags:    hdr.Flags(),
 			streamID: hdr.streamID,
 			code:     ErrorCode(int32(binary.LittleEndian.Uint32(buf[0:4]))),
@@ -361,7 +361,7 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 		if err != nil {
 			return
 		}
-		return windowFrame{
+		return &windowFrame{
 			flags:     hdr.Flags(),
 			streamID:  hdr.streamID,
 			increment: binary.LittleEndian.Uint32(buf[0:4]),
@@ -393,7 +393,7 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 				count--
 			}
 		}
-		return settingsFrame{
+		return &settingsFrame{
 			flags:  hdr.Flags(),
 			values: values,
 		}, nil

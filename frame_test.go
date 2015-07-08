@@ -9,51 +9,51 @@ import (
 )
 
 var decodedFrames = []frame{
-	pingFrame{
+	&pingFrame{
 		flags: 0,
 		value: 0x1122334455667788,
 	},
-	pingFrame{
+	&pingFrame{
 		flags: flagAck,
 		value: 0x1122334455667788,
 	},
-	openFrame{
+	&openFrame{
 		streamID: 0x42,
 		flags:    0x25,
 		targetID: 0x1122334455667788,
 		data:     []byte{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},
 	},
-	dataFrame{
+	&dataFrame{
 		streamID: 0x42,
 		flags:    0x25,
 		data:     []byte{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},
 	},
-	resetFrame{
+	&resetFrame{
 		streamID: 0x42,
 		flags:    0x25,
 		code:     0x55,
 		message:  nil,
 	},
-	resetFrame{
+	&resetFrame{
 		streamID: 0x42,
 		flags:    0x25,
 		code:     0x55,
 		message:  []byte{'t', 'e', 's', 't'},
 	},
-	windowFrame{
+	&windowFrame{
 		streamID:  0x42,
 		flags:     0x25,
 		increment: 0x11223344,
 	},
-	settingsFrame{
+	&settingsFrame{
 		flags:  0,
 		values: map[int]int{2: 3},
 	},
-	settingsFrame{
+	&settingsFrame{
 		flags:  flagAck,
 		values: nil,
 	},
-	resetFrame{
+	&resetFrame{
 		code: EUNKNOWN,
 	},
 }
