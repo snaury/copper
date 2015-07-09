@@ -7,13 +7,18 @@ from .frames import (
     FLAG_FIN,
     FLAG_ACK,
     FLAG_INC,
+    Frame,
     PingFrame,
+    OpenFrame,
     DataFrame,
     ResetFrame,
     WindowFrame,
-    read_frame,
+    SettingsFrame,
 )
-from .errors import ConnectionTimeoutError
+from .errors import (
+    ConnectionTimeoutError,
+    InvalidFrameError,
+)
 
 INACTIVITY_TIMEOUT = 60
 
@@ -80,9 +85,10 @@ class RawConn(object):
         self._ping_acks = []
         self._ping_reqs = []
         self._window_acks = {}
-        self._streams = {}
         self._ctrl_streams = set()
         self._data_streams = set()
+        self._streams = {}
+        self._deadstreams = set()
         spawn(self._readloop)
         spawn(self._writeloop)
 
@@ -96,6 +102,58 @@ class RawConn(object):
             self._signal_close.set()
             self._signal_write.set()
 
+    def _remove_stream(self, stream):
+        stream_id = stream._stream_id
+        if self._streams.get(stream_id) is stream:
+            del self._streams[stream_id]
+            self._ctrl_streams.discard(stream)
+            self._data_streams.discard(stream)
+            if stream_id & 1:
+                # This is a client stream
+                self._deadstreams.add(stream_id)
+
+    def _process_ping_frame(self, frame):
+        pass
+
+    def _process_open_frame(self, frame):
+        pass
+
+    def _process_data_frame(self, frame):
+        pass
+
+    def _process_reset_frame(self, frame):
+        pass
+
+    def _process_window_frame(self, frame):
+        pass
+
+    def _process_settings_frame(self, frame):
+        pass
+
+    _process_frame_by_type = {
+        PingFrame: _process_ping_frame,
+        OpenFrame: _process_open_frame,
+        DataFrame: _process_data_frame,
+        ResetFrame: _process_reset_frame,
+        WindowFrame: _process_window_frame,
+        SettingsFrame: _process_settings_frame,
+    }
+
+    def _readloop(self):
+        while True:
+            try:
+                frame = None
+                with Timeout(INACTIVITY_TIMEOUT, False):
+                    frame = Frame.load(self._reader)
+                if frame is None:
+                    raise ConnectionTimeoutError()
+                process = self._process_frame_by_type.get(frame.__class__)
+                if process is None:
+                    raise InvalidFrameError('received an unsupported frame')
+            except Exception as e:
+                self._close(e)
+                break
+
     def _stream_can_receive(self, stream_id):
         if stream_id == 0:
             return True
@@ -104,15 +162,17 @@ class RawConn(object):
             return True
         return False
 
-    def _readloop(self):
-        while True:
-            frame = None
-            with Timeout(INACTIVITY_TIMEOUT, False):
-                frame = read_frame(self._reader)
-            if frame is None:
-                # frame read has timed out
-                self._close(ConnectionTimeoutError())
-                break
+    def _add_window_ack(self, stream_id, increment):
+        self._window_acks[stream_id] = self._window_acks.get(stream_id, 0) + increment
+        self._signal_write.set()
+
+    def _add_ctrl_stream(self, stream):
+        self._ctrl_streams.add(stream)
+        self._signal_write.set()
+
+    def _add_data_stream(self, stream):
+        self._data_streams.add(stream)
+        self._signal_write.set()
 
     def _write_frames(self):
         while True:
@@ -193,3 +253,80 @@ class RawConn(object):
             except Exception as e:
                 self._close(e)
                 break
+
+class RawStream(object):
+    def __init__(self, conn, stream_id, target_id, data='', iseof=False, isoutgoing=True):
+        self._conn = conn
+        self._stream_id = stream_id
+        self._target_id = target_id
+        self._readbuf = ''
+        self._writebuf = data
+        self._writenack = 0
+        self._writeleft = 0
+        self._sent_eof = False
+        self._seen_eof = iseof
+        self._sent_reset = False
+        self._need_open = isoutgoing
+        self._need_eof = False
+        self._need_reset = False
+        self._read_error = None
+        self._write_error = None
+        self._read_event = Event()
+        self._write_event = Event()
+
+    def _can_receive(self):
+        return self._read_error is None
+
+    def _fully_closed(self):
+        return self._sent_eof and self._seen_eof and not self._readbuf and self._writenack <= 0
+
+    def _clear_read_buffer(self):
+        if self._readbuf:
+            self._readbuf = 0
+            if self._fully_closed():
+                self._conn._remove_stream(self)
+
+    def recv(self, n):
+        while not self._readbuf:
+            if self._read_error is not None:
+                if isinstance(self._read_error, EOFError):
+                    return ''
+                raise self._read_error
+            self._read_event.clear()
+            self._read_event.wait()
+        if n > len(self._readbuf):
+            data, self._readbuf = self._readbuf, ''
+        elif n > 0:
+            data, self._readbuf = self._readbuf[:n], self._readbuf[n:]
+        else:
+            data = ''
+        if len(data) > 0:
+            self._conn._add_window_ack(self._stream_id, len(data))
+        return data
+
+    def read(self, n):
+        data = ''
+        while True:
+            chunk = self.recv(n - len(data))
+            if not chunk:
+                break
+            data += chunk
+            if len(data) == n:
+                break
+        return data
+
+    def send(self, data):
+        while self._write_error is None and self._writeleft <= 0:
+            self._write_event.clear()
+            self._write_event.wait()
+        if self._write_error is not None:
+            raise self._write_error
+        chunk = data[:self._writeleft]
+        self._writebuf += chunk
+        self._conn._add_data_stream(self)
+        return len(chunk)
+
+    def write(self, data):
+        while data:
+            n = self.send(data)
+            data = data[n:]
