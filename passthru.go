@@ -14,7 +14,7 @@ func passthru(dst, src Stream) {
 		write.Lock()
 		defer write.Unlock()
 		atomic.AddUint32(&writeclosed, 1)
-		if err == ESTREAMCLOSED {
+		if err == ECLOSED {
 			src.CloseRead()
 		} else {
 			src.CloseReadError(err)
@@ -34,7 +34,7 @@ func passthru(dst, src Stream) {
 			}
 			write.Unlock()
 			if werr != nil {
-				if werr == ESTREAMCLOSED {
+				if werr == ECLOSED {
 					src.CloseRead()
 				} else {
 					src.CloseReadError(werr)

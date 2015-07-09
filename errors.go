@@ -17,83 +17,81 @@ type Error interface {
 // ErrorCode represents a copper error code
 type ErrorCode int
 
-var _ Error = EOK
+var _ Error = ErrorCode(0)
 
 const (
-	// EUNKNOWN is used for unknown errors
-	EUNKNOWN ErrorCode = -1
-	// EOK is not an error and should not be returned
-	EOK ErrorCode = iota
-	// EUNKNOWNFRAME is returned when frame type is unknown
-	EUNKNOWNFRAME
-	// EINVALIDFRAME is returned when frame has invalid data
-	EINVALIDFRAME
-	// EWINDOWOVERFLOW is returned when receive window overflows
-	EWINDOWOVERFLOW
-	// ECONNCLOSED is returned when connection is closed normally
-	ECONNCLOSED
-	// ESTREAMCLOSED is returned when stream is closed normally
-	ESTREAMCLOSED
-	// EINVALIDDATA is returned when incoming data is invalid
-	EINVALIDDATA
-	// EINVALIDSTREAM is returned when incoming stream id is invalid
-	EINVALIDSTREAM
-	// EUNSUPPORTED is returned when some feature is unsupported
-	EUNSUPPORTED
-	// EINTERNAL is returned when some internal error happens
-	EINTERNAL
-	// ENOTARGET is returned when target does not exist
-	ENOTARGET
-	// ENOSTREAM is returned when stream does not exist
-	ENOSTREAM
+	// EINTERNAL is returned when there is an internal error
+	EINTERNAL = ErrorCode(1)
+
+	// ECLOSED is returned when stream is closed normally
+	ECLOSED = ErrorCode(100)
+	// EINVALID is returned when received data is invalid
+	EINVALID = ErrorCode(101)
+	// ETIMEOUT is returned when operation times out
+	ETIMEOUT = ErrorCode(102)
 	// ENOROUTE is returned when there's no route to the target
-	ENOROUTE
-	// ETIMEOUT is returned when operation has timed out
-	ETIMEOUT
-	// ESHUTDOWN is returned when server is shutting down
-	ESHUTDOWN
+	ENOROUTE = ErrorCode(103)
+	// ENOTARGET is returned when target does not exist
+	ENOTARGET = ErrorCode(104)
+	// EUNSUPPORTED is returned when feature is not supported
+	EUNSUPPORTED = ErrorCode(105)
 	// EOVERCAPACITY is returned when server is over capacity
-	EOVERCAPACITY
+	EOVERCAPACITY = ErrorCode(106)
+
+	// ECONNCLOSED is returned when connection is closed normally
+	ECONNCLOSED = ErrorCode(200)
+	// ECONNSHUTDOWN is returned when endpoint is shutting down
+	ECONNSHUTDOWN = ErrorCode(201)
+	// EUNKNOWNFRAME is returned when frame type is unknown
+	EUNKNOWNFRAME = ErrorCode(202)
+	// EINVALIDFRAME is returned when frame has invalid data
+	EINVALIDFRAME = ErrorCode(203)
+	// EWINDOWOVERFLOW is returned when receive window overflows
+	EWINDOWOVERFLOW = ErrorCode(204)
+	// EINVALIDSTREAM is returned when incoming stream id is invalid
+	EINVALIDSTREAM = ErrorCode(205)
+	// EUNKNOWNSTREAM is returned when stream does not exist
+	EUNKNOWNSTREAM = ErrorCode(206)
 )
 
 var errorMessages = map[ErrorCode]string{
-	EOK:             "no error",
-	EUNKNOWNFRAME:   "unknown frame",
-	EINVALIDFRAME:   "invalid frame",
-	EWINDOWOVERFLOW: "receive window overflow",
+	EINTERNAL: "internal error",
+
+	ECLOSED:       "stream closed",
+	EINVALID:      "data is not valid",
+	ETIMEOUT:      "operation timed out",
+	ENOROUTE:      "no route to target",
+	ENOTARGET:     "no such target",
+	EUNSUPPORTED:  "feature is not supported",
+	EOVERCAPACITY: "server is over capacity",
+
 	ECONNCLOSED:     "connection closed",
-	ESTREAMCLOSED:   "stream closed",
-	EINVALIDDATA:    "invalid data",
-	EINVALIDSTREAM:  "invalid stream",
-	EUNSUPPORTED:    "feature is not supported",
-	EINTERNAL:       "internal error",
-	ENOTARGET:       "no such target",
-	ENOSTREAM:       "no such stream",
-	ENOROUTE:        "no route to target",
-	ETIMEOUT:        "operation timed out",
-	ESHUTDOWN:       "server is shutting down",
-	EOVERCAPACITY:   "server is over capacity",
-	EUNKNOWN:        "unknown error",
+	ECONNSHUTDOWN:   "connection is shutting down",
+	EUNKNOWNFRAME:   "unknown frame type",
+	EINVALIDFRAME:   "invalid frame data",
+	EWINDOWOVERFLOW: "receive window overflow",
+	EINVALIDSTREAM:  "received invalid stream id",
+	EUNKNOWNSTREAM:  "received unknown stream id",
 }
 
 var errorNames = map[ErrorCode]string{
-	EOK:             "EOK",
+	EINTERNAL: "EINTERNAL",
+
+	ECLOSED:       "ECLOSED",
+	EINVALID:      "EINVALID",
+	ETIMEOUT:      "ETIMEOUT",
+	ENOROUTE:      "ENOROUTE",
+	ENOTARGET:     "ENOTARGET",
+	EUNSUPPORTED:  "EUNSUPPORTED",
+	EOVERCAPACITY: "EOVERCAPACITY",
+
+	ECONNCLOSED:     "ECONNCLOSED",
+	ECONNSHUTDOWN:   "ECONNSHUTDOWN",
 	EUNKNOWNFRAME:   "EUNKNOWNFRAME",
 	EINVALIDFRAME:   "EINVALIDFRAME",
 	EWINDOWOVERFLOW: "EWINDOWOVERFLOW",
-	ECONNCLOSED:     "ECONNCLOSED",
-	ESTREAMCLOSED:   "ESTREAMCLOSED",
-	EINVALIDDATA:    "EINVALIDDATA",
 	EINVALIDSTREAM:  "EINVALIDSTREAM",
-	EUNSUPPORTED:    "EUNSUPPORTED",
-	EINTERNAL:       "EINTERNAL",
-	ENOTARGET:       "ENOTARGET",
-	ENOSTREAM:       "ENOSTREAM",
-	ENOROUTE:        "ENOROUTE",
-	ETIMEOUT:        "ETIMEOUT",
-	ESHUTDOWN:       "ESHUTDOWN",
-	EOVERCAPACITY:   "EOVERCAPACITY",
-	EUNKNOWN:        "EUNKNOWN",
+	EUNKNOWNSTREAM:  "EUNKNOWNSTREAM",
 }
 
 func (e ErrorCode) Error() string {

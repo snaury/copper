@@ -161,7 +161,7 @@ func (p *resetFrame) writeFrameTo(w io.Writer) (err error) {
 		code = e.ErrorCode()
 		message = []byte(e.Error())
 	default:
-		code = EUNKNOWN
+		code = EINTERNAL
 		message = []byte(e.Error())
 	}
 	if len(message) > maxResetFrameMessageSize {

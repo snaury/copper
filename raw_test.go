@@ -415,8 +415,8 @@ func TestRawStreamWaitAck(t *testing.T) {
 			lock.Unlock()
 			switch target {
 			case 1:
-				if n != 13 || err != ESTREAMCLOSED {
-					t.Fatalf("client: WaitAck(%d): %d, %v (expected 13, ESTREAMCLOSED)", target, n, err)
+				if n != 13 || err != ECLOSED {
+					t.Fatalf("client: WaitAck(%d): %d, %v (expected 13, ECLOSED)", target, n, err)
 				}
 			case 2:
 				if n != 13 || err != ENOROUTE {
@@ -469,7 +469,7 @@ func TestRawStreamCloseRead(t *testing.T) {
 		stream.Write([]byte("foobar"))
 		n, err := stream.WaitAck()
 		goahead1.Unlock()
-		if n != 6 || err != ESTREAMCLOSED {
+		if n != 6 || err != ECLOSED {
 			t.Fatalf("client: WaitAck: %d, %v", n, err)
 		}
 		n, err = stream.Read(make([]byte, 16))

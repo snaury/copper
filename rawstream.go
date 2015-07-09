@@ -198,8 +198,8 @@ func (s *rawStream) processResetFrameLocked(frame *resetFrame) error {
 	s.clearWriteBuffer()
 	if frame.flags&flagFin != 0 {
 		reset := frame.err
-		if reset == ESTREAMCLOSED {
-			// ESTREAMCLOSED is special, it translates to a normal EOF
+		if reset == ECLOSED {
+			// ECLOSED is special, it translates to a normal EOF
 			reset = io.EOF
 		}
 		s.flags |= flagStreamSeenEOF
@@ -382,8 +382,8 @@ func (s *rawStream) outgoingSendReset() bool {
 		// we have a RESET frame pending
 		if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
 			// we need to send EOF too (closing both sides)
-			if s.reseterror == nil || s.reseterror == ESTREAMCLOSED {
-				// if the error was ESTREAMCLOSED we may send DATA with EOF
+			if s.reseterror == nil || s.reseterror == ECLOSED {
+				// if the error was ECLOSED we may send DATA with EOF
 				if s.flags&flagStreamSeenEOF == 0 {
 					// but we haven't seen EOF yet, so we need RESET
 					return true
@@ -395,8 +395,8 @@ func (s *rawStream) outgoingSendReset() bool {
 		}
 		if s.flags&flagStreamSeenEOF != 0 {
 			// we have seen EOF, so this RESET is for the write side only
-			if s.reseterror == nil || s.reseterror == ESTREAMCLOSED {
-				// if the error was ESTREAMCLOSED we no longer need RESET
+			if s.reseterror == nil || s.reseterror == ECLOSED {
+				// if the error was ECLOSED we no longer need RESET
 				s.flags &^= flagStreamNeedReset
 				return false
 			}
@@ -417,8 +417,8 @@ func (s *rawStream) outgoingSendEOF() bool {
 		// we have no data and need to send EOF
 		if s.flags&flagStreamNeedReset != 0 {
 			// however there's an active reset as well
-			if s.reseterror == nil || s.reseterror == ESTREAMCLOSED {
-				// errors like ESTREAMCLOSED are translated into io.EOF, so
+			if s.reseterror == nil || s.reseterror == ECLOSED {
+				// errors like ECLOSED are translated into io.EOF, so
 				// it's ok to send EOF even if we have a pending RESET.
 				return true
 			}
@@ -496,7 +496,7 @@ func (s *rawStream) setWriteError(err error) {
 
 func (s *rawStream) closeWithErrorLocked(err error, closed bool) error {
 	if err == nil || err == io.EOF {
-		err = ESTREAMCLOSED
+		err = ECLOSED
 	}
 	preverror := s.reseterror
 	if preverror == nil {
@@ -624,7 +624,7 @@ func (s *rawStream) CloseRead() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	preverror := s.readerror
-	s.setReadError(ESTREAMCLOSED)
+	s.setReadError(ECLOSED)
 	s.resetReadSide()
 	s.clearReadBuffer()
 	return preverror
@@ -632,7 +632,7 @@ func (s *rawStream) CloseRead() error {
 
 func (s *rawStream) CloseReadError(err error) error {
 	if err == nil || err == io.EOF {
-		err = ESTREAMCLOSED
+		err = ECLOSED
 	}
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
@@ -647,7 +647,7 @@ func (s *rawStream) CloseWrite() error {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
 	preverror := s.writeerror
-	s.setWriteError(ESTREAMCLOSED)
+	s.setWriteError(ECLOSED)
 	return preverror
 }
 

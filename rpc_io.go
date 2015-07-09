@@ -38,7 +38,7 @@ func rpcReadMessage(r io.Reader, pb proto.Message) error {
 			return err
 		}
 	} else if size < 0 {
-		return EINVALIDDATA
+		return EINVALID
 	}
 	return proto.Unmarshal(data, pb)
 }

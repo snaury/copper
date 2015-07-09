@@ -205,6 +205,8 @@ FRAME_CLASSES = {
 }
 
 def read_frame(reader):
+    if not reader.peek():
+        return None
     header = Header.load(reader)
     cls = FRAME_CLASSES.get(header.kind)
     if cls is None:

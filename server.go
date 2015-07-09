@@ -179,5 +179,5 @@ func (s *server) Serve() error {
 }
 
 func (s *server) Close() error {
-	return s.closeWithError(ESHUTDOWN)
+	return s.closeWithError(ECONNSHUTDOWN)
 }

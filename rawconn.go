@@ -487,7 +487,7 @@ func (c *rawConn) processSettingsFrameLocked(frame *settingsFrame) error {
 			if value < 1024 {
 				return copperError{
 					error: fmt.Errorf("cannot set connection window to %d bytes", value),
-					code:  EUNSUPPORTED,
+					code:  EINVALIDFRAME,
 				}
 			}
 			diff := value - c.remoteConnWindowSize
@@ -497,7 +497,7 @@ func (c *rawConn) processSettingsFrameLocked(frame *settingsFrame) error {
 			if value < 1024 {
 				return copperError{
 					error: fmt.Errorf("cannot set stream window to %d bytes", value),
-					code:  EUNSUPPORTED,
+					code:  EINVALIDFRAME,
 				}
 			}
 			diff := value - c.remoteStreamWindowSize
@@ -508,14 +508,14 @@ func (c *rawConn) processSettingsFrameLocked(frame *settingsFrame) error {
 			if value < 1000 {
 				return copperError{
 					error: fmt.Errorf("cannot set inactivity timeout to %dms", value),
-					code:  EUNSUPPORTED,
+					code:  EINVALIDFRAME,
 				}
 			}
 			c.remoteInactivityTimeout = time.Duration(value) * time.Millisecond
 		default:
 			return copperError{
 				error: fmt.Errorf("unknown settings key %d", key),
-				code:  EUNSUPPORTED,
+				code:  EINVALIDFRAME,
 			}
 		}
 	}

@@ -45,14 +45,62 @@ class CopperError(Exception):
                     message = 'ERROR_%s' % (copper_error,)
         return message
 
-class UnknownError(CopperError):
-    """unknown error"""
-    copper_error = -1
-
-class UnknownFrameError(CopperError):
-    """unknown frame"""
+class InternalError(CopperError):
+    """internal error"""
     copper_error = 1
 
+class StreamClosedError(CopperError):
+    """stream closed"""
+    copper_error = 100
+
+class InvalidDataError(CopperError):
+    """data is not valid"""
+    copper_error = 101
+
+class TimeoutError(CopperError):
+    """operation timed out"""
+    copper_error = 102
+
+class NoRouteError(CopperError):
+    """no route to target"""
+    copper_error = 103
+
+class NoTargetError(CopperError):
+    """no such target"""
+    copper_error = 104
+
+class UnsupportedError(CopperError):
+    """feature is not supported"""
+    copper_error = 105
+
+class OverCapacityError(CopperError):
+    """server is over capacity"""
+    copper_error = 106
+
+class ConnectionClosedError(CopperError):
+    """connection closed"""
+    copper_error = 200
+
+class ConnectionShutdownError(CopperError):
+    """connection is shutting down"""
+    copper_error = 201
+
+class UnknownFrameError(CopperError):
+    """unknown frame type"""
+    copper_error = 202
+
 class InvalidFrameError(CopperError):
-    """invalid frame"""
-    copper_error = 2
+    """invalid frame data"""
+    copper_error = 203
+
+class WindowOverflowError(CopperError):
+    """receive window overflow"""
+    copper_error = 204
+
+class InvalidStreamError(CopperError):
+    """received invalid stream id"""
+    copper_error = 205
+
+class UnknownStreamError(CopperError):
+    """received unknown stream id"""
+    copper_error = 206
