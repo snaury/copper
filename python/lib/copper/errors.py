@@ -8,13 +8,11 @@ class CopperErrorMeta(type):
         cls = type.__new__(meta, name, bases, bodydict)
         copper_error = bodydict.get('copper_error')
         if copper_error is not None:
-            classes_by_code = bodydict.get('classes_by_code')
-            if classes_by_code is None:
-                classes_by_code = CopperError.classes_by_code
-            prev = meta.registered.get(copper_error)
+            classes_by_code = cls.classes_by_code
+            prev = classes_by_code.get(copper_error)
             if prev is not None:
-                raise TypeError('Errors %s and %s have the same error code' % (prev.__name__, name))
-            meta.registered[copper_error] = cls
+                raise TypeError('Errors %s and %s have the same error code %r' % (prev.__name__, name, copper_error))
+            classes_by_code[copper_error] = cls
         return cls
 
 class CopperError(Exception):
@@ -23,15 +21,36 @@ class CopperError(Exception):
     copper_error = None
     classes_by_code = {}
 
+    def __init__(self, message=None, copper_error=None):
+        if message is not None:
+            Exception.__init__(self, message)
+        else:
+            Exception.__init__(self)
+        if copper_error is not None:
+            self.copper_error = copper_error
+
     @classmethod
     def from_error_code(cls, code, message=''):
         impl = cls.classes_by_code.get(code)
         if impl is not None:
-            result = impl(message)
+            if message:
+                result = impl(message)
+            else:
+                result = impl()
         else:
             result = cls(message)
             result.copper_error = code
         return result
+
+    def __cmp__(self, other):
+        if other is self:
+            return 0
+        if isinstance(other, CopperError):
+            return cmp(
+                (self.copper_error, self.message),
+                (other.copper_error, other.message),
+            )
+        return cmp(id(self), id(other))
 
     def __str__(self):
         message = self.message
@@ -39,11 +58,17 @@ class CopperError(Exception):
             docstring = self.__type__.__doc__
             if docstring:
                 message = docstring
-            else:
-                copper_error = getattr(self, 'copper_error', None)
-                if copper_error is not None:
-                    message = 'ERROR_%s' % (copper_error,)
+            elif self.copper_error is not None:
+                message = 'ERROR_%s' % (self.copper_error,)
         return message
+
+    def __repr__(self):
+        args = []
+        if self.message:
+            args.append('%r' % (self.message,))
+        if self.copper_error != self.__class__.copper_error:
+            args.append('copper_error=%r' % (self.copper_error,))
+        return '%s(%s)' % (self.__class__.__name__, ', '.join(args))
 
 class InternalError(CopperError):
     """internal error"""

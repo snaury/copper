@@ -2,15 +2,18 @@
 import struct
 from .errors import CopperError, UnknownFrameError, InvalidFrameError
 
+__all__ = [
+    'Frame',
+    'PingFrame',
+    'OpenFrame',
+    'DataFrame',
+    'ResetFrame',
+    'WindowFrame',
+    'SettingsFrame',
+]
+
 FRAME_HEADER_FMT = struct.Struct('<IIB')
 assert FRAME_HEADER_FMT.size == 9
-
-PING_FRAME_ID = 0
-OPEN_FRAME_ID = 1
-DATA_FRAME_ID = 2
-RESET_FRAME_ID = 3
-WINDOW_FRAME_ID = 4
-SETTINGS_FRAME_ID = 5
 
 FLAG_FIN = 1 # OPEN, DATA, RESET
 FLAG_ACK = 1 # PING, WINDOW, SETTINGS
@@ -33,29 +36,77 @@ class Header(object):
     def dump(self, writer):
         writer.write(FRAME_HEADER_FMT.pack(self.stream_id, (self.flags << 24) | self.payload_size, self.kind))
 
-class PingFrame(object):
+class FrameMeta(type):
+    def __new__(meta, name, bases, bodydict):
+        cls = type.__new__(meta, name, bases, bodydict)
+        frame_id = bodydict.get('ID')
+        frame_classes = cls.frame_classes
+        if frame_id is not None:
+            prev = frame_classes.get(frame_id)
+            if prev is not None:
+                raise TypeError('Frames %s and %s have the same type id %r' % (prev.__name__, name, frame_id))
+            frame_classes[frame_id] = cls
+        return cls
+
+class Frame(object):
+    __slots__ = ()
+    __metaclass__ = FrameMeta
+    frame_classes = {}
+
+    @classmethod
+    def load(cls, reader):
+        if not reader.peek():
+            return None
+        header = Header.load(reader)
+        impl = cls.frame_classes.get(header.kind)
+        if impl is None:
+            raise UnknownFrameError()
+        return impl.load_frame_data(header, reader)
+
+    def __repr__(self):
+        return '%s(%s)' % (
+            self.__class__.__name__,
+            ', '.join(
+                '%s=%r' % (name, getattr(self, name))
+                for name in self.__class__.__slots__,
+            ),
+        )
+
+class PingFrame(Frame):
     __slots__ = ('flags', 'value')
 
+    ID = 0
     FMT = struct.Struct('<Q')
 
     def __init__(self, flags, value):
         self.flags = flags
         self.value = value
 
+    def __cmp__(self, other):
+        if other is self:
+            return 0
+        if isinstance(other, PingFrame):
+            return cmp(
+                (self.flags, self.value),
+                (other.flags, other.value),
+            )
+        return cmp(id(self), id(other))
+
     @classmethod
-    def load(cls, header, reader):
+    def load_frame_data(cls, header, reader):
         if header.stream_id != 0 or header.payload_size != 8:
             raise InvalidFrameError()
         value, = cls.FMT.unpack(reader.read(8))
         return cls(header.flags, value)
 
     def dump(self, writer):
-        Header(0, 8, self.flags, PING_FRAME_ID).dump(writer)
+        Header(0, 8, self.flags, self.ID).dump(writer)
         writer.write(self.FMT.pack(self.value))
 
-class OpenFrame(object):
+class OpenFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'target_id', 'data')
 
+    ID = 1
     FMT = struct.Struct('<Q')
 
     def __init__(self, stream_id, flags, target_id, data):
@@ -64,8 +115,18 @@ class OpenFrame(object):
         self.target_id = target_id
         self.data = data
 
+    def __cmp__(self, other):
+        if other is self:
+            return 0
+        if isinstance(other, OpenFrame):
+            return cmp(
+                (self.stream_id, self.flags, self.target_id, self.data),
+                (other.stream_id, other.flags, other.target_id, other.data),
+            )
+        return cmp(id(self), id(other))
+
     @classmethod
-    def load(cls, header, reader):
+    def load_frame_data(cls, header, reader):
         if header.payload_size < 8:
             raise InvalidFrameError()
         target_id, = cls.FMT.unpack(reader.read(8))
@@ -76,21 +137,33 @@ class OpenFrame(object):
         return cls(header.stream_id, header.flags, target_id, data)
 
     def dump(self, writer):
-        Header(self.stream_id, 8 + len(self.data), self.flags, OPEN_FRAME_ID).dump(writer)
+        Header(self.stream_id, 8 + len(self.data), self.flags, self.ID).dump(writer)
         writer.write(self.FMT.pack(self.target_id))
         if self.data:
             writer.write(self.data)
 
-class DataFrame(object):
+class DataFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'data')
+
+    ID = 2
 
     def __init__(self, stream_id, flags, data):
         self.stream_id = stream_id
         self.flags = flags
         self.data = data
 
+    def __cmp__(self, other):
+        if other is self:
+            return 0
+        if isinstance(other, DataFrame):
+            return cmp(
+                (self.stream_id, self.flags, self.data),
+                (other.stream_id, other.flags, other.data),
+            )
+        return cmp(id(self), id(other))
+
     @classmethod
-    def load(cls, header, reader):
+    def load_frame_data(cls, header, reader):
         if header.payload_size > 0:
             data = reader.read(header.payload_size)
         else:
@@ -98,13 +171,14 @@ class DataFrame(object):
         return cls(header.stream_id, header.flags, data)
 
     def dump(self, writer):
-        Header(self.stream_id, len(self.data), self.flags, DATA_FRAME_ID).dump(writer)
+        Header(self.stream_id, len(self.data), self.flags, self.ID).dump(writer)
         if self.data:
             writer.write(self.data)
 
-class ResetFrame(object):
+class ResetFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'error')
 
+    ID = 3
     FMT = struct.Struct('<i')
 
     def __init__(self, stream_id, flags, error):
@@ -112,11 +186,21 @@ class ResetFrame(object):
         self.flags = flags
         self.error = error
 
+    def __cmp__(self, other):
+        if other is self:
+            return 0
+        if isinstance(other, ResetFrame):
+            return cmp(
+                (self.stream_id, self.flags, self.error),
+                (other.stream_id, other.flags, other.error),
+            )
+        return cmp(id(self), id(other))
+
     @classmethod
-    def load(cls, header, reader):
+    def load_frame_data(cls, header, reader):
         if header.payload_size < 4:
             raise InvalidFrameError()
-        error_code = cls.FMT.unpack(reader.read(4))
+        error_code, = cls.FMT.unpack(reader.read(4))
         if header.payload_size > 4:
             message = reader.read(header.payload_size - 4)
         else:
@@ -136,14 +220,15 @@ class ResetFrame(object):
                 message = unicode(message)
         if isinstance(message, unicode):
             message = message.encode('utf8')
-        Header(self.stream_id, len(message) + 4, self.flags, RESET_FRAME_ID).dump(writer)
+        Header(self.stream_id, len(message) + 4, self.flags, self.ID).dump(writer)
         writer.write(self.FMT.pack(error_code))
         if message:
             writer.write(message)
 
-class WindowFrame(object):
+class WindowFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'increment')
 
+    ID = 4
     FMT = struct.Struct('<I')
 
     def __init__(self, stream_id, flags, increment):
@@ -151,28 +236,49 @@ class WindowFrame(object):
         self.flags = flags
         self.increment = increment
 
+    def __cmp__(self, other):
+        if other is self:
+            return 0
+        if isinstance(other, WindowFrame):
+            return cmp(
+                (self.stream_id, self.flags, self.increment),
+                (other.stream_id, other.flags, other.increment),
+            )
+        return cmp(id(self), id(other))
+
     @classmethod
-    def load(cls, header, reader):
+    def load_frame_data(cls, header, reader):
         if header.payload_size != 4:
             raise InvalidFrameError()
         increment, = cls.FMT.unpack(reader.read(4))
         return cls(header.stream_id, header.flags, increment)
 
     def dump(self, writer):
-        Header(self.stream_id, 4, self.flags, WINDOW_FRAME_ID).dump(writer)
+        Header(self.stream_id, 4, self.flags, self.ID).dump(writer)
         writer.write(self.FMT.pack(self.increment))
 
-class SettingsFrame(object):
+class SettingsFrame(Frame):
     __slots__ = ('flags', 'values')
 
+    ID = 5
     FMT = struct.Struct('<II')
 
     def __init__(self, flags, values):
         self.flags = flags
         self.values = values
 
+    def __cmp__(self, other):
+        if other is self:
+            return 0
+        if isinstance(other, SettingsFrame):
+            return cmp(
+                (self.flags, self.values),
+                (other.flags, other.values),
+            )
+        return cmp(id(self), id(other))
+
     @classmethod
-    def load(cls, header, reader):
+    def load_frame_data(cls, header, reader):
         if header.stream_id != 0:
             raise InvalidFrameError()
         if header.flags & FLAG_ACK:
@@ -191,24 +297,6 @@ class SettingsFrame(object):
         return cls(header.flags, values)
 
     def dump(self, writer):
-        Header(0, 8 * len(self.values), self.flags, SETTINGS_FRAME_ID).dump(writer)
+        Header(0, 8 * len(self.values), self.flags, self.ID).dump(writer)
         for sid, value in self.values.iteritems():
             writer.write(self.FMT.pack(sid, value))
-
-FRAME_CLASSES = {
-    PING_FRAME_ID: PingFrame,
-    OPEN_FRAME_ID: OpenFrame,
-    DATA_FRAME_ID: DataFrame,
-    RESET_FRAME_ID: ResetFrame,
-    WINDOW_FRAME_ID: WindowFrame,
-    SETTINGS_FRAME_ID: SettingsFrame,
-}
-
-def read_frame(reader):
-    if not reader.peek():
-        return None
-    header = Header.load(reader)
-    cls = FRAME_CLASSES.get(header.kind)
-    if cls is None:
-        raise UnknownFrameError()
-    return cls.load(header, reader)
