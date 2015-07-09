@@ -34,14 +34,13 @@ type RawConn interface {
 
 type rawConn struct {
 	lock                    sync.Mutex
-	waitready               sync.Cond
 	conn                    net.Conn
 	creader                 *rawConnReader
 	cwriter                 *rawConnWriter
 	isserver                bool
 	closed                  bool
+	closedcond              sync.Cond
 	failure                 error
-	signal                  chan struct{}
 	handler                 Handler
 	streams                 map[uint32]*rawStream
 	deadstreams             map[uint32]struct{}
@@ -57,6 +56,7 @@ type rawConn struct {
 	outgoingData            map[uint32]struct{}
 	outgoingFailure         error
 	writeleft               int
+	writeready              sync.Cond
 	localConnWindowSize     int
 	remoteConnWindowSize    int
 	localStreamWindowSize   int
@@ -79,7 +79,6 @@ func NewRawConn(conn net.Conn, handler Handler, isserver bool) RawConn {
 		conn:                    conn,
 		isserver:                isserver,
 		closed:                  false,
-		signal:                  make(chan struct{}, 1),
 		handler:                 handler,
 		streams:                 make(map[uint32]*rawStream),
 		deadstreams:             make(map[uint32]struct{}),
@@ -104,7 +103,8 @@ func NewRawConn(conn net.Conn, handler Handler, isserver bool) RawConn {
 	} else {
 		c.nextnewstream = 1
 	}
-	c.waitready.L = &c.lock
+	c.closedcond.L = &c.lock
+	c.writeready.L = &c.lock
 	c.readunblocked.L = &c.lock
 	c.writeunblocked.L = &c.lock
 	c.closeunblocked.L = &c.lock
@@ -144,12 +144,7 @@ func (c *rawConn) writeFrameLocked(rawFrame frame) (err error) {
 }
 
 func (c *rawConn) wakeupLocked() {
-	if !c.closed {
-		select {
-		case c.signal <- struct{}{}:
-		default:
-		}
-	}
+	c.writeready.Signal()
 }
 
 func (c *rawConn) closeWithErrorLocked(err error, closed bool) error {
@@ -163,8 +158,8 @@ func (c *rawConn) closeWithErrorLocked(err error, closed bool) error {
 		if c.outgoingFailure == nil {
 			c.outgoingFailure = err
 		}
-		close(c.signal)
-		c.waitready.Broadcast()
+		c.closedcond.Broadcast()
+		c.writeready.Broadcast()
 		// Don't send any pings that haven't been sent already
 		c.pingQueue = nil
 	}
@@ -184,7 +179,7 @@ func (c *rawConn) Wait() error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	for !c.closed {
-		c.waitready.Wait()
+		c.closedcond.Wait()
 	}
 	return c.failure
 }
@@ -613,35 +608,10 @@ func (c *rawConn) streamCanReceive(streamID uint32) bool {
 	return false
 }
 
-func (c *rawConn) writeOutgoingFrames(datarequired bool, timeout *time.Duration) (result bool) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+func (c *rawConn) writeOutgoingFramesLocked() (result bool) {
 	for c.writeblocked > 0 {
 		c.writeunblocked.Wait()
 	}
-
-	writesInitial := c.cwriter.writes
-	defer func() {
-		if result && datarequired && writesInitial == c.cwriter.writes && c.cwriter.buffer.Buffered() <= 0 {
-			// we haven't written anything on the wire, but it is required
-			err := c.writeFrameLocked(&dataFrame{})
-			if err != nil {
-				c.closeWithErrorLocked(err, false)
-				result = false
-				return
-			}
-		}
-		if c.cwriter.buffer.Buffered() > 0 {
-			// we use buffer for coalescing, must flush at the end
-			err := c.cwriter.buffer.Flush()
-			if err != nil {
-				c.closeWithErrorLocked(err, false)
-				result = false
-				return
-			}
-		}
-		*timeout = c.remoteInactivityTimeout
-	}()
 
 writeloop:
 	for {
@@ -762,42 +732,73 @@ writeloop:
 				}
 			}
 		}
-		select {
-		case <-c.signal:
-			// the signal channel is active, must try again!
-			continue writeloop
-		default:
-			// if we reach here there's nothing else to send
-			return true
-		}
+		// if we reach here there's nothing to write
+		return true
 	}
 }
 
 func (c *rawConn) writeloop() {
 	defer c.conn.Close()
-	timeout := c.remoteInactivityTimeout
-	t := time.NewTimer(2 * timeout / 3)
-	for {
-		datarequired := false
-		select {
-		case <-c.signal:
-			// we might have something to send
-		case <-t.C:
-			datarequired = true
-		}
-		writes := c.cwriter.writes
-		newtimeout := timeout
-		if !c.writeOutgoingFrames(datarequired, &newtimeout) {
-			break
-		}
-		if writes != c.cwriter.writes || timeout != newtimeout {
-			// data flush detected, reset the timer
-			timeout = newtimeout
-			t.Reset(2 * timeout / 3)
-		}
-	}
+
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
+	var datarequired int
+	timeout := c.remoteInactivityTimeout
+	t := time.AfterFunc(2*timeout/3, func() {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+		datarequired++
+		c.writeready.Signal()
+	})
+	defer t.Stop()
+	for {
+		writesAtStart := c.cwriter.writes
+		ok := c.writeOutgoingFramesLocked()
+		writesAtEnd := c.cwriter.writes
+		if ok && datarequired > 0 {
+			if writesAtStart == c.cwriter.writes && c.cwriter.buffer.Buffered() == 0 {
+				// We haven't written anything on the wire, but it is required
+				err := c.writeFrameLocked(&dataFrame{})
+				if err != nil {
+					c.closeWithErrorLocked(err, false)
+					break
+				}
+			}
+			datarequired = 0
+		}
+		if c.cwriter.buffer.Buffered() > 0 {
+			err := c.cwriter.buffer.Flush()
+			if err != nil {
+				c.closeWithErrorLocked(err, false)
+				break
+			}
+		}
+		if !ok {
+			break
+		}
+		if writesAtStart != c.cwriter.writes || timeout != c.remoteInactivityTimeout {
+			// Either we have written some data on the wire, which implies we
+			// have dropped the lock for some time, or inactivity timeout has
+			// changed and we need to restart the timer.
+			if writesAtStart == c.cwriter.writes {
+				// Change of inactivity timeout when we don't have any data to
+				// write is dangerous, since we don't know how much time in
+				// current timer has elapsed and might miss a deadline. Make
+				// sure to write some data as soon as possible.
+				datarequired++
+			}
+			timeout = c.remoteInactivityTimeout
+			t.Reset(2 * timeout / 3)
+		}
+		if writesAtEnd != c.cwriter.writes || datarequired > 0 {
+			// When writeOutgoingFramesLocked exits all our queues are drained
+			// However if flush unlocked the lock we have to check them again
+			continue
+		}
+		// Wait until we have something to write
+		c.writeready.Wait()
+	}
 	for c.closeblocked > 0 {
 		c.closeunblocked.Wait()
 	}
