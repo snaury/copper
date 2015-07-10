@@ -124,6 +124,12 @@ class RawConn(object):
         spawn(self._read_loop)
         spawn(self._write_loop)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type=None, exc_val=None, exc_tb=None):
+        self.close()
+
     def _close_with_error(self, error, closed):
         if self._failure is None:
             self._failure = error
@@ -136,6 +142,9 @@ class RawConn(object):
         if closed:
             for stream in self._streams.values():
                 stream.close_with_error(error)
+
+    def close(self):
+        self._close_with_error(ConnectionClosedError(), True)
 
     def sync(self):
         if self._failure is not None:
