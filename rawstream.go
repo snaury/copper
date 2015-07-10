@@ -392,55 +392,37 @@ func (s *rawStream) outgoingSendOpen() bool {
 
 func (s *rawStream) outgoingSendReset() bool {
 	if s.flags&flagStreamNeedReset != 0 {
-		// we have a RESET frame pending
+		// there's a RESET frame pending
 		if s.flags&flagStreamBothEOF == flagStreamBothEOF {
 			// both sides already closed, don't need to send anything
+			s.flags &^= flagStreamNeedReset
+			return false
+		}
+		if s.flags&flagStreamSeenEOF == 0 && s.flags&flagStreamSentReset == 0 {
+			// haven't seen EOF yet, so send RESET as soon as possible
+			return true
+		}
+		if s.reseterror == nil || s.reseterror == ECLOSED {
+			// without an error it's better to send DATA with EOF flag set
+			s.flags &^= flagStreamNeedReset
 			return false
 		}
 		if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
-			// we need to send EOF too (closing both sides)
-			if s.reseterror == nil || s.reseterror == ECLOSED {
-				// if the error was ECLOSED we may send DATA with EOF
-				if s.flags&flagStreamSeenEOF == 0 {
-					// but we haven't seen EOF yet, so we need RESET
-					return true
-				}
-				s.flags &^= flagStreamNeedReset
-				return false
-			}
+			// need to send EOF now and close the write side
 			return true
 		}
-		if s.flags&flagStreamSeenEOF != 0 {
-			// we have seen EOF, so this RESET is for the write side only
-			if s.reseterror == nil || s.reseterror == ECLOSED {
-				// if the error was ECLOSED we no longer need RESET
-				s.flags &^= flagStreamNeedReset
-				return false
-			}
-			// we must delay RESET until we need to send EOF
-			return false
-		}
-		if s.flags&flagStreamSentReset != 0 {
-			// we have already sent RESET for the read side
-			return false
-		}
-		return true
+		// must delay RESET until we need to send EOF
+		return false
 	}
 	return false
 }
 
 func (s *rawStream) outgoingSendEOF() bool {
 	if s.writebuf.len() == s.writewire && s.flags&flagStreamNeedEOF != 0 {
-		// we have no data and need to send EOF
+		// there's no data and a EOF is pending
 		if s.flags&flagStreamNeedReset != 0 {
-			// however there's an active reset as well
-			if s.reseterror == nil || s.reseterror == ECLOSED {
-				// errors like ECLOSED are translated into io.EOF, so
-				// it's ok to send EOF even if we have a pending RESET.
-				return true
-			}
-			// must send EOF with a RESET
-			return false
+			// send EOF only when pending RESET is without an error
+			return s.reseterror == nil || s.reseterror == ECLOSED
 		}
 		return true
 	}
@@ -528,8 +510,8 @@ func (s *rawStream) closeWithErrorLocked(err error, closed bool) error {
 		s.acked.Broadcast()
 	}
 	if closed {
-		s.resetBothSides()
 		s.clearReadBuffer()
+		s.resetBothSides()
 	}
 	return preverror
 }
@@ -648,8 +630,8 @@ func (s *rawStream) CloseRead() error {
 	defer s.owner.lock.Unlock()
 	preverror := s.readerror
 	s.setReadError(ECLOSED)
-	s.resetReadSide()
 	s.clearReadBuffer()
+	s.resetReadSide()
 	return preverror
 }
 
@@ -661,8 +643,8 @@ func (s *rawStream) CloseReadError(err error) error {
 	defer s.owner.lock.Unlock()
 	preverror := s.readerror
 	s.setReadError(err)
-	s.resetReadSide()
 	s.clearReadBuffer()
+	s.resetReadSide()
 	return preverror
 }
 
