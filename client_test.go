@@ -35,6 +35,7 @@ func runClientServer(clientfunc func(conn Client), serverfunc func(conn Client))
 	defer server.Close()
 
 	serverFinished := make(chan int, 1)
+	clientFinished := make(chan int, 1)
 
 	go func() {
 		defer close(serverFinished)
@@ -43,13 +44,15 @@ func runClientServer(clientfunc func(conn Client), serverfunc func(conn Client))
 		serverfunc(conn)
 	}()
 
-	func() {
+	go func() {
+		defer close(clientFinished)
 		conn := connectClient(addr)
 		defer conn.Close()
 		clientfunc(conn)
 	}()
 
 	<-serverFinished
+	<-clientFinished
 }
 
 func TestPublishChanges(t *testing.T) {
@@ -83,20 +86,20 @@ func TestPublishChanges(t *testing.T) {
 
 			changes, err := client.ServiceChanges()
 			if err != nil {
-				log.Fatalf("client: ServiceChanges: %s", err)
+				t.Fatalf("client: ServiceChanges: %s", err)
 			}
 			defer changes.Stop()
 
 			changes1, err := changes.Read()
 			if err != nil || !reflect.DeepEqual(changes1, expectedChanges1) {
-				log.Fatalf("client: changes(1): %#v, %v", changes1, err)
+				t.Fatalf("client: changes(1): %#v, %v", changes1, err)
 			}
 
 			unpublish <- 1
 
 			changes2, err := changes.Read()
 			if err != nil || !reflect.DeepEqual(changes2, expectedChanges2) {
-				log.Fatalf("client: changes(2): %#v, %v", changes2, err)
+				t.Fatalf("client: changes(2): %#v, %v", changes2, err)
 			}
 		},
 		func(server Client) {
@@ -112,7 +115,7 @@ func TestPublishChanges(t *testing.T) {
 				nil,
 			)
 			if err != nil {
-				log.Fatalf("server: Publish: %s", err)
+				t.Fatalf("server: Publish: %s", err)
 			}
 			defer pub.Stop()
 
@@ -123,7 +126,7 @@ func TestPublishChanges(t *testing.T) {
 
 			err = pub.Stop()
 			if err != nil {
-				log.Fatalf("server: Unpublish: %s", err)
+				t.Fatalf("server: Unpublish: %s", err)
 			}
 		},
 	)
@@ -179,7 +182,7 @@ func TestPublishPriorities(t *testing.T) {
 
 			changes, err := client.ServiceChanges()
 			if err != nil {
-				log.Fatalf("client: ServiceChanges: %s", err)
+				t.Fatalf("client: ServiceChanges: %s", err)
 			}
 			defer changes.Stop()
 
@@ -189,7 +192,7 @@ func TestPublishPriorities(t *testing.T) {
 
 			changes1, err := changes.Read()
 			if err != nil || !reflect.DeepEqual(changes1, expectedChanges1) {
-				log.Fatalf("client: changes(1): %#v, %v", changes1, err)
+				t.Fatalf("client: changes(1): %#v, %v", changes1, err)
 			}
 
 			publish2 <- 1
@@ -199,7 +202,7 @@ func TestPublishPriorities(t *testing.T) {
 
 			changes2, err := changes.Read()
 			if err != nil || !reflect.DeepEqual(changes2, expectedChanges2) {
-				log.Fatalf("client: changes(2): %#v, %v", changes2, err)
+				t.Fatalf("client: changes(2): %#v, %v", changes2, err)
 			}
 
 			unpublish1 <- 1
@@ -209,7 +212,7 @@ func TestPublishPriorities(t *testing.T) {
 
 			changes3, err := changes.Read()
 			if err != nil || !reflect.DeepEqual(changes3, expectedChanges3) {
-				log.Fatalf("client: changes(3): %#v, %v", changes3, err)
+				t.Fatalf("client: changes(3): %#v, %v", changes3, err)
 			}
 
 			unpublish2 <- 1
@@ -219,7 +222,7 @@ func TestPublishPriorities(t *testing.T) {
 
 			changes4, err := changes.Read()
 			if err != nil || !reflect.DeepEqual(changes4, expectedChanges4) {
-				log.Fatalf("client: changes(4): %#v, %v", changes4, err)
+				t.Fatalf("client: changes(4): %#v, %v", changes4, err)
 			}
 		},
 		func(server Client) {
@@ -238,7 +241,7 @@ func TestPublishPriorities(t *testing.T) {
 				nil,
 			)
 			if err != nil {
-				log.Fatalf("server: Publish(1): %s", err)
+				t.Fatalf("server: Publish(1): %s", err)
 			}
 			defer pub1.Stop()
 
@@ -257,7 +260,7 @@ func TestPublishPriorities(t *testing.T) {
 				nil,
 			)
 			if err != nil {
-				log.Fatalf("server: Publish(2): %s", err)
+				t.Fatalf("server: Publish(2): %s", err)
 			}
 			defer pub2.Stop()
 
@@ -268,7 +271,7 @@ func TestPublishPriorities(t *testing.T) {
 
 			err = pub1.Stop()
 			if err != nil {
-				log.Fatalf("server: Unpublish(1): %s", err)
+				t.Fatalf("server: Unpublish(1): %s", err)
 			}
 
 			unpublished1 <- 1
@@ -278,7 +281,7 @@ func TestPublishPriorities(t *testing.T) {
 
 			err = pub2.Stop()
 			if err != nil {
-				log.Fatalf("server: Unpublish(2): %s", err)
+				t.Fatalf("server: Unpublish(2): %s", err)
 			}
 
 			unpublished2 <- 1

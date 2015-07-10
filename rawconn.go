@@ -52,8 +52,8 @@ type rawConn struct {
 	settingsAcks            int
 	settingsCallbacks       []func(error)
 	outgoingAcks            map[uint32]uint32
-	outgoingCtrl            map[uint32]struct{}
-	outgoingData            map[uint32]struct{}
+	outgoingCtrl            map[*rawStream]struct{}
+	outgoingData            map[*rawStream]struct{}
 	outgoingFailure         error
 	writeleft               int
 	writeready              sync.Cond
@@ -86,8 +86,8 @@ func NewRawConn(conn net.Conn, handler Handler, isserver bool) RawConn {
 		nextnewstream:           1,
 		pingResults:             make(map[int64][]chan<- error),
 		outgoingAcks:            make(map[uint32]uint32),
-		outgoingCtrl:            make(map[uint32]struct{}),
-		outgoingData:            make(map[uint32]struct{}),
+		outgoingCtrl:            make(map[*rawStream]struct{}),
+		outgoingData:            make(map[*rawStream]struct{}),
 		writeleft:               defaultConnWindowSize,
 		localConnWindowSize:     defaultConnWindowSize,
 		remoteConnWindowSize:    defaultConnWindowSize,
@@ -244,11 +244,9 @@ func (c *rawConn) Ping(value int64) <-chan error {
 		close(result)
 		return result
 	}
-	if len(c.pingQueue) == 0 {
-		c.wakeupLocked()
-	}
 	c.pingResults[value] = append(c.pingResults[value], result)
 	c.pingQueue = append(c.pingQueue, value)
+	c.wakeupLocked()
 	return result
 }
 
@@ -271,38 +269,27 @@ func (c *rawConn) Open(target int64) (Stream, error) {
 		}
 		c.nextnewstream += 2
 	}
-	stream := newOutgoingStream(c, streamID, target, c.localStreamWindowSize, c.remoteStreamWindowSize)
-	c.streams[streamID] = stream
-	c.addOutgoingCtrlLocked(stream.streamID)
-	return stream, nil
+	return newOutgoingStream(c, streamID, target, c.localStreamWindowSize, c.remoteStreamWindowSize), nil
 }
 
 func (c *rawConn) addOutgoingAckLocked(streamID uint32, increment int) {
 	if !c.closed && increment > 0 {
-		wakeup := len(c.outgoingAcks) == 0
 		c.outgoingAcks[streamID] += uint32(increment)
-		if wakeup {
-			c.wakeupLocked()
-		}
+		c.wakeupLocked()
 	}
 }
 
-func (c *rawConn) addOutgoingCtrlLocked(streamID uint32) {
+func (c *rawConn) addOutgoingCtrlLocked(stream *rawStream) {
 	if !c.closed {
-		wakeup := len(c.outgoingCtrl) == 0
-		c.outgoingCtrl[streamID] = struct{}{}
-		if wakeup {
-			c.wakeupLocked()
-		}
+		c.outgoingCtrl[stream] = struct{}{}
+		c.wakeupLocked()
 	}
 }
 
-func (c *rawConn) addOutgoingDataLocked(streamID uint32) {
+func (c *rawConn) addOutgoingDataLocked(stream *rawStream) {
 	if !c.closed {
-		if len(c.outgoingData) == 0 && c.writeleft > 0 {
-			c.wakeupLocked()
-		}
-		c.outgoingData[streamID] = struct{}{}
+		c.outgoingData[stream] = struct{}{}
+		c.wakeupLocked()
 	}
 }
 
@@ -316,14 +303,16 @@ func (c *rawConn) handleStream(stream Stream) {
 	c.handler.Handle(stream)
 }
 
-func (c *rawConn) cleanupStreamLocked(s *rawStream) {
-	if s.isFullyClosed() && c.streams[s.streamID] == s {
+func (c *rawConn) removeStreamLocked(stream *rawStream) {
+	if c.streams[stream.streamID] == stream {
 		// connection is fully closed and must be forgotten
-		delete(c.streams, s.streamID)
-		if isServerStreamID(s.streamID) == c.isserver {
+		delete(c.streams, stream.streamID)
+		delete(c.outgoingCtrl, stream)
+		delete(c.outgoingData, stream)
+		if isServerStreamID(stream.streamID) == c.isserver {
 			// this is our stream id, it is no longer in use, but we must wait
 			// for confirmation first before reusing it
-			c.deadstreams[s.streamID] = struct{}{}
+			c.deadstreams[stream.streamID] = struct{}{}
 			if len(c.deadstreams) >= maxDeadStreams {
 				deadstreams := c.deadstreams
 				c.deadstreams = make(map[uint32]struct{})
@@ -335,10 +324,8 @@ func (c *rawConn) cleanupStreamLocked(s *rawStream) {
 
 func (c *rawConn) processPingFrameLocked(frame *pingFrame) error {
 	if (frame.flags & flagAck) == 0 {
-		if len(c.pingAcks) == 0 {
-			c.wakeupLocked()
-		}
 		c.pingAcks = append(c.pingAcks, frame.value)
+		c.wakeupLocked()
 	} else if results, ok := c.pingResults[frame.value]; ok {
 		result := results[0]
 		if len(results) > 1 {
@@ -376,7 +363,6 @@ func (c *rawConn) processOpenFrameLocked(frame *openFrame) error {
 		}
 	}
 	stream := newIncomingStream(c, frame, c.localStreamWindowSize, c.remoteStreamWindowSize)
-	c.streams[frame.streamID] = stream
 	if c.closed {
 		// we are closed and ignore valid OPEN frames
 		stream.closeWithErrorLocked(c.failure, true)
@@ -449,10 +435,8 @@ func (c *rawConn) processResetFrameLocked(frame *resetFrame) error {
 func (c *rawConn) processWindowFrameLocked(frame *windowFrame) error {
 	if frame.streamID == 0 {
 		if frame.flags&flagInc != 0 {
-			if len(c.outgoingData) > 0 && c.writeleft <= 0 {
-				c.wakeupLocked()
-			}
 			c.writeleft += int(frame.increment)
+			c.wakeupLocked()
 		}
 		return nil
 	}
@@ -699,36 +683,30 @@ writeloop:
 			return false
 		}
 		if len(c.outgoingCtrl) > 0 {
-			for streamID := range c.outgoingCtrl {
-				delete(c.outgoingCtrl, streamID)
-				stream := c.streams[streamID]
-				if stream != nil {
-					err := stream.writeOutgoingCtrlLocked()
-					if err != nil {
-						c.closeWithErrorLocked(err, false)
-						return false
-					}
-					if writes != c.cwriter.writes {
-						// data flush detected, restart
-						continue writeloop
-					}
+			for stream := range c.outgoingCtrl {
+				delete(c.outgoingCtrl, stream)
+				err := stream.writeOutgoingCtrlLocked()
+				if err != nil {
+					c.closeWithErrorLocked(err, false)
+					return false
+				}
+				if writes != c.cwriter.writes {
+					// data flush detected, restart
+					continue writeloop
 				}
 			}
 		}
 		if len(c.outgoingData) > 0 && c.writeleft > 0 {
-			for streamID := range c.outgoingData {
-				delete(c.outgoingData, streamID)
-				stream := c.streams[streamID]
-				if stream != nil {
-					err := stream.writeOutgoingDataLocked()
-					if err != nil {
-						c.closeWithErrorLocked(err, false)
-						return false
-					}
-					if writes != c.cwriter.writes {
-						// data flush detected, restart
-						continue writeloop
-					}
+			for stream := range c.outgoingData {
+				delete(c.outgoingData, stream)
+				err := stream.writeOutgoingDataLocked()
+				if err != nil {
+					c.closeWithErrorLocked(err, false)
+					return false
+				}
+				if writes != c.cwriter.writes {
+					// data flush detected, restart
+					continue writeloop
 				}
 			}
 		}
