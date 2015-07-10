@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import sys
 import time
 from gevent import spawn
 from gevent import Timeout
@@ -177,7 +178,9 @@ class RawConn(object):
             return
         try:
             self._handler(stream)
-        finally:
+        except:
+            stream.close_with_error(sys.exc_info()[1])
+        else:
             stream.close()
 
     def _remove_stream(self, stream):
