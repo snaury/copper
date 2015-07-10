@@ -150,6 +150,11 @@ func (c *rawConn) wakeupLocked() {
 func (c *rawConn) closeWithErrorLocked(err error, closed bool) error {
 	if err == nil {
 		err = ECONNCLOSED
+	} else if isTimeout(err) {
+		err = &copperError{
+			error: err,
+			code:  ECONNTIMEOUT,
+		}
 	}
 	preverror := c.failure
 	if !c.closed {

@@ -52,6 +52,8 @@ const (
 	EINVALIDSTREAM = ErrorCode(205)
 	// EUNKNOWNSTREAM is returned when stream does not exist
 	EUNKNOWNSTREAM = ErrorCode(206)
+	// ECONNTIMEOUT is returned when connection times out
+	ECONNTIMEOUT = ErrorCode(207)
 )
 
 var errorMessages = map[ErrorCode]string{
@@ -72,6 +74,7 @@ var errorMessages = map[ErrorCode]string{
 	EWINDOWOVERFLOW: "receive window overflow",
 	EINVALIDSTREAM:  "received invalid stream id",
 	EUNKNOWNSTREAM:  "received unknown stream id",
+	ECONNTIMEOUT:    "connection timed out",
 }
 
 var errorNames = map[ErrorCode]string{
@@ -92,6 +95,7 @@ var errorNames = map[ErrorCode]string{
 	EWINDOWOVERFLOW: "EWINDOWOVERFLOW",
 	EINVALIDSTREAM:  "EINVALIDSTREAM",
 	EUNKNOWNSTREAM:  "EUNKNOWNSTREAM",
+	ECONNTIMEOUT:    "ECONNTIMEOUT",
 }
 
 func (e ErrorCode) Error() string {
