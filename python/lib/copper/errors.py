@@ -55,7 +55,7 @@ class CopperError(Exception):
     def __str__(self):
         message = self.message
         if not message:
-            docstring = self.__type__.__doc__
+            docstring = self.__class__.__doc__
             if docstring:
                 message = docstring
             elif self.copper_error is not None:
@@ -129,3 +129,7 @@ class InvalidStreamError(CopperError):
 class UnknownStreamError(CopperError):
     """received unknown stream id"""
     copper_error = 206
+
+class ConnectionTimeoutError(CopperError):
+    """connection timed out"""
+    copper_error = 207
