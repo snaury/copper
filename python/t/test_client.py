@@ -14,6 +14,7 @@ def test_client():
                     assert stream.read(128) == 'Hello, world!'
                 oldconn, client._conn = client._conn, None
                 oldconn.close()
-                sleep(0.001)
+                with pytest.raises(ConnectionClosedError):
+                    oldconn.wait()
                 with sub.open() as stream:
                     assert stream.read(128) == 'Hello, world!'
