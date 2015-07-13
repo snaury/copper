@@ -161,7 +161,11 @@ func (c *rawConn) closeWithErrorLocked(err error, closed bool) error {
 		c.closed = true
 		c.failure = err
 		if c.outgoingFailure == nil {
-			c.outgoingFailure = err
+			if err == ECONNCLOSED {
+				c.outgoingFailure = ECONNSHUTDOWN
+			} else {
+				c.outgoingFailure = err
+			}
 		}
 		c.closedcond.Broadcast()
 		c.writeready.Broadcast()
@@ -419,7 +423,7 @@ func (c *rawConn) processResetFrameLocked(frame *resetFrame) error {
 			// this is a reserved stream id
 			if c.outgoingFailure == nil {
 				// send ECONNCLOSED unless other error is pending
-				c.outgoingFailure = ECONNCLOSED
+				c.outgoingFailure = ECONNSHUTDOWN
 			}
 			return frame.err
 		}

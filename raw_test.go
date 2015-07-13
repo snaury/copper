@@ -111,8 +111,8 @@ func TestRawConnStreams(t *testing.T) {
 		serverReady <- 1
 
 		err = server.Wait()
-		if err != ECONNCLOSED {
-			t.Fatalf("server: Wait: expected ECONNCLOSED, got: %v", err)
+		if err != ECONNSHUTDOWN {
+			t.Fatalf("server: Wait: expected ECONNSHUTDOWN, got: %v", err)
 		}
 	}()
 	go func() {
@@ -563,7 +563,7 @@ func TestRawStreamConnClose(t *testing.T) {
 			t.Fatalf("server: Write: %d, %v", n, err)
 		}
 		n, err = stream.WaitAck()
-		if n != 5 || err != ECONNCLOSED {
+		if n != 5 || err != ECONNSHUTDOWN {
 			t.Fatalf("server: WaitAck: %d, %v", n, err)
 		}
 	}), func(client RawConn) {
