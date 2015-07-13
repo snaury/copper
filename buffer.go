@@ -124,7 +124,7 @@ func (b *buffer) current() []byte {
 		end -= cap(b.buf)
 		if len(b.buf)*2 > cap(b.buf) {
 			// there's not enough space to move data around
-			buf := make([]byte, cap(b.buf))
+			buf := make([]byte, cap(b.buf)*2)
 			n := copy(buf, b.buf[b.off:cap(b.buf)])
 			copy(buf[n:], b.buf[:end])
 			b.buf = buf[:len(b.buf)]
