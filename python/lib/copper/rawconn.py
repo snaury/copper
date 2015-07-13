@@ -37,6 +37,19 @@ __all__ = [
     'RawConn',
 ]
 
+class Condition(object):
+    def __init__(self):
+        self._event = Event()
+
+    def broadcast(self):
+        try:
+            self._event.set()
+        finally:
+            self._event.clear()
+
+    def wait(self):
+        self._event.wait()
+
 class _RawConnReader(object):
     def __init__(self, sock, bufsize=4096):
         self.sock = sock
@@ -437,10 +450,10 @@ class RawStream(object):
         self._need_open = False
         self._need_eof = False
         self._need_reset = False
-        self._read_event = Event()
-        self._write_event = Event()
-        self._flush_event = Event()
-        self._ack_event = Event()
+        self._read_event = Condition()
+        self._write_event = Condition()
+        self._flush_event = Condition()
+        self._ack_event = Condition()
         self._conn._streams[stream_id] = self
         if open_frame is None:
             self._need_open = True
@@ -484,8 +497,8 @@ class RawStream(object):
         self._writebuf = ''
         self._writefail += self._writenack
         self._writenack = 0
-        self._flush_event.set()
-        self._ack_event.set()
+        self._flush_event.broadcast()
+        self._ack_event.broadcast()
         if self._need_eof:
             self._schedule_ctrl()
 
@@ -559,7 +572,7 @@ class RawStream(object):
                 data,
             ))
             if not self._writebuf:
-                self._flush_event.set()
+                self._flush_event.broadcast()
         if self._active_reset():
             error = self._reseterror
             if error is None:
@@ -600,7 +613,7 @@ class RawStream(object):
         elif self._active_reset():
             self._schedule_ctrl()
         if not self._writebuf:
-            self._flush_event.set()
+            self._flush_event.broadcast()
 
     def _process_data_frame(self, frame):
         if self._seen_eof:
@@ -610,7 +623,7 @@ class RawStream(object):
         if frame.data:
             if self._readerror is None:
                 self._readbuf += frame.data
-                self._read_event.set()
+                self._read_event.broadcast()
             self._readleft -= len(frame.data)
         if frame.flags & FLAG_FIN:
             self._seen_eof = True
@@ -633,7 +646,7 @@ class RawStream(object):
             raise InvalidFrameError('stream 0x%08x received invalid increment %d' % (self._stream_id, frame.increment))
         if frame.flags & FLAG_ACK:
             self._writenack -= frame.increment
-            self._ack_event.set()
+            self._ack_event.broadcast()
             self._cleanup()
         if frame.flags & FLAG_INC:
             if self._writeerror is None:
@@ -646,14 +659,14 @@ class RawStream(object):
     def _set_read_error(self, error):
         if self._readerror is None:
             self._readerror = error
-            self._read_event.set()
+            self._read_event.broadcast()
 
     def _set_write_error(self, error):
         if self._writeerror is None:
             self._writeerror = error
             self._writeleft = 0
             self._need_eof = True
-            self._write_event.set()
+            self._write_event.broadcast()
             if not self._writebuf:
 			    # We had no pending data, but now we need to send a EOF, which
                 # can only be done in a ctrl phase, so make sure to schedule it.
@@ -678,8 +691,8 @@ class RawStream(object):
             self._reseterror = error
             self._set_read_error(error)
             self._set_write_error(error)
-            self._flush_event.set()
-            self._ack_event.set()
+            self._flush_event.broadcast()
+            self._ack_event.broadcast()
         if closed:
             self._clear_read_buffer()
             self._reset_both_sides()
@@ -711,7 +724,6 @@ class RawStream(object):
                 if isinstance(self._readerror, EOFError):
                     return ''
                 raise self._readerror
-            self._read_event.clear()
             self._read_event.wait()
         return self._readbuf
 
@@ -733,7 +745,6 @@ class RawStream(object):
                 if isinstance(self._readerror, EOFError):
                     return ''
                 raise self._readerror
-            self._read_event.clear()
             self._read_event.wait()
         if n > len(self._readbuf):
             data, self._readbuf = self._readbuf, ''
@@ -759,7 +770,6 @@ class RawStream(object):
 
     def write_some(self, data):
         while self._writeerror is None and self._writeleft <= 0:
-            self._write_event.clear()
             self._write_event.wait()
         if self._writeerror is not None:
             raise self._writeerror
@@ -777,8 +787,15 @@ class RawStream(object):
         while self._writebuf:
             if self._reseterror is not None:
                 break
-            self._flush_event.clear()
             self._flush_event.wait()
+        if self._writeerror is not None:
+            raise self._writeerror
+
+    def wait_ack(self):
+        while self._writenack + len(self._writebuf) > 0:
+            if self._reseterror is not None:
+                break
+            self._ack_event.wait()
         if self._writeerror is not None:
             raise self._writeerror
 
