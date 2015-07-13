@@ -24,7 +24,9 @@ const (
 // RawConn is a multiplexed connection implementing the copper protocol
 type RawConn interface {
 	Wait() error
+	WaitClosed() error
 	Close() error
+	Shutdown() error
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
 	Sync() <-chan error
@@ -40,6 +42,9 @@ type rawConn struct {
 	isserver                bool
 	closed                  bool
 	closedcond              sync.Cond
+	shutdown                bool
+	waitgroup               sync.WaitGroup
+	handlegroup             sync.WaitGroup
 	failure                 error
 	handler                 Handler
 	streams                 map[uint32]*rawStream
@@ -108,6 +113,7 @@ func NewRawConn(conn net.Conn, handler Handler, isserver bool) RawConn {
 	c.readunblocked.L = &c.lock
 	c.writeunblocked.L = &c.lock
 	c.closeunblocked.L = &c.lock
+	c.waitgroup.Add(2)
 	go c.readloop()
 	go c.writeloop()
 	return c
@@ -185,6 +191,12 @@ func (c *rawConn) closeWithError(err error) error {
 }
 
 func (c *rawConn) Wait() error {
+	err := c.WaitClosed()
+	c.waitgroup.Wait()
+	return err
+}
+
+func (c *rawConn) WaitClosed() error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	for !c.closed {
@@ -195,6 +207,21 @@ func (c *rawConn) Wait() error {
 
 func (c *rawConn) Close() error {
 	return c.closeWithError(ECONNCLOSED)
+}
+
+func (c *rawConn) Shutdown() error {
+	func() {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+		c.shutdown = true
+	}()
+	c.handlegroup.Wait()
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.closed {
+		return c.failure
+	}
+	return nil
 }
 
 func (c *rawConn) LocalAddr() net.Addr {
@@ -216,11 +243,13 @@ func (c *rawConn) Sync() <-chan error {
 	}
 	deadstreams := c.deadstreams
 	c.deadstreams = make(map[uint32]struct{})
+	c.waitgroup.Add(1)
 	go c.syncDeadStreams(deadstreams, result)
 	return result
 }
 
 func (c *rawConn) syncDeadStreams(deadstreams map[uint32]struct{}, result chan<- error) {
+	defer c.waitgroup.Done()
 	err := <-c.Ping(time.Now().UnixNano())
 	if err == nil {
 		// receiving a successful response to ping proves than all frames
@@ -303,6 +332,8 @@ func (c *rawConn) addOutgoingDataLocked(stream *rawStream) {
 }
 
 func (c *rawConn) handleStream(stream Stream) {
+	defer c.waitgroup.Done()
+	defer c.handlegroup.Done()
 	if c.handler == nil {
 		// This connection does not support incoming streams
 		stream.CloseWithError(ENOTARGET)
@@ -325,6 +356,7 @@ func (c *rawConn) removeStreamLocked(stream *rawStream) {
 			if len(c.deadstreams) >= maxDeadStreams {
 				deadstreams := c.deadstreams
 				c.deadstreams = make(map[uint32]struct{})
+				c.waitgroup.Add(1)
 				go c.syncDeadStreams(deadstreams, nil)
 			}
 		}
@@ -374,9 +406,20 @@ func (c *rawConn) processOpenFrameLocked(frame *openFrame) error {
 	stream := newIncomingStream(c, frame, c.localStreamWindowSize, c.remoteStreamWindowSize)
 	if c.closed {
 		// we are closed and ignore valid OPEN frames
-		stream.closeWithErrorLocked(c.failure, true)
+		err := c.failure
+		if err == nil {
+			err = ECONNCLOSED
+		}
+		stream.closeWithErrorLocked(err, true)
 		return nil
 	}
+	if c.shutdown {
+		// we are shutting down and should close incoming streams
+		stream.closeWithErrorLocked(ECONNSHUTDOWN, true)
+		return nil
+	}
+	c.waitgroup.Add(1)
+	c.handlegroup.Add(1)
 	go c.handleStream(stream)
 	if len(frame.data) > 0 {
 		c.addOutgoingAckLocked(0, len(frame.data))
@@ -576,6 +619,7 @@ func (c *rawConn) failEverything() {
 }
 
 func (c *rawConn) readloop() {
+	defer c.waitgroup.Done()
 	var scratch []byte
 	for {
 		rawFrame, err := c.readFrame(scratch)
@@ -725,6 +769,7 @@ writeloop:
 }
 
 func (c *rawConn) writeloop() {
+	defer c.waitgroup.Done()
 	defer c.conn.Close()
 
 	c.lock.Lock()

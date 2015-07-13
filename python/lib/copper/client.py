@@ -148,6 +148,7 @@ class CopperClient(object):
     def __init__(self, endpoint):
         self._conn = None
         self._closed = False
+        self._shutdown = False
         self._endpoint = _validate_endpoint(endpoint)
         self._connected_event = Condition()
         self._next_target_id = 1
@@ -163,7 +164,7 @@ class CopperClient(object):
         self.close()
 
     def _connect_loop(self):
-        while not self._closed:
+        while not self._closed and not self._shutdown:
             try:
                 sock = _do_connect(self._endpoint)
             except:
@@ -177,7 +178,7 @@ class CopperClient(object):
                 self._reregister(conn)
                 self._conn = conn
                 self._connected_event.broadcast()
-                self._conn.wait()
+                conn.wait()
             except ConnectionClosedError:
                 pass
             except:
@@ -230,10 +231,12 @@ class CopperClient(object):
         handler(stream)
 
     def wait_connected(self):
-        while not self._closed and self._conn is None:
+        while not self._closed and self._conn is None and not self._shutdown:
             self._connected_event.wait()
         if self._closed:
             raise RuntimeError('connection is closed')
+        if self._conn is None and self._shutdown:
+            raise RuntimeError('connection has been shut down')
 
     def close(self):
         if not self._closed:
@@ -241,6 +244,13 @@ class CopperClient(object):
             self._connected_event.broadcast()
             if self._conn is not None:
                 self._conn.close()
+
+    def shutdown(self):
+        self._shutdown = True
+        if self._conn is None:
+            self._connected_event.broadcast()
+        else:
+            self._conn.shutdown()
 
     def subscribe(self, *args, **kwargs):
         if len(args) == 0:

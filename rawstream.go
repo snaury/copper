@@ -320,6 +320,10 @@ func (s *rawStream) writeOutgoingCtrlLocked() error {
 			// of those cases the error is in readerror.
 			reset = s.readerror
 		}
+		if reset == ECONNCLOSED {
+			// Instead of ECONNCLOSED remote should receive ECONNSHUTDOWN
+			reset = ECONNSHUTDOWN
+		}
 		if s.writebuf.len() == 0 && s.flags&flagStreamNeedEOF != 0 {
 			// This RESET closes both sides of the stream, otherwise it only
 			// closes the read side and write side is delayed until we need to

@@ -123,6 +123,13 @@ type Client interface {
 
 	// Close closes the connection to the server
 	Close() error
+
+	// Shutdown stops accepting new streams and returns when all active handlers
+	// finish processing their requests. It does not affect outgoing streams in
+	// any way. The caller should unpublish all services first, otherwise it
+	// might be very confusing for clients to get ECONNSHUTDOWN for requests
+	// to an active publication.
+	Shutdown() error
 }
 
 // Server interface allows you to work with an in-process copper server

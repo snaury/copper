@@ -173,7 +173,7 @@ func (peer *serverPeer) serveClient(client *clientConn) {
 func (peer *serverPeer) listenChanges(client *clientConn) bool {
 	stream, err := client.ServiceChanges()
 	if err != nil {
-		if err != ECONNCLOSED {
+		if err != ECONNCLOSED && err != ECONNSHUTDOWN {
 			log.Printf("peer changes stream: %s", err)
 		}
 		return false
@@ -182,7 +182,7 @@ func (peer *serverPeer) listenChanges(client *clientConn) bool {
 	for {
 		changes, err := stream.Read()
 		if err != nil {
-			if err == ECONNCLOSED {
+			if err == ECONNCLOSED || err == ECONNSHUTDOWN {
 				return false
 			}
 			if err != io.EOF {

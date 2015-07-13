@@ -113,6 +113,8 @@ class RawConn(object):
         self._handler = handler
         self._reader = _RawConnReader(sock)
         self._writer = _RawConnWriter(sock)
+        self._closed = False
+        self._shutdown = False
         self._failure = None
         self._failure_out = None
         self._close_ready = Event()
@@ -136,17 +138,47 @@ class RawConn(object):
         self._remote_conn_window = DEFAULT_CONN_WINDOW
         self._remote_stream_window = DEFAULT_STREAM_WINDOW
         self._writeleft = self._remote_conn_window
-        spawn(self._read_loop)
-        spawn(self._write_loop)
+        self._active_workers = 0
+        self._active_handlers = 0
+        self._workers_finished = Event()
+        self._handlers_finished = Event()
+        self._spawn(self._read_loop)
+        self._spawn(self._write_loop)
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type=None, exc_val=None, exc_tb=None):
         self.close()
+        self._workers_finished.wait()
+
+    def _spawn(self, *args, **kwargs):
+        g = spawn(*args, **kwargs)
+        g.rawlink(self._worker_finished)
+        self._active_workers += 1
+        self._workers_finished.clear()
+        return g
+
+    def _spawn_handler(self, *args, **kwargs):
+        g = self._spawn(*args, **kwargs)
+        g.rawlink(self._handler_finished)
+        self._active_handlers += 1
+        self._handlers_finished.clear()
+        return g
+
+    def _worker_finished(self, g):
+        self._active_workers -= 1
+        if self._active_workers == 0:
+            self._workers_finished.set()
+
+    def _handler_finished(self, g):
+        self._active_handlers -= 1
+        if self._active_handlers == 0:
+            self._handlers_finished.set()
 
     def _close_with_error(self, error, closed):
-        if self._failure is None:
+        if not self._closed:
+            self._closed = True
             self._failure = error
             if self._failure_out is None:
                 if isinstance(error, ConnectionClosedError):
@@ -157,24 +189,35 @@ class RawConn(object):
             self._write_ready.set()
             # Don't send any pings that haven't been sent already
             self._ping_reqs = []
-        if closed:
-            for stream in self._streams.values():
-                stream.close_with_error(error)
+        for stream in self._streams.values():
+            stream._close_with_error(error, closed)
 
     def close(self):
         self._close_with_error(ConnectionClosedError(), True)
 
+    def shutdown(self):
+        self._shutdown = True
+        self._handlers_finished.wait()
+        if self._closed:
+            raise self._failure
+
     def wait(self):
-        while self._failure is None:
+        while not self._closed:
+            self._close_ready.wait()
+        self._workers_finished.wait()
+        raise self._failure
+
+    def wait_closed(self):
+        while not self._closed:
             self._close_ready.wait()
         raise self._failure
 
     def sync(self):
-        if self._failure is not None:
+        if self._closed:
             raise self._failure
         if self._deadstreams:
             deadstreams, self._deadstreams = self._deadstreams, set()
-            g = spawn(self._sync_dead_streams, deadstreams)
+            g = self._spawn(self._sync_dead_streams, deadstreams)
             return g.get()
 
     def _sync_dead_streams(self, deadstreams):
@@ -182,7 +225,7 @@ class RawConn(object):
         self._freestreams.update(deadstreams)
 
     def ping(self, value):
-        if self._failure is not None:
+        if self._closed:
             raise self._failure
         waiter = Waiter()
         waiters = self._ping_waiters.get(value)
@@ -195,7 +238,7 @@ class RawConn(object):
         return waiter.get()
 
     def open(self, target_id):
-        if self._failure is not None:
+        if self._closed:
             raise self._failure
         if self._freestreams:
             stream_id = self._freestreams.pop()
@@ -226,7 +269,7 @@ class RawConn(object):
                 self._deadstreams.add(stream_id)
                 if len(self._deadstreams) >= MAX_DEAD_STREAMS:
                     deadstreams, self._deadstreams = self._deadstreams, set()
-                    spawn(self._sync_dead_streams, deadstreams)
+                    self._spawn(self._sync_dead_streams, deadstreams)
 
     def _process_ping_frame(self, frame):
         if frame.flags & FLAG_ACK:
@@ -253,11 +296,15 @@ class RawConn(object):
         if len(frame.data) > self._local_conn_window:
             raise WindowOverflowError('stream 0x%08x opened with %d bytes, which is more than %d bytes window' % (frame.stream_id, len(frame.data), self._local_conn_window))
         stream = RawStream(self, frame.stream_id, frame.target_id, self._local_stream_window, self._remote_stream_window, frame)
-        if self._failure is not None:
+        if self._closed:
             # We are closed and ignore valid OPEN frames
             stream.close_with_error(self._failure)
             return
-        spawn(self._handle_stream, stream)
+        if self._shutdown:
+            # We are shutting down and close new streams
+            stream.close_with_error(ConnectionShutdownError())
+            return
+        self._spawn_handler(self._handle_stream, stream)
         if len(frame.data) > 0:
             self._add_window_ack(0, len(frame.data))
 
@@ -269,7 +316,7 @@ class RawConn(object):
         stream = self._streams.get(frame.stream_id)
         if stream is None:
             raise InvalidStreamError("stream 0x%08x cannot be found" % (frame.stream_id,))
-        if self._failure is not None:
+        if self._closed:
             # We are closed and ignore valid DATA frames
             return
         stream._process_data_frame(frame)
@@ -285,7 +332,7 @@ class RawConn(object):
         if stream is None:
             # It's ok to receive RESET for a dead stream
             return
-        if self._failure is not None:
+        if self._closed:
             # We ar eclosed and ignore valid RESET frames
             return
         stream._process_reset_frame(frame)
@@ -594,6 +641,8 @@ class RawStream(object):
             error = self._reseterror
             if error is None:
                 error = self._readerror
+            if isinstance(error, ConnectionClosedError):
+                error = ConnectionShutdownError()
             if not self._writebuf and self._need_eof:
                 self._need_reset = False
                 self._need_eof = False
