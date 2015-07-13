@@ -6,6 +6,7 @@ from gevent import Timeout
 from gevent.hub import Waiter
 from gevent.hub import get_hub
 from gevent.event import Event
+from gevent.socket import EBADF, error as socket_error
 from .frames import (
     FLAG_FIN,
     FLAG_ACK,
@@ -23,6 +24,7 @@ from .errors import (
     StreamClosedError,
     ConnectionClosedError,
     ConnectionTimeoutError,
+    ConnectionShutdownError,
     InvalidFrameError,
     InvalidStreamError,
     WindowOverflowError,
@@ -78,7 +80,7 @@ class _RawConnReader(object):
 
     def read_frame(self):
         frame = Frame.load(self)
-        #print 'READ: %r' % (frame,)
+        #print 'READ(%s): %r' % (self.sock.getsockname(), frame)
         return frame
 
 class _RawConnWriter(object):
@@ -102,7 +104,7 @@ class _RawConnWriter(object):
             self.buffer = self.buffer[n:]
 
     def write_frame(self, frame):
-        #print 'WRITE: %r' % (frame,)
+        #print 'WRITE(%s): %r' % (self.sock.getsockname(), frame)
         frame.dump(self)
 
 class RawConn(object):
@@ -146,8 +148,11 @@ class RawConn(object):
     def _close_with_error(self, error, closed):
         if self._failure is None:
             self._failure = error
-            if self._failure_out is not None:
-                self._failure_out = error
+            if self._failure_out is None:
+                if isinstance(error, ConnectionClosedError):
+                    self._failure_out = ConnectionShutdownError()
+                else:
+                    self._failure_out = error
             self._close_ready.set()
             self._write_ready.set()
             # Don't send any pings that haven't been sent already
@@ -158,6 +163,11 @@ class RawConn(object):
 
     def close(self):
         self._close_with_error(ConnectionClosedError(), True)
+
+    def wait(self):
+        while self._failure is None:
+            self._close_ready.wait()
+        raise self._failure
 
     def sync(self):
         if self._failure is not None:
@@ -269,7 +279,7 @@ class RawConn(object):
     def _process_reset_frame(self, frame):
         if frame.stream_id == 0:
             if self._failure_out is None:
-                self._failure_out = ConnectionClosedError()
+                self._failure_out = ConnectionShutdownError()
             raise frame.error
         stream = self._streams.get(frame.stream_id)
         if stream is None:
@@ -314,9 +324,11 @@ class RawConn(object):
                 if process is None:
                     raise InvalidFrameError('received an unsupported frame')
                 process(self, frame)
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
+            except:
+                e = sys.exc_info()[1]
+                if not isinstance(e, socket_error):
+                    import traceback
+                    traceback.print_exc()
                 self._close_with_error(e, False)
                 break
         # Nothing else will be read, clean up
@@ -426,9 +438,14 @@ class RawConn(object):
                 if initial_sent_marker is not self._writer.sent_marker:
                     # we have sent some data, restart the timer
                     nextdata = time.time() + INACTIVITY_TIMEOUT * 2 // 3
-            except Exception as e:
+            except:
+                e = sys.exc_info()[1]
+                if not isinstance(e, socket_error):
+                    import traceback
+                    traceback.print_exc()
                 self._close_with_error(e, False)
                 break
+        self._sock.close()
 
 class RawStream(object):
     def __init__(self, conn, stream_id, target_id, read_window, write_window, open_frame=None):
