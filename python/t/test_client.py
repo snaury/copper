@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import pytest
 from gevent import sleep
 from copper.errors import ConnectionClosedError

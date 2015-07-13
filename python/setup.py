@@ -29,7 +29,6 @@ setup(
     package_dir = {'': 'lib'},
     packages = ['copper'],
     install_requires = ['setuptools', 'protobuf'],
-    zip_safe = True,
     cmdclass = {
         'test': PyTest,
     },

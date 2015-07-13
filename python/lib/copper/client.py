@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import sys
 import struct
 from gevent import spawn, sleep

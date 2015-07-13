@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from copper.frames import (
     FLAG_FIN,
     FLAG_ACK,
