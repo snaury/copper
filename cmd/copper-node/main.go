@@ -18,14 +18,14 @@ const (
 	// used by mDNSResponder service, we currently use 5323.
 	defaultPort       = "5323"
 	defaultListenAddr = ":" + defaultPort
-	defaultConfigFile = "/etc/copperd.yaml"
+	defaultConfigFile = "/etc/copper-node.yaml"
 )
 
 func main() {
 	configFile := flag.String("config", "", "config filename")
 	flag.Parse()
 
-	var config CopperdConfig
+	var config CopperNodeConfig
 	if len(*configFile) == 0 && fileExists(defaultConfigFile) {
 		*configFile = defaultConfigFile
 	}

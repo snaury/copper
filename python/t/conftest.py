@@ -9,8 +9,7 @@ from shutil import rmtree
 from tempfile import mkdtemp
 
 SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-COPPERD_SRC = os.path.join(SRC_ROOT, 'cmd/copperd')
-COPPERD_BIN = os.path.join(SRC_ROOT, 'bin/copperd')
+COPPER_NODE_SRC = os.path.join(SRC_ROOT, 'cmd/copper-node')
 
 @pytest.yield_fixture
 def workdir():
@@ -21,14 +20,8 @@ def workdir():
         rmtree(path, True)
 
 @pytest.yield_fixture
-def copperd(workdir):
-    if not os.path.isfile(COPPERD_BIN):
-        try:
-            os.makedirs(os.path.dirname(COPPERD_BIN))
-        except OSError as e:
-            if e.errno != EEXIST:
-                raise
-        subprocess.check_call(['go', 'build', '-o', COPPERD_BIN], shell=False, cwd=COPPERD_SRC)
+def copper_node(workdir):
+    subprocess.check_call(['go', 'install'], shell=False, cwd=COPPER_NODE_SRC)
     sockpath = os.path.join(workdir, 'copper.sock')
     confpath = os.path.join(workdir, 'copper.conf')
     config = {
@@ -43,13 +36,13 @@ def copperd(workdir):
     with open(confpath, 'w') as f:
         # YAML parses valid JSON data
         json.dump(config, f)
-    p = subprocess.Popen([COPPERD_BIN, '-config', confpath], shell=False, cwd=workdir)
+    p = subprocess.Popen(['copper-node', '-config', confpath], shell=False, cwd=workdir)
     try:
         while not os.path.exists(sockpath):
             time.sleep(0.001)
             rc = p.poll()
             if rc is not None:
-                raise RuntimeError('copperd exited with status %r' % (rc,))
+                raise RuntimeError('copper-node exited with status %r' % (rc,))
         yield sockpath
     finally:
         if p.poll() is None:

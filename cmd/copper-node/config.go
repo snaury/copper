@@ -54,14 +54,14 @@ peerloop:
 	return result
 }
 
-// CopperdConfig is a parsed copperd config
-type CopperdConfig struct {
+// CopperNodeConfig is a parsed copper-node config
+type CopperNodeConfig struct {
 	Listen []ListenAddr `yaml:"listen"`
 
 	DCMap map[string]DataCenterPeers `yaml:"dcmap"`
 }
 
-func loadConfig(filename string) (config CopperdConfig) {
+func loadConfig(filename string) (config CopperNodeConfig) {
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
 		log.Fatalf("Failed to read %s: %#v", filename, err)

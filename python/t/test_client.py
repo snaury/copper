@@ -4,8 +4,8 @@ from gevent import sleep
 from copper.errors import ConnectionClosedError
 from copper.client import CopperClient
 
-def test_client(copperd):
-    with CopperClient(('unix', copperd)) as client:
+def test_client(copper_node):
+    with CopperClient(('unix', copper_node)) as client:
         def handler(stream):
             stream.write('Hello, world!')
         with client.publish('test:helloworld', handler):

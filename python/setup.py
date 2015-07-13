@@ -28,7 +28,8 @@ setup(
     description = 'Copper client library',
     package_dir = {'': 'lib'},
     packages = ['copper'],
-    install_requires = ['setuptools', 'protobuf'],
+    install_requires = ['setuptools', 'protobuf', 'gevent'],
+    tests_require = ['pytest'],
     cmdclass = {
         'test': PyTest,
     },
