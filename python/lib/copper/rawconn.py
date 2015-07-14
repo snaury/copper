@@ -70,7 +70,7 @@ class _RawConnReader(object):
         while len(self.buffer) < n:
             chunk = self.sock.recv(self.bufsize)
             if not chunk:
-                raise EOFError()
+                raise EOFError('read(%r) stopped short after %d bytes' % (n, len(self.buffer)))
             self.buffer += chunk
         if len(self.buffer) > n:
             result, self.buffer = self.buffer[:n], self.buffer[n:]
@@ -192,25 +192,25 @@ class RawConn(object):
         for stream in self._streams.values():
             stream._close_with_error(error, closed)
 
+    @property
+    def error(self):
+        if self._closed:
+            return self._failure
+        return None
+
     def close(self):
         self._close_with_error(ConnectionClosedError(), True)
 
     def shutdown(self):
         self._shutdown = True
         self._handlers_finished.wait()
-        if self._closed:
-            raise self._failure
 
-    def wait(self):
-        while not self._closed:
-            self._close_ready.wait()
+    def wait_done(self):
         self._workers_finished.wait()
-        raise self._failure
 
     def wait_closed(self):
         while not self._closed:
             self._close_ready.wait()
-        raise self._failure
 
     def sync(self):
         if self._closed:
@@ -700,11 +700,11 @@ class RawStream(object):
         self._clear_write_buffer()
         self._set_write_error(frame.error)
         if frame.flags & FLAG_FIN:
-            reset = frame.error
-            if isinstance(reset, StreamClosedError):
-                reset = EOFError()
+            error = frame.error
+            if isinstance(error, StreamClosedError):
+                error = EOFError()
             self._seen_eof = True
-            self._set_read_error(reset)
+            self._set_read_error(error)
             self._cleanup()
 
     def _process_window_frame(self, frame):
@@ -805,14 +805,14 @@ class RawStream(object):
             self._cleanup()
         return n
 
-    def read_some(self, n):
+    def read_some(self, n=None):
         while not self._readbuf:
             if self._readerror is not None:
                 if isinstance(self._readerror, EOFError):
                     return ''
                 raise self._readerror
             self._read_event.wait()
-        if n > len(self._readbuf):
+        if n is None or n >= len(self._readbuf):
             data, self._readbuf = self._readbuf, ''
         elif n > 0:
             data, self._readbuf = self._readbuf[:n], self._readbuf[n:]
@@ -823,15 +823,15 @@ class RawStream(object):
             self._cleanup()
         return data
 
-    def read(self, n):
+    def read(self, n=None):
         data = ''
-        while True:
-            chunk = self.read_some(n - len(data))
+        while n is None or n > 0:
+            chunk = self.read_some(n)
             if not chunk:
                 break
             data += chunk
-            if len(data) == n:
-                break
+            if n is not None:
+                n -= len(chunk)
         return data
 
     def write_some(self, data):

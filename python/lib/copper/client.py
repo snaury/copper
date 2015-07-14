@@ -7,6 +7,8 @@ from gevent.socket import (
     getaddrinfo,
     AF_UNIX,
     SOCK_STREAM,
+    IPPROTO_TCP,
+    TCP_NODELAY,
 )
 from .errors import (
     NoTargetError,
@@ -63,8 +65,10 @@ def _validate_endpoint(endpoint):
 def _do_connect(endpoint):
     net, addr = endpoint
     if net in ('unix',):
+        is_tcp = False
         addrinfo = [(AF_UNIX, SOCK_STREAM, 0, '', addr)]
     else:
+        is_tcp = True
         addrinfo = getaddrinfo(addr[0], addr[1], 0, SOCK_STREAM)
     exc = None
     for family, socktype, proto, canonname, address in addrinfo:
@@ -74,6 +78,8 @@ def _do_connect(endpoint):
         except:
             exc = sys.exc_info()[1]
             continue
+        if is_tcp:
+            sock.setsockopt(IPPROTO_TCP, TCP_NODELAY, 1)
         return sock
     if exc is None:
         raise ValueError('no addresses for %r' % (endpoint,))
@@ -176,19 +182,22 @@ class CopperClient(object):
                 continue
             conn = RawConn(sock, self._handle_stream)
             try:
-                self._reregister(conn)
-                self._conn = conn
-                self._connected_event.broadcast()
-                conn.wait()
+                try:
+                    self._reregister(conn)
+                    self._conn = conn
+                    self._connected_event.broadcast()
+                    # Wait until connection is closed
+                    conn.wait_closed()
+                finally:
+                    self._conn = None
+                    for sub in self._subscriptions:
+                        sub._target_id = None
+                raise conn.error
             except ConnectionClosedError:
                 pass
             except:
                 import traceback
                 traceback.print_exc()
-            finally:
-                for sub in self._subscriptions:
-                    sub._target_id = None
-                self._conn = None
 
     def _reregister(self, conn):
         from gevent import wait

@@ -9,7 +9,9 @@ from shutil import rmtree
 from tempfile import mkdtemp
 
 SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-COPPER_NODE_SRC = os.path.join(SRC_ROOT, 'cmd/copper-node')
+SRC_COPPER_NODE = os.path.join(SRC_ROOT, 'cmd/copper-node')
+
+subprocess.check_call(['go', 'install'], shell=False, cwd=SRC_COPPER_NODE)
 
 @pytest.yield_fixture
 def workdir():
@@ -21,7 +23,6 @@ def workdir():
 
 @pytest.yield_fixture
 def copper_node(workdir):
-    subprocess.check_call(['go', 'install'], shell=False, cwd=COPPER_NODE_SRC)
     sockpath = os.path.join(workdir, 'copper.sock')
     confpath = os.path.join(workdir, 'copper.conf')
     config = {
