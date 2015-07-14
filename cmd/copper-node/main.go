@@ -75,6 +75,14 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to listen on %s/%s: %s", listen.Network, listen.Address, err)
 		}
+		if strings.HasPrefix(listen.Network, "unix") {
+			err = os.Chmod(listen.Address, os.FileMode(0770))
+			if err != nil {
+				l.Close()
+				os.Remove(listen.Address)
+				log.Fatalf("Failed to chmod %s: %s", listen.Address, err)
+			}
+		}
 		server.AddListener(l, listen.AllowChanges)
 		log.Printf("Listening on %s", listen.Address)
 	}
