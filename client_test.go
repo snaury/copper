@@ -18,7 +18,6 @@ func runServer(address string) (Server, string) {
 	if err != nil {
 		log.Fatalf("Failed to add listeners: %s", err)
 	}
-	go server.Serve()
 	return server, listener.Addr().String()
 }
 

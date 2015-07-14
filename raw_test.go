@@ -37,7 +37,7 @@ func runRawClientServerStream(clientfunc func(client Stream), serverfunc func(st
 		})
 		server := NewRawConn(rawserver, toHandlerFunc(handler), true)
 		defer server.Close()
-		server.Wait()
+		<-server.Done()
 	}()
 	wg.Wait()
 }
@@ -56,7 +56,7 @@ func runRawClientServerHandler(clientfunc func(client RawConn), handler func(str
 		defer wg.Done()
 		server := NewRawConn(rawserver, toHandlerFunc(handler), true)
 		defer server.Close()
-		server.Wait()
+		<-server.Done()
 	}()
 	wg.Wait()
 }
@@ -110,9 +110,10 @@ func TestRawConnStreams(t *testing.T) {
 		}
 		serverReady <- 1
 
-		err = server.Wait()
+		<-server.Done()
+		err = server.Err()
 		if err != ECONNSHUTDOWN {
-			t.Fatalf("server: Wait: expected ECONNSHUTDOWN, got: %v", err)
+			t.Fatalf("server: expected ECONNSHUTDOWN, got: %v", err)
 		}
 	}()
 	go func() {
@@ -190,7 +191,7 @@ func runRawClientServer(handler Handler, clientfunc func(client RawConn)) {
 		defer wg.Done()
 		server := NewRawConn(rawserver, handler, true)
 		defer server.Close()
-		server.Wait()
+		<-server.Done()
 	}()
 	go func() {
 		defer wg.Done()

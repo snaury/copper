@@ -117,19 +117,25 @@ type Client interface {
 	// RemoteAddr returns the remote address of the client
 	RemoteAddr() net.Addr
 
-	// Serve runs the client until it is closed.  This is primarily for servers
-	// that publish services and then serve incoming requests.
-	Serve() error
+	// Err returns an error that caused the client to be closed
+	Err() error
 
 	// Close closes the connection to the server
 	Close() error
 
-	// Shutdown stops accepting new streams and returns when all active handlers
-	// finish processing their requests. It does not affect outgoing streams in
-	// any way. The caller should unpublish all services first, otherwise it
-	// might be very confusing for clients to get ECONNSHUTDOWN for requests
-	// to an active publication.
-	Shutdown() error
+	// Done returns the channel that triggers when client is finished
+	Done() <-chan struct{}
+
+	// Closed returns the channel that triggers when client is closed
+	Closed() <-chan struct{}
+
+	// Shutdown stops accepting new streams and returns the channel that
+	// triggers when all active handlers finish processing their requests. It
+	// does not affect outgoing streams in any way, but it is recommended that
+	// the caller unpublishes all services first, otherwise it might be very
+	// confusing for clients to receive ECONNSHUTDOWN for requests to an active
+	// publication.
+	Shutdown() <-chan struct{}
 }
 
 // Server interface allows you to work with an in-process copper server
@@ -143,9 +149,15 @@ type Server interface {
 	// Add given network listener to the pool of listeners
 	AddListener(listener net.Listener, allowChanges bool) error
 
-	// Serve runs the server until it is shut down
-	Serve() error
+	// Err returns an error that caused the server to be closed
+	Err() error
 
 	// Close closes a running server
 	Close() error
+
+	// Done returns the channel that triggers when server is finished
+	Done() <-chan struct{}
+
+	// Closed returns the channel that triggers when server is closed
+	Closed() <-chan struct{}
 }

@@ -57,10 +57,12 @@ type server struct {
 
 	routeByName map[string]*serverRoute
 
-	failure   error
-	listenwg  sync.WaitGroup
-	clientwg  sync.WaitGroup
-	listeners []net.Listener
+	failure    error
+	closedchan chan struct{}
+	finishchan chan struct{}
+	listenwg   sync.WaitGroup
+	clientwg   sync.WaitGroup
+	listeners  []net.Listener
 
 	clients map[*serverClient]struct{}
 }
@@ -79,6 +81,8 @@ func NewServer() Server {
 		pubWatchers: make(map[*serverServiceChangesStream]struct{}),
 
 		routeByName: make(map[string]*serverRoute),
+
+		closedchan: make(chan struct{}),
 
 		clients: make(map[*serverClient]struct{}),
 	}
@@ -170,9 +174,7 @@ func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
 	return nil
 }
 
-func (s *server) Serve() error {
-	s.listenwg.Wait()
-	s.clientwg.Wait()
+func (s *server) Err() error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	return s.failure
@@ -180,4 +182,22 @@ func (s *server) Serve() error {
 
 func (s *server) Close() error {
 	return s.closeWithError(ECONNSHUTDOWN)
+}
+
+func (s *server) Done() <-chan struct{} {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.finishchan == nil {
+		s.finishchan = make(chan struct{})
+		go func() {
+			defer close(s.finishchan)
+			s.listenwg.Wait()
+			s.clientwg.Wait()
+		}()
+	}
+	return s.finishchan
+}
+
+func (s *server) Closed() <-chan struct{} {
+	return s.closedchan
 }

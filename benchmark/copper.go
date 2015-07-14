@@ -20,7 +20,6 @@ func startCopper(addr string) (string, func()) {
 	if err != nil {
 		log.Fatalf("Failed to add a listener: %s", err)
 	}
-	go srv.Serve()
 	return listener.Addr().String(), func() {
 		srv.Close()
 	}

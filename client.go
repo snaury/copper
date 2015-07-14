@@ -94,7 +94,3 @@ func (c *clientConn) LookupRoute(name string) ([]Route, error) {
 func (c *clientConn) ServiceChanges() (ServiceChangesStream, error) {
 	return c.streamServices()
 }
-
-func (c *clientConn) Serve() error {
-	return c.RawConn.Wait()
-}

@@ -23,10 +23,11 @@ const (
 
 // RawConn is a multiplexed connection implementing the copper protocol
 type RawConn interface {
-	Wait() error
-	WaitClosed() error
+	Err() error
 	Close() error
-	Shutdown() error
+	Done() <-chan struct{}
+	Closed() <-chan struct{}
+	Shutdown() <-chan struct{}
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
 	Sync() <-chan error
@@ -41,10 +42,12 @@ type rawConn struct {
 	cwriter                 *rawConnWriter
 	isserver                bool
 	closed                  bool
-	closedcond              sync.Cond
+	closedchan              chan struct{}
+	finishchan              chan struct{}
+	finishgroup             sync.WaitGroup
 	shutdown                bool
-	waitgroup               sync.WaitGroup
-	handlegroup             sync.WaitGroup
+	shutdownchan            chan struct{}
+	shutdowngroup           sync.WaitGroup
 	failure                 error
 	handler                 Handler
 	streams                 map[uint32]*rawStream
@@ -83,12 +86,11 @@ func NewRawConn(conn net.Conn, handler Handler, isserver bool) RawConn {
 	c := &rawConn{
 		conn:                    conn,
 		isserver:                isserver,
-		closed:                  false,
+		closedchan:              make(chan struct{}),
 		handler:                 handler,
 		streams:                 make(map[uint32]*rawStream),
 		deadstreams:             make(map[uint32]struct{}),
 		freestreams:             make(map[uint32]struct{}),
-		nextnewstream:           1,
 		pingResults:             make(map[int64][]chan<- error),
 		outgoingAcks:            make(map[uint32]uint32),
 		outgoingCtrl:            make(map[*rawStream]struct{}),
@@ -108,12 +110,11 @@ func NewRawConn(conn net.Conn, handler Handler, isserver bool) RawConn {
 	} else {
 		c.nextnewstream = 1
 	}
-	c.closedcond.L = &c.lock
 	c.writeready.L = &c.lock
 	c.readunblocked.L = &c.lock
 	c.writeunblocked.L = &c.lock
 	c.closeunblocked.L = &c.lock
-	c.waitgroup.Add(2)
+	c.finishgroup.Add(2)
 	go c.readloop()
 	go c.writeloop()
 	return c
@@ -173,10 +174,10 @@ func (c *rawConn) closeWithErrorLocked(err error, closed bool) error {
 				c.outgoingFailure = err
 			}
 		}
-		c.closedcond.Broadcast()
-		c.writeready.Broadcast()
 		// Don't send any pings that haven't been sent already
 		c.pingQueue = nil
+		close(c.closedchan)
+		c.writeready.Broadcast()
 	}
 	for _, stream := range c.streams {
 		stream.closeWithErrorLocked(err, closed)
@@ -190,38 +191,45 @@ func (c *rawConn) closeWithError(err error) error {
 	return c.closeWithErrorLocked(err, true)
 }
 
-func (c *rawConn) Wait() error {
-	err := c.WaitClosed()
-	c.waitgroup.Wait()
-	return err
-}
-
-func (c *rawConn) WaitClosed() error {
+func (c *rawConn) Err() error {
 	c.lock.Lock()
-	defer c.lock.Unlock()
-	for !c.closed {
-		c.closedcond.Wait()
-	}
-	return c.failure
+	err := c.failure
+	c.lock.Unlock()
+	return err
 }
 
 func (c *rawConn) Close() error {
 	return c.closeWithError(ECONNCLOSED)
 }
 
-func (c *rawConn) Shutdown() error {
-	func() {
-		c.lock.Lock()
-		defer c.lock.Unlock()
-		c.shutdown = true
-	}()
-	c.handlegroup.Wait()
+func (c *rawConn) Done() <-chan struct{} {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	if c.closed {
-		return c.failure
+	if c.finishchan == nil {
+		c.finishchan = make(chan struct{})
+		go func() {
+			defer close(c.finishchan)
+			c.finishgroup.Wait()
+		}()
 	}
-	return nil
+	return c.finishchan
+}
+
+func (c *rawConn) Closed() <-chan struct{} {
+	return c.closedchan
+}
+
+func (c *rawConn) Shutdown() <-chan struct{} {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.shutdownchan == nil {
+		c.shutdownchan = make(chan struct{})
+		go func() {
+			defer close(c.shutdownchan)
+			c.shutdowngroup.Wait()
+		}()
+	}
+	return c.shutdownchan
 }
 
 func (c *rawConn) LocalAddr() net.Addr {
@@ -243,13 +251,13 @@ func (c *rawConn) Sync() <-chan error {
 	}
 	deadstreams := c.deadstreams
 	c.deadstreams = make(map[uint32]struct{})
-	c.waitgroup.Add(1)
+	c.finishgroup.Add(1)
 	go c.syncDeadStreams(deadstreams, result)
 	return result
 }
 
 func (c *rawConn) syncDeadStreams(deadstreams map[uint32]struct{}, result chan<- error) {
-	defer c.waitgroup.Done()
+	defer c.finishgroup.Done()
 	err := <-c.Ping(time.Now().UnixNano())
 	if err == nil {
 		// receiving a successful response to ping proves than all frames
@@ -332,8 +340,8 @@ func (c *rawConn) addOutgoingDataLocked(stream *rawStream) {
 }
 
 func (c *rawConn) handleStream(stream Stream) {
-	defer c.waitgroup.Done()
-	defer c.handlegroup.Done()
+	defer c.finishgroup.Done()
+	defer c.shutdowngroup.Done()
 	if c.handler == nil {
 		// This connection does not support incoming streams
 		stream.CloseWithError(ENOTARGET)
@@ -356,7 +364,7 @@ func (c *rawConn) removeStreamLocked(stream *rawStream) {
 			if len(c.deadstreams) >= maxDeadStreams {
 				deadstreams := c.deadstreams
 				c.deadstreams = make(map[uint32]struct{})
-				c.waitgroup.Add(1)
+				c.finishgroup.Add(1)
 				go c.syncDeadStreams(deadstreams, nil)
 			}
 		}
@@ -413,13 +421,13 @@ func (c *rawConn) processOpenFrameLocked(frame *openFrame) error {
 		stream.closeWithErrorLocked(err, true)
 		return nil
 	}
-	if c.shutdown {
+	if c.shutdownchan != nil {
 		// we are shutting down and should close incoming streams
 		stream.closeWithErrorLocked(ECONNSHUTDOWN, true)
 		return nil
 	}
-	c.waitgroup.Add(1)
-	c.handlegroup.Add(1)
+	c.finishgroup.Add(1)
+	c.shutdowngroup.Add(1)
 	go c.handleStream(stream)
 	if len(frame.data) > 0 {
 		c.addOutgoingAckLocked(0, len(frame.data))
@@ -619,7 +627,7 @@ func (c *rawConn) failEverything() {
 }
 
 func (c *rawConn) readloop() {
-	defer c.waitgroup.Done()
+	defer c.finishgroup.Done()
 	var scratch []byte
 	for {
 		rawFrame, err := c.readFrame(scratch)
@@ -769,7 +777,7 @@ writeloop:
 }
 
 func (c *rawConn) writeloop() {
-	defer c.waitgroup.Done()
+	defer c.finishgroup.Done()
 	defer c.conn.Close()
 
 	c.lock.Lock()

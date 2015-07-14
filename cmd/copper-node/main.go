@@ -98,10 +98,10 @@ func main() {
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-signals
-		log.Printf("Shutting down due to signal: %s", sig)
+		log.Printf("Stopping due to signal: %s", sig)
 		server.Close()
 	}()
 
 	log.Printf("Serving clients...")
-	server.Serve()
+	<-server.Done()
 }

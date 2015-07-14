@@ -32,7 +32,8 @@ func (s *rawServer) handle(rawConn net.Conn) error {
 		delete(s.clients, conn)
 		s.lock.Unlock()
 	}()
-	return conn.Wait()
+	<-conn.Done()
+	return conn.Err()
 }
 
 func (s *rawServer) Serve(listener net.Listener) error {

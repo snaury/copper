@@ -129,7 +129,7 @@ func (peer *serverPeer) connectloop() {
 			case <-stop:
 			}
 		}()
-		client.Serve()
+		<-client.Done()
 		peer.detachClient(client)
 		client.Close()
 		close(stop)

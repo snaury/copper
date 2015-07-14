@@ -115,7 +115,8 @@ func (c *serverClient) closeWithErrorLocked(err error) {
 
 func (c *serverClient) serve() {
 	defer c.owner.clientwg.Done()
-	err := c.conn.Wait()
+	<-c.conn.Done()
+	err := c.conn.Err()
 	c.owner.lock.Lock()
 	defer c.owner.lock.Unlock()
 	delete(c.owner.clients, c)
