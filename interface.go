@@ -123,18 +123,17 @@ type Client interface {
 	// Close closes the connection to the server
 	Close() error
 
-	// Done returns the channel that triggers when client is finished
+	// Done returns a channel that's closed when client is finished
 	Done() <-chan struct{}
 
-	// Closed returns the channel that triggers when client is closed
+	// Closed returns a channel that's closed when client is closed
 	Closed() <-chan struct{}
 
-	// Shutdown stops accepting new streams and returns the channel that
-	// triggers when all active handlers finish processing their requests. It
-	// does not affect outgoing streams in any way, but it is recommended that
-	// the caller unpublishes all services first, otherwise it might be very
-	// confusing for clients to receive ECONNSHUTDOWN for requests to an active
-	// publication.
+	// Shutdown stops accepting new streams and returns a channel that's closed
+	// when all active handlers finish processing their requests. It does not
+	// affect outgoing streams in any way, but it is recommended that the caller
+	// unpublishes all services first, otherwise it might be very confusing for
+	// clients to receive ECONNSHUTDOWN for requests to active publications.
 	Shutdown() <-chan struct{}
 }
 
@@ -155,9 +154,9 @@ type Server interface {
 	// Close closes a running server
 	Close() error
 
-	// Done returns the channel that triggers when server is finished
+	// Done returns a channel that's closed when the server is finished
 	Done() <-chan struct{}
 
-	// Closed returns the channel that triggers when server is closed
+	// Closed returns a channel that's closed when the server is closed
 	Closed() <-chan struct{}
 }

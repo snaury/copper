@@ -10,10 +10,11 @@ func passthru(dst, src Stream) {
 	var write sync.Mutex
 	var writeclosed uint32
 	go func() {
-		err := dst.WaitWriteClosed()
+		<-dst.WriteClosed()
 		write.Lock()
 		defer write.Unlock()
 		atomic.AddUint32(&writeclosed, 1)
+		err := dst.WriteErr()
 		if err == ECLOSED {
 			src.CloseRead()
 		} else {

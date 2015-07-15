@@ -38,6 +38,9 @@ type rawStream struct {
 	reseterror error
 	flushed    condWithDeadline
 	acked      condWithDeadline
+
+	readclosed  chan struct{}
+	writeclosed chan struct{}
 }
 
 var _ Stream = &rawStream{}
@@ -49,6 +52,9 @@ func newIncomingStream(owner *rawConn, frame *openFrame, readwindow, writewindow
 		owner:     owner,
 		readleft:  readwindow,
 		writeleft: writewindow,
+
+		readclosed:  make(chan struct{}),
+		writeclosed: make(chan struct{}),
 	}
 	s.mayread.init(&owner.lock)
 	s.maywrite.init(&owner.lock)
@@ -60,7 +66,7 @@ func newIncomingStream(owner *rawConn, frame *openFrame, readwindow, writewindow
 	}
 	if frame.flags&flagFin != 0 {
 		s.flags |= flagStreamSeenEOF
-		s.readerror = io.EOF
+		s.setReadError(io.EOF)
 	}
 	owner.streams[s.streamID] = s
 	return s
@@ -74,6 +80,9 @@ func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64, readwind
 		owner:     owner,
 		readleft:  readwindow,
 		writeleft: writewindow,
+
+		readclosed:  make(chan struct{}),
+		writeclosed: make(chan struct{}),
 	}
 	s.mayread.init(&owner.lock)
 	s.maywrite.init(&owner.lock)
@@ -483,6 +492,7 @@ func (s *rawStream) resetBothSides() {
 func (s *rawStream) setReadError(err error) {
 	if s.readerror == nil {
 		s.readerror = err
+		close(s.readclosed)
 		s.mayread.Broadcast()
 	}
 }
@@ -490,6 +500,7 @@ func (s *rawStream) setReadError(err error) {
 func (s *rawStream) setWriteError(err error) {
 	if s.writeerror == nil {
 		s.writeerror = err
+		close(s.writeclosed)
 		s.writeleft = 0
 		s.flags |= flagStreamNeedEOF
 		s.maywrite.Broadcast()
@@ -614,13 +625,26 @@ func (s *rawStream) WaitAckAny(n int) (int, error) {
 	return s.writefail + s.writenack + s.writebuf.len() - s.writewire, err
 }
 
-func (s *rawStream) WaitWriteClosed() error {
+func (s *rawStream) ReadErr() error {
 	s.owner.lock.Lock()
-	defer s.owner.lock.Unlock()
-	for s.writeerror == nil {
-		s.maywrite.Wait()
-	}
-	return s.writeerror
+	err := s.readerror
+	s.owner.lock.Unlock()
+	return err
+}
+
+func (s *rawStream) ReadClosed() <-chan struct{} {
+	return s.readclosed
+}
+
+func (s *rawStream) WriteErr() error {
+	s.owner.lock.Lock()
+	err := s.writeerror
+	s.owner.lock.Unlock()
+	return err
+}
+
+func (s *rawStream) WriteClosed() <-chan struct{} {
+	return s.writeclosed
 }
 
 func (s *rawStream) Close() error {

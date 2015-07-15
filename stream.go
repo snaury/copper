@@ -41,8 +41,22 @@ type Stream interface {
 	// that write have been read by the remote side.
 	WaitAckAny(n int) (int, error)
 
-	// WaitWriteClosed returns when write side has been closed
-	WaitWriteClosed() error
+	// ReadErr returns an error that caused the read side to be closed.
+	ReadErr() error
+
+	// ReadClosed returns a channel that's closed when the read side is closed
+	// locally or the write side is closed remotely. In the latter case it may
+	// still be possible to read data left in the buffer.
+	ReadClosed() <-chan struct{}
+
+	// WriteErr returns an error that caused the write side to be closed.
+	WriteErr() error
+
+	// WriteClosed returns a channel that's closed when the read side is closed
+	// remotely or the write side is closed locally. In either case no new data
+	// may be written to the stream, but in the latter case written data may
+	// still be delivered to the remote side.
+	WriteClosed() <-chan struct{}
 
 	// Closes closes the stream, discarding any data
 	Close() error
@@ -50,7 +64,7 @@ type Stream interface {
 	// CloseRead closes the read side of the connection
 	CloseRead() error
 
-	// CloseReadError close the read side with the specifed error
+	// CloseReadError closes the read side with the specifed error
 	CloseReadError(err error) error
 
 	// CloseWrite closes the write side of the connection

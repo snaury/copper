@@ -694,7 +694,8 @@ func TestClientServerCloseRead(t *testing.T) {
 			}
 			mayCloseRead <- 1
 
-			err = stream.WaitWriteClosed()
+			<-stream.WriteClosed()
+			err = stream.WriteErr()
 			if err != EINTERNAL {
 				t.Fatalf("server: WaitWriteClosed: %v", err)
 			}
