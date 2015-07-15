@@ -184,3 +184,9 @@ def test_routed_services(copper_client):
                     'Hello from handler1',
                     'Hello from handler2',
                 ]
+                # Set a route that has a priority for the first service and
+                # verify that requests don't go to the second service.
+                copper_client.set_route('test:hello2', ['test:hello1', 'test:hello2'])
+                for _ in xrange(32):
+                    with sub.open() as stream:
+                        assert stream.read() == 'Hello from handler1'
