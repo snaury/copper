@@ -75,3 +75,43 @@ def test_client_reconnect_active(copper_node):
                     have_stream.wait()
                     may_respond.set()
                     assert stream.read() == 'Hello, world!'
+
+def assert_change_eq(change, target_id, name, priority, distance, concurrency, queue_size):
+    assert change.target_id == target_id
+    assert change.name == name
+    assert change.settings.priority == priority
+    assert change.settings.distance == distance
+    assert change.settings.concurrency == concurrency
+    assert change.settings.queue_size == queue_size
+
+def test_service_changes(copper_node):
+    with CopperClient(('unix', copper_node)) as client:
+        def handler(stream):
+            pass
+        changes_stream = client.service_changes()
+        with client.publish('test:helloworld', handler):
+            changes = next(changes_stream)
+            assert not changes.removed
+            assert len(changes.changed) == 1
+            assert_change_eq(changes.changed[0], 1, 'test:helloworld', 0, 2, 1, 64)
+            with client.publish('test:helloworld', handler):
+                changes = next(changes_stream)
+                assert not changes.removed
+                assert len(changes.changed) == 1
+                assert_change_eq(changes.changed[0], 1, 'test:helloworld', 0, 2, 2, 128)
+            changes = next(changes_stream)
+            assert not changes.removed
+            assert len(changes.changed) == 1
+            assert_change_eq(changes.changed[0], 1, 'test:helloworld', 0, 2, 1, 64)
+            with client.publish('test:helloworld', handler, priority=1):
+                changes = next(changes_stream)
+                assert not changes.removed
+                assert len(changes.changed) == 1
+                assert_change_eq(changes.changed[0], 2, 'test:helloworld', 1, 2, 1, 64)
+            changes = next(changes_stream)
+            assert changes.removed == [2]
+            assert not changes.changed
+        changes = next(changes_stream)
+        assert changes is not None
+        assert changes.removed == [1]
+        assert not changes.changed

@@ -25,6 +25,7 @@ from .copper_pb2 import (
     Unsubscribe, UnsubscribeRequest, UnsubscribeResponse,
     Publish, PublishRequest, PublishResponse,
     Unpublish, UnpublishRequest, UnpublishResponse,
+    StreamServices, StreamServicesRequest, StreamServicesResponse,
 )
 
 def _split_hostport(hostport):
@@ -234,6 +235,27 @@ class CopperClient(object):
                 response_data = ''
         return response_class.FromString(response_data)
 
+    def _make_streaming_request(self, request_type, request, response_class, conn=None):
+        if conn is None:
+            conn = self._conn
+        request_data = request.SerializeToString()
+        with conn.open(0) as stream:
+            stream.write(self.FMT_REQTYPE.pack(request_type))
+            stream.write(self.FMT_MSGSIZE.pack(len(request_data)))
+            if request_data:
+                stream.write(request_data)
+            stream.close_write()
+            while True:
+                response_size = stream.read(4)
+                if not response_size:
+                    break
+                response_size, = self.FMT_MSGSIZE.unpack(response_size)
+                if response_size > 0:
+                    response_data = stream.read(response_size)
+                else:
+                    response_data = ''
+                yield response_class.FromString(response_data)
+
     def _handle_stream(self, stream):
         handler = self._handlers.get(stream.target_id)
         if handler is None:
@@ -321,3 +343,7 @@ class CopperClient(object):
             raise
         self._publications[pub] = request
         return pub
+
+    def service_changes(self):
+        request = StreamServicesRequest()
+        return self._make_streaming_request(StreamServices, request, StreamServicesResponse)
