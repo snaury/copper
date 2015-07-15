@@ -26,6 +26,9 @@ from .copper_pb2 import (
     Publish, PublishRequest, PublishResponse,
     Unpublish, UnpublishRequest, UnpublishResponse,
     StreamServices, StreamServicesRequest, StreamServicesResponse,
+    SetRoute, SetRouteRequest, SetRouteResponse,
+    ListRoutes, ListRoutesRequest, ListRoutesResponse,
+    LookupRoute, LookupRouteRequest, LookupRouteResponse,
 )
 
 def _split_hostport(hostport):
@@ -284,34 +287,36 @@ class CopperClient(object):
         else:
             self._conn.shutdown()
 
+    @staticmethod
+    def _convert_subscribe_options(target, options, min_distance=None, max_distance=None):
+        if isinstance(options, basestring):
+            options = (options,)
+        for option in options:
+            if isinstance(option, basestring):
+                if min_distance is None and max_distance is None:
+                    target.add(service=option, min_distance=0, max_distance=1)
+                    target.add(service=option, min_distance=2, max_distance=2)
+                else:
+                    target.add(service=option, min_distance=min_distance, max_distance=max_distance)
+            elif isinstance(option, (list, tuple)) and len(option) == 3:
+                target.add(service=option[0], min_distance=option[1], max_distance=option[2])
+            else:
+                raise ValueError('invalid subscribe option %r' % (option,))
+
     def subscribe(self, *args, **kwargs):
         if len(args) == 0:
-            raise TypeError('subscribe needs at least one option')
-        if len(args) == 1 and isinstance(args[0], basestring):
-            min_distance = kwargs.pop('min_distance', None)
-            max_distance = kwargs.pop('max_distance', None)
-            if min_distance is None and max_distance is None:
-                options = [
-                    (args[0], 0, 1),
-                    (args[0], 2, 2),
-                ]
-            else:
-                if min_distance is None:
-                    min_distance = 0
-                elif max_distance is None:
-                    max_distance = 2
-                options = [
-                    (args[0], min_distance, max_distance),
-                ]
-        else:
-            options = args
+            raise TypeError('subscribe requires at least one option')
+        min_distance = kwargs.pop('min_distance', None)
+        max_distance = kwargs.pop('max_distance', None)
+        if min_distance is None or max_distance is None:
+            if not (min_distance is None and max_distance is None):
+                raise ValueError('subscribe requires either both min_distance and max_distance or neither specified')
         max_retries = kwargs.pop('max_retries', None)
         disable_routes = kwargs.pop('disable_routes', None)
         if kwargs:
             raise TypeError('subscribe got an unexpected keyword argument %s' % (next(iter(kwargs)),))
         request = SubscribeRequest()
-        for (service, min_distance, max_distance) in options:
-            request.options.add(service=service, min_distance=min_distance, max_distance=max_distance)
+        self._convert_subscribe_options(request.options, args, min_distance, max_distance)
         if max_retries is not None:
             request.max_retries = max_retries
         if disable_routes is not None:
@@ -344,6 +349,50 @@ class CopperClient(object):
         self._publications[pub] = request
         return pub
 
+    def set_route(self, name, *routes, **kwargs):
+        default_weight = kwargs.pop('weight', 1)
+        min_distance = kwargs.pop('min_distance', None)
+        max_distance = kwargs.pop('max_distance', None)
+        if min_distance is None or max_distance is None:
+            if not (min_distance is None and max_distance is None):
+                raise ValueError('set_route requires either both min_distance and max_distance or neither specified')
+        def convert_routes(target):
+            for route in routes:
+                if isinstance(route, basestring):
+                    route = (route,)
+                if isinstance(route, (list, tuple)):
+                    if route and isinstance(route[-1], (int, long)):
+                        weight = route[-1]
+                        options = route[:-1]
+                    else:
+                        weight = default_weight
+                        options = route
+                    if not options:
+                        raise ValueError('invalid route %r' % (route,))
+                    r = target.add(weight=weight)
+                    self._convert_subscribe_options(r.options, options, min_distance, max_distance)
+                else:
+                    raise ValueError('invalid route %r' % (route,))
+        request = SetRouteRequest()
+        request.name = name
+        convert_routes(request.routes)
+        self.wait_connected()
+        self._make_simple_request(SetRoute, request, SetRouteResponse)
+
+    def list_routes(self):
+        request = ListRoutesRequest()
+        self.wait_connected()
+        response = self._make_simple_request(ListRoutes, request, ListRoutesResponse)
+        return list(response.names)
+
+    def lookup_route(self, name):
+        request = LookupRouteRequest()
+        request.name = name
+        self.wait_connected()
+        response = self._make_simple_request(LookupRoute, request, LookupRouteResponse)
+        return list(response.routes)
+
     def service_changes(self):
         request = StreamServicesRequest()
+        self.wait_connected()
         return self._make_streaming_request(StreamServices, request, StreamServicesResponse)

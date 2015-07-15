@@ -49,3 +49,9 @@ def copper_node(workdir):
         if p.poll() is None:
             p.terminate()
             p.wait()
+
+@pytest.yield_fixture
+def copper_client(copper_node):
+    from copper.client import CopperClient
+    with CopperClient(('unix', copper_node)) as client:
+        yield client
