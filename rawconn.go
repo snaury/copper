@@ -522,28 +522,28 @@ func (c *rawConn) processSettingsFrameLocked(frame *settingsFrame) error {
 	c.settingsAcks++
 	for key, value := range frame.values {
 		switch key {
-		case settingsConnWindowID:
-			if value < 1024 {
+		case settingConnWindow:
+			if value < minWindowSize || value > maxWindowSize {
 				return copperError{
 					error: fmt.Errorf("cannot set connection window to %d bytes", value),
 					code:  EINVALIDFRAME,
 				}
 			}
-			diff := value - c.remoteConnWindowSize
+			diff := int(value) - c.remoteConnWindowSize
 			c.writeleft += diff
-			c.remoteConnWindowSize = value
-		case settingsStreamWindowID:
-			if value < 1024 {
+			c.remoteConnWindowSize = int(value)
+		case settingStreamWindow:
+			if value < minWindowSize || value > maxWindowSize {
 				return copperError{
 					error: fmt.Errorf("cannot set stream window to %d bytes", value),
 					code:  EINVALIDFRAME,
 				}
 			}
-			diff := value - c.remoteStreamWindowSize
+			diff := int(value) - c.remoteStreamWindowSize
 			for _, stream := range c.streams {
 				stream.changeWindowLocked(diff)
 			}
-		case settingsInactivityMillisecondsID:
+		case settingInactivityMilliseconds:
 			if value < 1000 {
 				return copperError{
 					error: fmt.Errorf("cannot set inactivity timeout to %dms", value),

@@ -218,8 +218,8 @@ class CopperClient(object):
         for g in wait(gg):
             g.get()
 
-    FMT_REQTYPE = struct.Struct('<B')
-    FMT_MSGSIZE = struct.Struct('<I')
+    FMT_REQTYPE = struct.Struct('>B')
+    FMT_MSGSIZE = struct.Struct('>I')
 
     def _make_simple_request(self, request_type, request, response_class, conn=None):
         if conn is None:

@@ -12,7 +12,7 @@ __all__ = [
     'SettingsFrame',
 ]
 
-FRAME_HEADER_FMT = struct.Struct('<IIB')
+FRAME_HEADER_FMT = struct.Struct('>IIB')
 assert FRAME_HEADER_FMT.size == 9
 
 FLAG_FIN = 1 # OPEN, DATA, RESET
@@ -30,11 +30,11 @@ class Header(object):
 
     @classmethod
     def load(cls, reader):
-        stream_id, flags_size, kind = FRAME_HEADER_FMT.unpack(reader.read(9))
-        return cls(stream_id, flags_size & 0xffffff, flags_size >> 24, kind)
+        stream_id, size_flags, kind = FRAME_HEADER_FMT.unpack(reader.read(9))
+        return cls(stream_id, size_flags >> 8, size_flags & 0xff, kind)
 
     def dump(self, writer):
-        writer.write(FRAME_HEADER_FMT.pack(self.stream_id, (self.flags << 24) | self.payload_size, self.kind))
+        writer.write(FRAME_HEADER_FMT.pack(self.stream_id, self.flags | (self.payload_size << 8), self.kind))
 
 class FrameMeta(type):
     def __new__(meta, name, bases, bodydict):
@@ -76,7 +76,7 @@ class PingFrame(Frame):
     __slots__ = ('flags', 'value')
 
     ID = 0
-    FMT = struct.Struct('<Q')
+    FMT = struct.Struct('>q')
 
     def __init__(self, flags, value):
         self.flags = flags
@@ -107,7 +107,7 @@ class OpenFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'target_id', 'data')
 
     ID = 1
-    FMT = struct.Struct('<Q')
+    FMT = struct.Struct('>Q')
 
     def __init__(self, stream_id, flags, target_id, data):
         self.stream_id = stream_id
@@ -179,7 +179,7 @@ class ResetFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'error')
 
     ID = 3
-    FMT = struct.Struct('<i')
+    FMT = struct.Struct('>I')
 
     def __init__(self, stream_id, flags, error):
         self.stream_id = stream_id
@@ -229,7 +229,7 @@ class WindowFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'increment')
 
     ID = 4
-    FMT = struct.Struct('<I')
+    FMT = struct.Struct('>I')
 
     def __init__(self, stream_id, flags, increment):
         self.stream_id = stream_id
@@ -261,7 +261,7 @@ class SettingsFrame(Frame):
     __slots__ = ('flags', 'values')
 
     ID = 5
-    FMT = struct.Struct('<II')
+    FMT = struct.Struct('>II')
 
     def __init__(self, flags, values):
         self.flags = flags

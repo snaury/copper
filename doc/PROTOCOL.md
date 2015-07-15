@@ -1,5 +1,9 @@
 This document describes copper frames types, their purpose and interactions.
 
+## Big Endian
+
+Similar to HTTP/2 copper uses big-endian byte ordering.
+
 ## Frame header
 
 Every frame starts with a 9 byte header:

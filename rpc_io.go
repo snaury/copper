@@ -26,7 +26,7 @@ func rpcReadMessage(r io.Reader, pb proto.Message) error {
 		}
 		return err
 	}
-	size := int(binary.LittleEndian.Uint32(buf[0:4]))
+	size := int(binary.BigEndian.Uint32(buf[0:4]))
 	var data []byte
 	if size > 0 {
 		data = make([]byte, size)
@@ -56,7 +56,7 @@ func rpcWriteMessage(w io.Writer, pb proto.Message) error {
 		return err
 	}
 	var buf [4]byte
-	binary.LittleEndian.PutUint32(buf[0:4], uint32(len(data)))
+	binary.BigEndian.PutUint32(buf[0:4], uint32(len(data)))
 	_, err = w.Write(buf[0:4])
 	if err != nil {
 		return err
