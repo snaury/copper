@@ -2,6 +2,7 @@ package copper
 
 import (
 	"fmt"
+	"reflect"
 )
 
 type serverRouteCase struct {
@@ -59,6 +60,7 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 	r := s.routeByName[name]
 	if r == nil {
 		if len(routes) == 0 {
+			// Don't do anything if this call is trying to drop the route
 			return nil
 		}
 		r = &serverRoute{
@@ -87,6 +89,10 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 		delete(s.routeByName, name)
 		return nil
 	} else {
+		if reflect.DeepEqual(r.routes, routes) {
+			// Don't do anything if routes didn't actually change
+			return nil
+		}
 		for _, c := range r.cases {
 			c.sub.unsubscribeLocked()
 		}
@@ -105,6 +111,7 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 			panic(fmt.Errorf("unexpected subscribe error: %s", err))
 		}
 		r.cases[index].sub = sub
+		r.cases[index].weight = route.Weight
 	}
 	return nil
 }
