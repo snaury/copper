@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import json
 import time
 import pytest
@@ -23,6 +24,7 @@ def workdir():
 
 @pytest.yield_fixture
 def copper_node(workdir):
+    logpath = os.path.join(workdir, 'copper.log')
     sockpath = os.path.join(workdir, 'copper.sock')
     confpath = os.path.join(workdir, 'copper.conf')
     config = {
@@ -37,12 +39,15 @@ def copper_node(workdir):
     with open(confpath, 'w') as f:
         # YAML parses valid JSON data
         json.dump(config, f)
-    p = subprocess.Popen(['copper-node', '-config', confpath], shell=False, cwd=workdir)
+    with open(logpath, 'wb') as logfile:
+        p = subprocess.Popen(['copper-node', '-config=' + confpath], shell=False, cwd=workdir, stdout=logfile, stderr=logfile)
     try:
         while not os.path.exists(sockpath):
             time.sleep(0.001)
             rc = p.poll()
             if rc is not None:
+                with open(logpath, 'rb') as logfile:
+                    sys.stderr.write(logfile.read())
                 raise RuntimeError('copper-node exited with status %r' % (rc,))
         yield sockpath
     finally:
