@@ -568,6 +568,22 @@ func (s *rawStream) Read(b []byte) (n int, err error) {
 	return
 }
 
+func (s *rawStream) ReadByte() (byte, error) {
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	err := s.waitReadLocked()
+	if err != nil {
+		return 0, err
+	}
+	b := s.readbuf.readbyte()
+	s.readleft++
+	s.owner.addOutgoingAckLocked(s.streamID, 1)
+	if s.readbuf.len() == 0 {
+		s.cleanupLocked()
+	}
+	return b, nil
+}
+
 func (s *rawStream) Write(b []byte) (n int, err error) {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
@@ -586,6 +602,19 @@ func (s *rawStream) Write(b []byte) (n int, err error) {
 		n += taken
 	}
 	return
+}
+
+func (s *rawStream) WriteByte(b byte) error {
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	err := s.waitWriteLocked()
+	if err != nil {
+		return err
+	}
+	s.writebuf.writebyte(b)
+	s.writeleft--
+	s.owner.addOutgoingDataLocked(s)
+	return nil
 }
 
 func (s *rawStream) Flush() error {

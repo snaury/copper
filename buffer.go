@@ -73,6 +73,22 @@ func (b *buffer) read(dst []byte) (n int) {
 	return
 }
 
+// readbyte takes a byte from the buffer
+func (b *buffer) readbyte() (c byte) {
+	c = b.buf[:cap(b.buf)][b.off]
+	if len(b.buf) == 1 {
+		b.buf = b.buf[:0]
+		b.off = 0
+	} else {
+		b.buf = b.buf[:len(b.buf)-1]
+		b.off++
+		if b.off == cap(b.buf) {
+			b.off = 0
+		}
+	}
+	return c
+}
+
 // write adds len(src) bytes to the buffer
 func (b *buffer) write(src []byte) {
 	m := len(b.buf)
@@ -108,6 +124,34 @@ func (b *buffer) write(src []byte) {
 		}
 	}
 	b.buf = b.buf[:m+n]
+}
+
+// writebyte adds a byte to the buffer
+func (b *buffer) writebyte(c byte) {
+	m := len(b.buf)
+	end := b.off + len(b.buf)
+	if m == cap(b.buf) {
+		dst := make([]byte, minpow2(m+1))
+		if end <= cap(b.buf) {
+			// data does not wrap, need simple copy
+			copy(dst, b.buf[b.off:end])
+		} else {
+			// data wraps, need to copy two parts
+			z := copy(dst, b.buf[b.off:cap(b.buf)])
+			copy(dst[z:], b.buf[:m-z])
+		}
+		dst[m] = c
+		b.buf = dst[:m+1]
+		b.off = 0
+		return
+	}
+	if end >= cap(b.buf) {
+		// current data wraps
+		b.buf[:cap(b.buf)][end-cap(b.buf)] = c
+	} else {
+		b.buf[:cap(b.buf)][end] = c
+	}
+	b.buf = b.buf[:m+1]
 }
 
 // clear discards all buffer memory

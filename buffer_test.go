@@ -101,6 +101,26 @@ func TestBufferRead(t *testing.T) {
 	}
 }
 
+func TestBufferReadByte(t *testing.T) {
+	var b buffer
+	for index, c := range bufferReadTestCases {
+		b = makebuffer(c.data, c.off, c.size)
+		result := make([]byte, len(c.expected))
+		for pos := range result {
+			result[pos] = b.readbyte()
+		}
+		if !reflect.DeepEqual(result, c.expected) {
+			t.Errorf("readbyte case %d: readbytes returned %v (expected %v)", index, result, c.expected)
+		}
+		if b.off != c.newoff {
+			t.Errorf("readbyte case %d: new offset = %d (expected %d)", index, b.off, c.newoff)
+		}
+		if b.len() != c.newsize {
+			t.Errorf("readbyte case %d: new size = %d (expected %d)", index, b.len(), c.newsize)
+		}
+	}
+}
+
 func TestBufferCurent(t *testing.T) {
 	var b buffer
 	for index, c := range bufferReadTestCases {
@@ -174,6 +194,26 @@ func TestBufferWrite(t *testing.T) {
 		b.clear()
 		if b.buf != nil || b.off != 0 {
 			t.Errorf("write case %d: clear failed", index)
+		}
+	}
+}
+
+func TestBufferWriteByte(t *testing.T) {
+	var b buffer
+	for index, c := range bufferWriteTestCases {
+		b = makebuffer(c.data, c.off, c.size)
+		for _, input := range c.src {
+			b.writebyte(input)
+		}
+		if b.off != c.newoff {
+			t.Errorf("writebyte case %d: new offset = %d (expected %d)", index, b.off, c.newoff)
+		}
+		if b.len() != c.newsize {
+			t.Errorf("writebyte case %d: new size = %d (expected %d)", index, b.len(), c.newsize)
+		}
+		data := b.buf[:cap(b.buf)]
+		if !reflect.DeepEqual(data, c.expected) {
+			t.Errorf("writebyte case %d: new data = %v (expected %v)", index, data, c.expected)
 		}
 	}
 }
