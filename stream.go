@@ -8,9 +8,6 @@ import (
 
 // Stream represents a multiplexed copper stream
 type Stream interface {
-	// Read reads data from the stream
-	Read(b []byte) (n int, err error)
-
 	// Peek is similar to Read, but returns available data without consuming
 	// it. The Returned buffer is only valid until the next Peek, Read or
 	// Discard call. When returned buffer constitutes all available data on
@@ -21,6 +18,9 @@ type Stream interface {
 	// returns the number of bytes that have been discarded. This call does not
 	// block and returns 0 if there is no data in the buffer.
 	Discard(n int) int
+
+	// Read reads data from the stream
+	Read(b []byte) (n int, err error)
 
 	// Write writes data to the stream
 	Write(b []byte) (n int, err error)

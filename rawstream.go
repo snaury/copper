@@ -45,13 +45,13 @@ type rawStream struct {
 
 var _ Stream = &rawStream{}
 
-func newIncomingStream(owner *rawConn, frame *openFrame, readwindow, writewindow int) *rawStream {
+func newStream(owner *rawConn, streamID uint32, targetID int64) *rawStream {
 	s := &rawStream{
-		streamID:  frame.streamID,
-		targetID:  frame.targetID,
+		streamID:  streamID,
+		targetID:  targetID,
 		owner:     owner,
-		readleft:  readwindow,
-		writeleft: writewindow,
+		readleft:  owner.localStreamWindowSize,
+		writeleft: owner.remoteStreamWindowSize,
 
 		readclosed:  make(chan struct{}),
 		writeclosed: make(chan struct{}),
@@ -60,6 +60,12 @@ func newIncomingStream(owner *rawConn, frame *openFrame, readwindow, writewindow
 	s.maywrite.init(&owner.lock)
 	s.flushed.init(&owner.lock)
 	s.acked.init(&owner.lock)
+	owner.streams[s.streamID] = s
+	return s
+}
+
+func newIncomingStream(owner *rawConn, frame *openFrame) *rawStream {
+	s := newStream(owner, frame.streamID, frame.targetID)
 	if len(frame.data) > 0 {
 		s.readbuf.write(frame.data)
 		s.readleft -= len(frame.data)
@@ -68,28 +74,13 @@ func newIncomingStream(owner *rawConn, frame *openFrame, readwindow, writewindow
 		s.flags |= flagStreamSeenEOF
 		s.setReadError(io.EOF)
 	}
-	owner.streams[s.streamID] = s
 	return s
 }
 
-func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64, readwindow, writewindow int) *rawStream {
-	s := &rawStream{
-		outgoing:  true,
-		streamID:  streamID,
-		targetID:  targetID,
-		owner:     owner,
-		readleft:  readwindow,
-		writeleft: writewindow,
-
-		readclosed:  make(chan struct{}),
-		writeclosed: make(chan struct{}),
-	}
-	s.mayread.init(&owner.lock)
-	s.maywrite.init(&owner.lock)
-	s.flushed.init(&owner.lock)
-	s.acked.init(&owner.lock)
+func newOutgoingStream(owner *rawConn, streamID uint32, targetID int64) *rawStream {
+	s := newStream(owner, streamID, targetID)
+	s.outgoing = true
 	s.flags |= flagStreamNeedOpen
-	owner.streams[s.streamID] = s
 	owner.addOutgoingCtrlLocked(s)
 	return s
 }
@@ -531,28 +522,6 @@ func (s *rawStream) closeWithErrorLocked(err error, closed bool) error {
 	return preverror
 }
 
-func (s *rawStream) Read(b []byte) (n int, err error) {
-	s.owner.lock.Lock()
-	defer s.owner.lock.Unlock()
-	err = s.waitReadLocked()
-	if err != nil {
-		return
-	}
-	if len(b) > 0 {
-		n = s.readbuf.read(b)
-		if s.readerror != nil && s.readbuf.len() == 0 {
-			// there will be no more data, return the error too
-			err = s.readerror
-		}
-		s.readleft += n
-		s.owner.addOutgoingAckLocked(s.streamID, n)
-		if s.readbuf.len() == 0 {
-			s.cleanupLocked()
-		}
-	}
-	return
-}
-
 func (s *rawStream) Peek() (b []byte, err error) {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
@@ -575,6 +544,28 @@ func (s *rawStream) Discard(n int) int {
 		}
 	}
 	return n
+}
+
+func (s *rawStream) Read(b []byte) (n int, err error) {
+	s.owner.lock.Lock()
+	defer s.owner.lock.Unlock()
+	err = s.waitReadLocked()
+	if err != nil {
+		return
+	}
+	if len(b) > 0 {
+		n = s.readbuf.read(b)
+		if s.readerror != nil && s.readbuf.len() == 0 {
+			// there will be no more data, return the error too
+			err = s.readerror
+		}
+		s.readleft += n
+		s.owner.addOutgoingAckLocked(s.streamID, n)
+		if s.readbuf.len() == 0 {
+			s.cleanupLocked()
+		}
+	}
+	return
 }
 
 func (s *rawStream) Write(b []byte) (n int, err error) {

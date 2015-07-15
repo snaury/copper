@@ -3,17 +3,14 @@ package copper
 import (
 	"io"
 	"sync"
-	"sync/atomic"
 )
 
 func passthru(dst, src Stream) {
 	var write sync.Mutex
-	var writeclosed uint32
 	go func() {
 		<-dst.WriteClosed()
 		write.Lock()
 		defer write.Unlock()
-		atomic.AddUint32(&writeclosed, 1)
 		err := dst.WriteErr()
 		if err == ECLOSED {
 			src.CloseRead()
@@ -23,10 +20,6 @@ func passthru(dst, src Stream) {
 	}()
 	for {
 		buf, err := src.Peek()
-		if atomic.LoadUint32(&writeclosed) > 0 {
-			// Don't react to CloseRead in the above goroutine
-			return
-		}
 		if len(buf) > 0 {
 			write.Lock()
 			n, werr := dst.Write(buf)
@@ -44,10 +37,12 @@ func passthru(dst, src Stream) {
 			}
 		}
 		if err != nil {
-			if err == io.EOF {
-				dst.CloseWrite()
-			} else {
-				dst.CloseWithError(err)
+			if dst.WriteErr() == nil {
+				if err == io.EOF {
+					dst.CloseWrite()
+				} else {
+					dst.CloseWithError(err)
+				}
 			}
 			return
 		}

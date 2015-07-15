@@ -315,7 +315,7 @@ func (c *rawConn) Open(target int64) (Stream, error) {
 		}
 		c.nextnewstream += 2
 	}
-	return newOutgoingStream(c, streamID, target, c.localStreamWindowSize, c.remoteStreamWindowSize), nil
+	return newOutgoingStream(c, streamID, target), nil
 }
 
 func (c *rawConn) addOutgoingAckLocked(streamID uint32, increment int) {
@@ -411,7 +411,7 @@ func (c *rawConn) processOpenFrameLocked(frame *openFrame) error {
 			code:  EWINDOWOVERFLOW,
 		}
 	}
-	stream := newIncomingStream(c, frame, c.localStreamWindowSize, c.remoteStreamWindowSize)
+	stream := newIncomingStream(c, frame)
 	if c.closed {
 		// we are closed and ignore valid OPEN frames
 		err := c.failure
