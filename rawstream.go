@@ -549,21 +549,21 @@ func (s *rawStream) Discard(n int) int {
 func (s *rawStream) Read(b []byte) (n int, err error) {
 	s.owner.lock.Lock()
 	defer s.owner.lock.Unlock()
-	err = s.waitReadLocked()
-	if err != nil {
-		return
-	}
 	if len(b) > 0 {
-		n = s.readbuf.read(b)
-		if s.readerror != nil && s.readbuf.len() == 0 {
-			// there will be no more data, return the error too
-			err = s.readerror
+		err = s.waitReadLocked()
+		if err != nil {
+			return
 		}
+		n = s.readbuf.read(b)
 		s.readleft += n
 		s.owner.addOutgoingAckLocked(s.streamID, n)
 		if s.readbuf.len() == 0 {
 			s.cleanupLocked()
 		}
+	}
+	if s.readerror != nil && s.readbuf.len() == 0 {
+		// there will be no more data, return the error too
+		err = s.readerror
 	}
 	return
 }
