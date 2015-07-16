@@ -77,17 +77,15 @@ func newStream(owner *rawConn, streamID uint32, targetID int64) *rawStream {
 	}
 	s.read.init(&s.mu, owner.settings.localStreamWindowSize)
 	s.write.init(&s.mu, owner.settings.remoteStreamWindowSize)
-	owner.streams.addLocked(s)
 	return s
 }
 
-func newIncomingStream(owner *rawConn, frame *openFrame) *rawStream {
+func newIncomingStreamWithUnlock(owner *rawConn, frame *openFrame) *rawStream {
 	s := newStream(owner, frame.streamID, frame.targetID)
-	owner.mu.Unlock()
+	owner.streams.addLockedWithUnlock(s)
 	s.mu.Lock()
 	s.processDataLocked(frame.data, frame.flags&flagFin != 0)
 	s.mu.Unlock()
-	owner.mu.Lock()
 	return s
 }
 
@@ -95,8 +93,10 @@ func newOutgoingStreamWithUnlock(owner *rawConn, streamID uint32, targetID int64
 	s := newStream(owner, streamID, targetID)
 	s.outgoing = true
 	s.flags |= flagStreamNeedOpen
-	owner.mu.Unlock()
+	owner.streams.addLockedWithUnlock(s)
+	s.mu.Lock()
 	s.scheduleCtrl()
+	s.mu.Unlock()
 	return s
 }
 
@@ -117,7 +117,7 @@ func (s *rawStream) scheduleData() {
 
 func (s *rawStream) cleanupLocked() {
 	if s.flags&flagStreamBothEOF == flagStreamBothEOF && s.read.buf.len() == 0 && s.read.acks == 0 && s.write.nack <= 0 {
-		go s.owner.streams.remove(s)
+		s.owner.streams.remove(s)
 	}
 }
 

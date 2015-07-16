@@ -133,14 +133,16 @@ func (s *rawConnStreams) ownedID(id uint32) bool {
 }
 
 func (s *rawConnStreams) failLocked(err error, closed bool) {
-	if s.err == nil {
+	if s.err == nil || closed && !s.closed {
 		s.err = err
-	}
-	if closed {
-		s.closed = true
-	}
-	for _, stream := range s.live {
-		stream.closeWithError(err, closed)
+		if closed {
+			s.closed = true
+		}
+		for _, stream := range s.live {
+			s.owner.mu.Unlock()
+			stream.closeWithError(err, closed)
+			s.owner.mu.Lock()
+		}
 	}
 }
 
@@ -159,10 +161,13 @@ func (s *rawConnStreams) allocateLocked() (uint32, error) {
 	return streamID, nil
 }
 
-func (s *rawConnStreams) addLocked(stream *rawStream) {
+func (s *rawConnStreams) addLockedWithUnlock(stream *rawStream) {
 	s.live[stream.streamID] = stream
-	if s.err != nil {
-		stream.closeWithError(s.err, s.closed)
+	err := s.err
+	closed := s.closed
+	s.owner.mu.Unlock()
+	if err != nil {
+		stream.closeWithError(err, closed)
 	}
 }
 
@@ -735,7 +740,8 @@ func (c *rawConn) processOpenFrame(frame *openFrame) error {
 			code:  EWINDOWOVERFLOW,
 		}
 	}
-	stream := newIncomingStream(c, frame) // unlocks c.mu
+	stream := newIncomingStreamWithUnlock(c, frame)
+	c.mu.Lock()
 	if c.failure != nil {
 		// we are closed and ignore valid OPEN frames
 		err := c.failure
