@@ -23,6 +23,7 @@ type rawStreamRead struct {
 	err    error
 	buf    buffer
 	left   int
+	acks   int
 	ready  condWithDeadline
 	closed chan struct{}
 }
@@ -95,7 +96,7 @@ func newOutgoingStreamWithUnlock(owner *rawConn, streamID uint32, targetID int64
 	s.outgoing = true
 	s.flags |= flagStreamNeedOpen
 	owner.mu.Unlock()
-	owner.outgoing.addCtrl(streamID)
+	s.scheduleCtrl()
 	return s
 }
 
@@ -107,15 +108,15 @@ func (s *rawStream) canReceive() bool {
 }
 
 func (s *rawStream) scheduleCtrl() {
-	s.owner.outgoing.addCtrl(s.streamID)
+	s.owner.outgoing.addCtrl(s)
 }
 
 func (s *rawStream) scheduleData() {
-	s.owner.outgoing.addData(s.streamID)
+	s.owner.outgoing.addData(s)
 }
 
 func (s *rawStream) cleanupLocked() {
-	if s.flags&flagStreamBothEOF == flagStreamBothEOF && s.read.buf.len() == 0 && s.write.nack <= 0 {
+	if s.flags&flagStreamBothEOF == flagStreamBothEOF && s.read.buf.len() == 0 && s.read.acks == 0 && s.write.nack <= 0 {
 		go s.owner.streams.remove(s)
 	}
 }
@@ -356,6 +357,23 @@ func (s *rawStream) writeCtrl() error {
 		s.mu.Unlock()
 		return nil
 	}
+	if s.read.acks > 0 {
+		flags := flagAck
+		if s.read.err == nil {
+			flags |= flagInc
+		}
+		frame := &windowFrame{
+			streamID:  s.streamID,
+			flags:     flags,
+			increment: uint32(s.read.acks),
+		}
+		s.read.acks = 0
+		if s.activeReset() {
+			s.scheduleCtrl()
+		}
+		s.mu.Unlock()
+		return s.owner.writeFrame(frame)
+	}
 	if s.activeReset() {
 		var flags uint8
 		reset := s.reset
@@ -585,8 +603,8 @@ func (s *rawStream) Discard(n int) int {
 	n = s.read.buf.discard(n)
 	if n > 0 {
 		s.read.left += n
-		s.owner.outgoing.addAcks(s.streamID, n)
-		s.cleanupLocked()
+		s.read.acks += n
+		s.scheduleCtrl()
 	}
 	s.mu.Unlock()
 	return n
@@ -602,8 +620,8 @@ func (s *rawStream) Read(b []byte) (n int, err error) {
 		}
 		n = s.read.buf.read(b)
 		s.read.left += n
-		s.owner.outgoing.addAcks(s.streamID, n)
-		s.cleanupLocked()
+		s.read.acks += n
+		s.scheduleCtrl()
 	}
 	if s.read.err != nil && s.read.buf.len() == 0 {
 		// there will be no more data, return the error too
@@ -622,8 +640,8 @@ func (s *rawStream) ReadByte() (byte, error) {
 	}
 	b := s.read.buf.readbyte()
 	s.read.left++
-	s.owner.outgoing.addAcks(s.streamID, 1)
-	s.cleanupLocked()
+	s.read.acks++
+	s.scheduleCtrl()
 	s.mu.Unlock()
 	return b, nil
 }
@@ -641,7 +659,7 @@ func (s *rawStream) Write(b []byte) (n int, err error) {
 		}
 		s.write.buf.write(b[n : n+taken])
 		s.write.left -= taken
-		s.owner.outgoing.addData(s.streamID)
+		s.scheduleData()
 		n += taken
 	}
 	s.mu.Unlock()
@@ -657,7 +675,7 @@ func (s *rawStream) WriteByte(b byte) error {
 	}
 	s.write.buf.writebyte(b)
 	s.write.left--
-	s.owner.outgoing.addData(s.streamID)
+	s.scheduleData()
 	s.mu.Unlock()
 	return nil
 }

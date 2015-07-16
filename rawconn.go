@@ -177,7 +177,7 @@ func (s *rawConnStreams) remove(stream *rawStream) {
 	s.owner.mu.Lock()
 	if s.live[stream.streamID] == stream {
 		delete(s.live, stream.streamID)
-		s.owner.outgoing.removeStream(stream.streamID)
+		s.owner.outgoing.removeStream(stream)
 		if s.ownedID(stream.streamID) {
 			s.dead[stream.streamID] = struct{}{}
 			if len(s.dead) >= maxDeadStreams {
@@ -359,9 +359,10 @@ type rawConnOutgoing struct {
 
 	settingsAcks int
 
-	acks map[uint32]uint32
-	ctrl map[uint32]struct{}
-	data map[uint32]struct{}
+	remoteInc int
+
+	ctrl map[*rawStream]struct{}
+	data map[*rawStream]struct{}
 }
 
 func (o *rawConnOutgoing) init(owner *rawConn) {
@@ -369,9 +370,8 @@ func (o *rawConnOutgoing) init(owner *rawConn) {
 	o.writeleft = defaultConnWindowSize
 	o.writeready = make(chan struct{}, 1)
 	o.unblocked.L = &o.mu
-	o.acks = make(map[uint32]uint32)
-	o.ctrl = make(map[uint32]struct{})
-	o.data = make(map[uint32]struct{})
+	o.ctrl = make(map[*rawStream]struct{})
+	o.data = make(map[*rawStream]struct{})
 }
 
 func (o *rawConnOutgoing) fail(err error) {
@@ -434,34 +434,31 @@ func (o *rawConnOutgoing) addSettingsAck() {
 	o.mu.Unlock()
 }
 
-func (o *rawConnOutgoing) addAcks(streamID uint32, increment int) {
+func (o *rawConnOutgoing) incrementRemote(increment int) {
 	o.mu.Lock()
-	o.acks[streamID] += uint32(increment)
+	o.remoteInc += increment
 	o.wakeup()
 	o.mu.Unlock()
 }
 
-func (o *rawConnOutgoing) addCtrl(streamID uint32) {
+func (o *rawConnOutgoing) addCtrl(stream *rawStream) {
 	o.mu.Lock()
-	o.ctrl[streamID] = struct{}{}
+	o.ctrl[stream] = struct{}{}
 	o.wakeup()
 	o.mu.Unlock()
 }
 
-func (o *rawConnOutgoing) addData(streamID uint32) {
+func (o *rawConnOutgoing) addData(stream *rawStream) {
 	o.mu.Lock()
-	o.data[streamID] = struct{}{}
+	o.data[stream] = struct{}{}
 	o.wakeup()
 	o.mu.Unlock()
 }
 
-func (o *rawConnOutgoing) removeStream(streamID uint32) {
+func (o *rawConnOutgoing) removeStream(stream *rawStream) {
 	o.mu.Lock()
-	// FIXME: there should be no acks at the time of the removal
-	// Otherwise a sync might mark this stream as dead
-	//delete(o.acks, streamID)
-	delete(o.ctrl, streamID)
-	delete(o.data, streamID)
+	delete(o.ctrl, stream)
+	delete(o.data, stream)
 	o.mu.Unlock()
 }
 
@@ -757,7 +754,7 @@ func (c *rawConn) processOpenFrame(frame *openFrame) error {
 	go c.handleStream(c.handler, stream)
 	c.mu.Unlock()
 	if len(frame.data) > 0 {
-		c.outgoing.addAcks(0, len(frame.data))
+		c.outgoing.incrementRemote(len(frame.data))
 	}
 	return nil
 }
@@ -791,7 +788,7 @@ func (c *rawConn) processDataFrame(frame *dataFrame) error {
 		return err
 	}
 	if len(frame.data) > 0 {
-		c.outgoing.addAcks(0, len(frame.data))
+		c.outgoing.incrementRemote(len(frame.data))
 	}
 	return nil
 }
@@ -966,18 +963,28 @@ writeloop:
 				continue writeloop
 			}
 		}
-		for streamID, increment := range c.outgoing.acks {
-			delete(c.outgoing.acks, streamID)
+		if c.outgoing.remoteInc > 0 {
+			increment := c.outgoing.remoteInc
+			c.outgoing.remoteInc = 0
 			c.outgoing.mu.Unlock()
-			flags := flagAck
-			if c.streamCanReceive(streamID) {
-				flags |= flagInc
-			}
 			err := c.writeFrame(&windowFrame{
-				streamID:  streamID,
-				flags:     flags,
-				increment: increment,
+				streamID:  0,
+				flags:     flagInc,
+				increment: uint32(increment),
 			})
+			if err != nil {
+				c.closeWithError(err, false)
+				return false
+			}
+			c.outgoing.mu.Lock()
+			if c.outgoing.active() {
+				continue writeloop
+			}
+		}
+		for stream := range c.outgoing.ctrl {
+			delete(c.outgoing.ctrl, stream)
+			c.outgoing.mu.Unlock()
+			err := stream.writeCtrl()
 			if err != nil {
 				c.closeWithError(err, false)
 				return false
@@ -1000,41 +1007,23 @@ writeloop:
 			})
 			return false
 		}
-		for streamID := range c.outgoing.ctrl {
-			delete(c.outgoing.ctrl, streamID)
+		if c.outgoing.writeleft <= 0 {
+			break
+		}
+		for stream := range c.outgoing.data {
+			delete(c.outgoing.data, stream)
 			c.outgoing.mu.Unlock()
-			stream := c.streams.find(streamID)
-			if stream != nil {
-				err := stream.writeCtrl()
-				if err != nil {
-					c.closeWithError(err, false)
-					return false
-				}
+			err := stream.writeData()
+			if err != nil {
+				c.closeWithError(err, false)
+				return false
 			}
 			c.outgoing.mu.Lock()
 			if c.outgoing.active() {
 				continue writeloop
 			}
-		}
-		if c.outgoing.writeleft > 0 {
-			for streamID := range c.outgoing.data {
-				delete(c.outgoing.data, streamID)
-				c.outgoing.mu.Unlock()
-				stream := c.streams.find(streamID)
-				if stream != nil {
-					err := stream.writeData()
-					if err != nil {
-						c.closeWithError(err, false)
-						return false
-					}
-				}
-				c.outgoing.mu.Lock()
-				if c.outgoing.active() {
-					continue writeloop
-				}
-				if c.outgoing.writeleft <= 0 {
-					break
-				}
+			if c.outgoing.writeleft <= 0 {
+				break
 			}
 		}
 		break
