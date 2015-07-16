@@ -1,24 +1,21 @@
 package copper
 
 import (
-	"bufio"
 	"time"
 )
 
 type rawConnReader struct {
-	owner  *rawConn
-	buffer *bufio.Reader
+	owner *rawConn
 }
 
 func newRawConnReader(owner *rawConn) *rawConnReader {
-	r := &rawConnReader{
+	return &rawConnReader{
 		owner: owner,
 	}
-	r.buffer = bufio.NewReaderSize(r, defaultConnBufferSize)
-	return r
 }
 
 func (r *rawConnReader) Read(b []byte) (int, error) {
-	r.owner.conn.SetReadDeadline(time.Now().Add(r.owner.localInactivityTimeout))
+	r.owner.lastread = time.Now()
+	r.owner.conn.SetReadDeadline(r.owner.lastread.Add(r.owner.settings.getLocalInactivityTimeout()))
 	return r.owner.conn.Read(b)
 }

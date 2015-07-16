@@ -1,28 +1,21 @@
 package copper
 
 import (
-	"bufio"
 	"time"
 )
 
 type rawConnWriter struct {
-	owner  *rawConn
-	buffer *bufio.Writer
-	writes int
+	owner *rawConn
 }
 
 func newRawConnWriter(owner *rawConn) *rawConnWriter {
-	w := &rawConnWriter{
+	return &rawConnWriter{
 		owner: owner,
 	}
-	w.buffer = bufio.NewWriterSize(w, defaultConnBufferSize)
-	return w
 }
 
 func (w *rawConnWriter) Write(p []byte) (int, error) {
-	w.writes++
-	w.owner.lock.Unlock()
-	defer w.owner.lock.Lock()
-	w.owner.conn.SetWriteDeadline(time.Now().Add(w.owner.localInactivityTimeout))
+	w.owner.lastwrite = time.Now()
+	w.owner.conn.SetWriteDeadline(w.owner.lastwrite.Add(w.owner.settings.getLocalInactivityTimeout()))
 	return w.owner.conn.Write(p)
 }
