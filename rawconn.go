@@ -932,9 +932,7 @@ writeloop:
 				}
 			}
 			c.outgoing.mu.Lock()
-			if c.outgoing.active() {
-				continue writeloop
-			}
+			continue writeloop
 		}
 		pingQueue := c.outgoing.pingQueue
 		if len(pingQueue) > 0 {
@@ -950,11 +948,9 @@ writeloop:
 				}
 			}
 			c.outgoing.mu.Lock()
-			if c.outgoing.active() {
-				continue writeloop
-			}
+			continue writeloop
 		}
-		for c.outgoing.settingsAcks > 0 {
+		if c.outgoing.settingsAcks > 0 {
 			c.outgoing.settingsAcks--
 			c.outgoing.mu.Unlock()
 			err := c.writeFrame(&settingsFrame{
@@ -965,9 +961,7 @@ writeloop:
 				return false
 			}
 			c.outgoing.mu.Lock()
-			if c.outgoing.active() {
-				continue writeloop
-			}
+			continue writeloop
 		}
 		if c.outgoing.remoteInc > 0 {
 			increment := c.outgoing.remoteInc
@@ -983,9 +977,7 @@ writeloop:
 				return false
 			}
 			c.outgoing.mu.Lock()
-			if c.outgoing.active() {
-				continue writeloop
-			}
+			continue writeloop
 		}
 		for stream := range c.outgoing.ctrl {
 			delete(c.outgoing.ctrl, stream)
@@ -996,9 +988,7 @@ writeloop:
 				return false
 			}
 			c.outgoing.mu.Lock()
-			if c.outgoing.active() {
-				continue writeloop
-			}
+			continue writeloop
 		}
 		if c.outgoing.failure != nil {
 			failure := c.outgoing.failure
@@ -1025,12 +1015,7 @@ writeloop:
 				return false
 			}
 			c.outgoing.mu.Lock()
-			if c.outgoing.active() {
-				continue writeloop
-			}
-			if c.outgoing.writeleft <= 0 {
-				break
-			}
+			continue writeloop
 		}
 		break
 	}
