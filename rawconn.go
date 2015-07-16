@@ -140,7 +140,7 @@ func (s *rawConnStreams) failLocked(err error, closed bool) {
 		s.closed = true
 	}
 	for _, stream := range s.live {
-		stream.closeWithError(err, closed, true)
+		stream.closeWithError(err, closed)
 	}
 }
 
@@ -162,7 +162,7 @@ func (s *rawConnStreams) allocateLocked() (uint32, error) {
 func (s *rawConnStreams) addLocked(stream *rawStream) {
 	s.live[stream.streamID] = stream
 	if s.err != nil {
-		stream.closeWithError(s.err, s.closed, true)
+		stream.closeWithError(s.err, s.closed)
 	}
 }
 
@@ -173,12 +173,11 @@ func (s *rawConnStreams) find(streamID uint32) *rawStream {
 	return stream
 }
 
-func (s *rawConnStreams) remove(stream *rawStream, locked bool) {
-	if !locked {
-		s.owner.mu.Lock()
-	}
+func (s *rawConnStreams) remove(stream *rawStream) {
+	s.owner.mu.Lock()
 	if s.live[stream.streamID] == stream {
 		delete(s.live, stream.streamID)
+		s.owner.outgoing.removeStream(stream.streamID)
 		if s.ownedID(stream.streamID) {
 			s.dead[stream.streamID] = struct{}{}
 			if len(s.dead) >= maxDeadStreams {
@@ -187,17 +186,15 @@ func (s *rawConnStreams) remove(stream *rawStream, locked bool) {
 			}
 		}
 	}
-	if !locked {
-		s.owner.mu.Unlock()
-	}
+	s.owner.mu.Unlock()
 }
 
 func (s *rawConnStreams) changeWindow(diff int) {
-	s.owner.mu.Lock()
+	s.owner.mu.RLock()
 	for _, stream := range s.live {
-		stream.changeWindowOwnerLocked(diff)
+		stream.changeWindow(diff)
 	}
-	s.owner.mu.Unlock()
+	s.owner.mu.RUnlock()
 }
 
 func (s *rawConnStreams) takeDeadLocked() []uint32 {
@@ -447,15 +444,25 @@ func (o *rawConnOutgoing) addAcks(streamID uint32, increment int) {
 func (o *rawConnOutgoing) addCtrl(streamID uint32) {
 	o.mu.Lock()
 	o.ctrl[streamID] = struct{}{}
-	o.mu.Unlock()
 	o.wakeup()
+	o.mu.Unlock()
 }
 
 func (o *rawConnOutgoing) addData(streamID uint32) {
 	o.mu.Lock()
 	o.data[streamID] = struct{}{}
-	o.mu.Unlock()
 	o.wakeup()
+	o.mu.Unlock()
+}
+
+func (o *rawConnOutgoing) removeStream(streamID uint32) {
+	o.mu.Lock()
+	// FIXME: there should be no acks at the time of the removal
+	// Otherwise a sync might mark this stream as dead
+	//delete(o.acks, streamID)
+	delete(o.ctrl, streamID)
+	delete(o.data, streamID)
+	o.mu.Unlock()
 }
 
 func (o *rawConnOutgoing) active() bool {
@@ -735,14 +742,14 @@ func (c *rawConn) processOpenFrame(frame *openFrame) error {
 	if c.failure != nil {
 		// we are closed and ignore valid OPEN frames
 		err := c.failure
-		stream.closeWithError(err, true, true)
 		c.mu.Unlock()
+		stream.closeWithError(err, true)
 		return nil
 	}
 	if c.shutdownchan != nil {
 		// we are shutting down and should close incoming streams
-		stream.closeWithError(ECONNSHUTDOWN, true, true)
 		c.mu.Unlock()
+		stream.closeWithError(ECONNSHUTDOWN, true)
 		return nil
 	}
 	c.finishgroup.Add(1)
@@ -995,15 +1002,14 @@ writeloop:
 		}
 		for streamID := range c.outgoing.ctrl {
 			delete(c.outgoing.ctrl, streamID)
-			stream := c.streams.find(streamID)
-			if stream == nil {
-				continue
-			}
 			c.outgoing.mu.Unlock()
-			err := stream.writeCtrl()
-			if err != nil {
-				c.closeWithError(err, false)
-				return false
+			stream := c.streams.find(streamID)
+			if stream != nil {
+				err := stream.writeCtrl()
+				if err != nil {
+					c.closeWithError(err, false)
+					return false
+				}
 			}
 			c.outgoing.mu.Lock()
 			if c.outgoing.active() {
@@ -1013,19 +1019,21 @@ writeloop:
 		if c.outgoing.writeleft > 0 {
 			for streamID := range c.outgoing.data {
 				delete(c.outgoing.data, streamID)
-				stream := c.streams.find(streamID)
-				if stream == nil {
-					continue
-				}
 				c.outgoing.mu.Unlock()
-				err := stream.writeData()
-				if err != nil {
-					c.closeWithError(err, false)
-					return false
+				stream := c.streams.find(streamID)
+				if stream != nil {
+					err := stream.writeData()
+					if err != nil {
+						c.closeWithError(err, false)
+						return false
+					}
 				}
 				c.outgoing.mu.Lock()
 				if c.outgoing.active() {
 					continue writeloop
+				}
+				if c.outgoing.writeleft <= 0 {
+					break
 				}
 			}
 		}
@@ -1050,7 +1058,6 @@ func (c *rawConn) writeloop() {
 		c.outgoing.wait()
 		ok := c.writeOutgoingFrames()
 		newlastwrite := c.lastwrite
-		newdeadline := newlastwrite.Add(c.settings.getRemoteInactivityTimeout() * 2 / 3)
 		if ok && lastwrite == newlastwrite && c.writer.Buffered() == 0 {
 			// We haven't written anything for a while, write an empty frame
 			err := c.writeFrame(&dataFrame{})
@@ -1069,6 +1076,8 @@ func (c *rawConn) writeloop() {
 		if !ok {
 			break
 		}
+		newlastwrite = c.lastwrite
+		newdeadline := newlastwrite.Add(c.settings.getRemoteInactivityTimeout() * 2 / 3)
 		if newdeadline != deadline {
 			lastwrite = newlastwrite
 			deadline = newdeadline
