@@ -108,11 +108,11 @@ func TestBufferReadByte(t *testing.T) {
 	}
 }
 
-func TestBufferCurent(t *testing.T) {
+func TestBufferPeek(t *testing.T) {
 	var b buffer
 	for index, c := range bufferReadTestCases {
 		b = makebuffer(c.data, c.off, c.size)
-		data := b.current()
+		data := b.peek()
 		if len(data) > c.readsize {
 			// current returns all the data
 			data = data[:c.readsize]

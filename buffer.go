@@ -143,8 +143,8 @@ func (b *buffer) clear() {
 	b.off = 0
 }
 
-// current returns data as a contiguous slice, moving it when necessary
-func (b *buffer) current() []byte {
+// peek returns data as a contiguous slice, moving it when necessary
+func (b *buffer) peek() []byte {
 	end := b.off + len(b.buf)
 	if end > cap(b.buf) {
 		// data is not contiguous

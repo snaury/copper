@@ -309,7 +309,7 @@ func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 	}
 	n = s.owner.outgoing.takeSpace(n)
 	if n > 0 {
-		data := s.write.buf.current()
+		data := s.write.buf.peek()
 		if len(data) > n {
 			data = data[:n]
 		}
@@ -591,7 +591,7 @@ func (s *rawStream) Peek() (b []byte, err error) {
 	s.mu.Lock()
 	err = s.waitReadReadyLocked()
 	if err == nil {
-		b = s.read.buf.current()
+		b = s.read.buf.peek()
 		err = s.read.err
 	}
 	s.mu.Unlock()
