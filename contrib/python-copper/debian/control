@@ -1,0 +1,16 @@
+Source: python-copper
+Section: misc
+Priority: optional
+Maintainer: Alexey Borzenkov <snaury@gmail.com>
+Build-Depends: debhelper (>= 7),
+               python-all-dev (>= 2.7),
+               python-setuptools (>= 0.6b3),
+               python-protobuf,
+               python-gevent,
+Standards-Version: 3.9.3
+
+Package: python-copper
+Architecture: all
+Depends: ${misc:Depends}, ${python:Depends}
+Description: Package python-copper
+ This is package python-copper.

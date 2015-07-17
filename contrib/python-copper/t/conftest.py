@@ -9,7 +9,7 @@ from errno import EEXIST
 from shutil import rmtree
 from tempfile import mkdtemp
 
-SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 SRC_COPPER_NODE = os.path.join(SRC_ROOT, 'cmd/copper-node')
 
 subprocess.check_call(['go', 'install'], shell=False, cwd=SRC_COPPER_NODE)

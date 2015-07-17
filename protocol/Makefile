@@ -1,12 +1,15 @@
 .PHONY: all install
 
-all: install
+COPPER_GO := copper.pb.go
+COPPER_PY := ../contrib/python-copper/lib/copper/copper_pb2.py
 
-copper.pb.go: copper.proto
-	protoc --go_out=. $<
+all: $(COPPER_GO) $(COPPER_PY) install
 
-copper_pb2.py: copper.proto
-	protoc --python_out=. $<
+$(COPPER_GO): copper.proto
+	protoc --go_out=$(dir $@) $<
 
-install: copper.pb.go copper_pb2.py
+$(COPPER_PY): copper.proto
+	protoc --python_out=$(dir $@) $<
+
+install: $(COPPER_GO)
 	go install
