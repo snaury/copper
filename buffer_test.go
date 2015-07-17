@@ -10,7 +10,7 @@ func makebuffer(data []byte, off int, size int) buffer {
 	b.buf = make([]byte, len(data))
 	copy(b.buf, data)
 	b.off = off
-	b.buf = b.buf[:size]
+	b.size = size
 	return b
 }
 
@@ -82,8 +82,8 @@ func TestBufferRead(t *testing.T) {
 		if b.off != c.newoff {
 			t.Errorf("read case %d: new offset = %d (expected %d)", index, b.off, c.newoff)
 		}
-		if b.len() != c.newsize {
-			t.Errorf("read case %d: new size = %d (expected %d)", index, b.len(), c.newsize)
+		if b.size != c.newsize {
+			t.Errorf("read case %d: new size = %d (expected %d)", index, b.size, c.newsize)
 		}
 	}
 }
@@ -102,8 +102,8 @@ func TestBufferReadByte(t *testing.T) {
 		if b.off != c.newoff {
 			t.Errorf("readbyte case %d: new offset = %d (expected %d)", index, b.off, c.newoff)
 		}
-		if b.len() != c.newsize {
-			t.Errorf("readbyte case %d: new size = %d (expected %d)", index, b.len(), c.newsize)
+		if b.size != c.newsize {
+			t.Errorf("readbyte case %d: new size = %d (expected %d)", index, b.size, c.newsize)
 		}
 	}
 }
@@ -171,8 +171,8 @@ func TestBufferWrite(t *testing.T) {
 		if b.off != c.newoff {
 			t.Errorf("write case %d: new offset = %d (expected %d)", index, b.off, c.newoff)
 		}
-		if b.len() != c.newsize {
-			t.Errorf("write case %d: new size = %d (expected %d)", index, b.len(), c.newsize)
+		if b.size != c.newsize {
+			t.Errorf("write case %d: new size = %d (expected %d)", index, b.size, c.newsize)
 		}
 		data := b.buf[:cap(b.buf)]
 		if !reflect.DeepEqual(data, c.expected) {
@@ -195,8 +195,8 @@ func TestBufferWriteByte(t *testing.T) {
 		if b.off != c.newoff {
 			t.Errorf("writebyte case %d: new offset = %d (expected %d)", index, b.off, c.newoff)
 		}
-		if b.len() != c.newsize {
-			t.Errorf("writebyte case %d: new size = %d (expected %d)", index, b.len(), c.newsize)
+		if b.size != c.newsize {
+			t.Errorf("writebyte case %d: new size = %d (expected %d)", index, b.size, c.newsize)
 		}
 		data := b.buf[:cap(b.buf)]
 		if !reflect.DeepEqual(data, c.expected) {
