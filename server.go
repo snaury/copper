@@ -1,9 +1,13 @@
 package copper
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -153,10 +157,158 @@ func (s *server) acceptor(listener net.Listener, allowChanges bool) {
 	}
 }
 
+func (s *server) findEndpointLocked(name string, minDistance, maxDistance uint32) (endpoint endpointReference) {
+	var minPriority uint32
+	route := s.routeByName[name]
+	if route != nil {
+		return route
+	}
+	pubs := s.pubsByName[name]
+	if len(pubs) > 0 {
+		for _, pub := range pubs {
+			if pub.settings.Distance < minDistance || pub.settings.Distance > maxDistance {
+				continue
+			}
+			if endpoint == nil || pub.settings.Priority < minPriority {
+				if pub.settings.Priority == 0 {
+					return pub
+				}
+				endpoint = pub
+				minPriority = pub.settings.Priority
+			}
+		}
+		if endpoint != nil {
+			return endpoint
+		}
+	}
+	for _, peer := range s.peers {
+		remotes := peer.remotesByName[name]
+		if len(remotes) > 0 {
+			for _, remote := range remotes {
+				if remote.settings.Distance < minDistance || remote.settings.Distance > maxDistance {
+					continue
+				}
+				if endpoint == nil || remote.settings.Priority < minPriority {
+					if remote.settings.Priority == 0 {
+						return remote
+					}
+					endpoint = remote
+					minPriority = remote.settings.Priority
+				}
+			}
+		}
+	}
+	return endpoint
+}
+
+func (s *server) findEndpointHTTPLocked(path string) (endpoint endpointReference) {
+	if len(path) == 0 {
+		path = "/"
+	} else if path[0] != '/' {
+		path = "/" + path
+	}
+	for len(path) > 0 {
+		endpoint = s.findEndpointLocked("http:"+path, 0, 1)
+		if endpoint != nil {
+			return endpoint
+		}
+		endpoint = s.findEndpointLocked("http:"+path, 2, 2)
+		if endpoint != nil {
+			return endpoint
+		}
+		if path[len(path)-1] == '/' {
+			path = path[:len(path)-1]
+		}
+		index := strings.LastIndex(path, "/")
+		if index == -1 {
+			break
+		}
+		path = path[:index+1]
+	}
+	return nil
+}
+
+// Hop-by-hop headers. These are removed when sent to the backend.
+// http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
+var hopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te", // canonicalized version of "TE"
+	"Trailers",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+func copyHeaders(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
 func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	// TODO
-	// Find where to forward this request, using the longest part of the uri.
-	// First routes should be checked, then local/remote depending on priority
+	status := func() handleRequestStatus {
+		s.lock.Lock()
+		defer s.lock.Unlock()
+		var endpoint endpointReference
+		service := req.Header.Get("X-Copper-Service")
+		if len(service) != 0 {
+			endpoint = s.findEndpointLocked("http:"+service, 0, 1)
+			if endpoint == nil {
+				endpoint = s.findEndpointLocked("http:"+service, 2, 2)
+			}
+		} else {
+			endpoint = s.findEndpointHTTPLocked(req.URL.Path)
+		}
+		if endpoint == nil {
+			return handleRequestStatusNoRoute
+		}
+		return endpoint.handleRequestLocked(func(remote Stream) handleRequestStatus {
+			outreq := new(http.Request)
+			*outreq = *req
+			modified := false
+			for _, h := range hopHeaders {
+				if len(outreq.Header[h]) > 0 {
+					if !modified {
+						outreq.Header = make(http.Header)
+						copyHeaders(outreq.Header, req.Header)
+					}
+					delete(outreq.Header, h)
+				}
+			}
+			go func() {
+				err := outreq.Write(remote)
+				if err != nil {
+					remote.CloseWithError(err)
+				}
+			}()
+			r := bufio.NewReader(remote)
+			res, err := http.ReadResponse(r, outreq)
+			if err == nil && res.StatusCode == 100 {
+				// Skip 100-continue
+				res, err = http.ReadResponse(r, outreq)
+			}
+			if err != nil {
+				remote.CloseWithError(err)
+				text := err.Error()
+				rw.Header().Set("Content-Length", fmt.Sprintf("%d", len(text)))
+				rw.WriteHeader(502)
+				rw.Write([]byte(text))
+			} else {
+				defer res.Body.Close()
+				copyHeaders(rw.Header(), res.Header)
+				rw.WriteHeader(res.StatusCode)
+				io.Copy(rw, res.Body)
+			}
+			return handleRequestStatusDone
+		})
+	}()
+	if status != handleRequestStatusDone {
+		rw.WriteHeader(404)
+	}
 }
 
 func (s *server) httpacceptor(listener net.Listener) {
