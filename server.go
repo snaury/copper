@@ -177,9 +177,6 @@ func (s *server) findEndpointLocked(name string, minDistance, maxDistance uint32
 				minPriority = pub.settings.Priority
 			}
 		}
-		if endpoint != nil {
-			return endpoint
-		}
 	}
 	for _, peer := range s.peers {
 		remotes := peer.remotesByName[name]
