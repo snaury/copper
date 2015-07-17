@@ -52,10 +52,14 @@ func (c *serverClient) handleControl(client Stream) error {
 }
 
 func (c *serverClient) handleRequestWith(client Stream, endpoint endpointReference) error {
-	switch status := endpoint.handleRequestLocked(client); status {
+	status := endpoint.handleRequestLocked(func(remote Stream) handleRequestStatus {
+		passthruBoth(client, remote)
+		return handleRequestStatusDone
+	})
+	switch status {
 	case handleRequestStatusDone:
 		return nil
-	case handleRequestStatusFailure, handleRequestStatusNoRoute:
+	case handleRequestStatusImpossible, handleRequestStatusNoRoute:
 		// request failed or couldn't be routed
 		return ENOROUTE
 	case handleRequestStatusOverCapacity:

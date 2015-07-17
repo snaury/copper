@@ -3,6 +3,7 @@ package copper
 import (
 	"math/rand"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,19 +27,22 @@ type handleRequestStatus int
 const (
 	// Request was handled and the stream consumed
 	handleRequestStatusDone handleRequestStatus = iota
-	// There was an attempt to handle the request, but it failed. While the
-	// stream was not consumed, the lock was unlocked and the configuration
-	// may have changed in the mean time.
-	handleRequestStatusFailure
-	// There was no route to send the request to
-	handleRequestStatusNoRoute
+	// There was an attempt to handle the request, but it was impossible, and
+	// future requests are unlikely to succeed. While the stream was not
+	// consumed this status implies that locks had been unlocked and
+	// configuration has changed.
+	handleRequestStatusImpossible
 	// There was not enough capacity to handle the request
 	handleRequestStatusOverCapacity
+	// There was no route to send the request to
+	handleRequestStatusNoRoute
 )
+
+type handleRequestCallback func(remote Stream) handleRequestStatus
 
 type endpointReference interface {
 	getEndpointsLocked() []Endpoint
-	handleRequestLocked(client Stream) handleRequestStatus
+	handleRequestLocked(callback handleRequestCallback) handleRequestStatus
 }
 
 type server struct {
@@ -149,6 +153,25 @@ func (s *server) acceptor(listener net.Listener, allowChanges bool) {
 	}
 }
 
+func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// TODO
+	// Find where to forward this request, using the longest part of the uri.
+	// First routes should be checked, then local/remote depending on priority
+}
+
+func (s *server) httpacceptor(listener net.Listener) {
+	defer s.listenwg.Done()
+	defer listener.Close()
+	httpserver := &http.Server{
+		Handler: s,
+	}
+	err := httpserver.Serve(listener)
+	if err != nil {
+		s.closeWithError(err)
+		return
+	}
+}
+
 func (s *server) AddPeer(network, address string, distance uint32) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -156,10 +179,6 @@ func (s *server) AddPeer(network, address string, distance uint32) error {
 		return s.failure
 	}
 	return s.addPeerLocked(network, address, distance)
-}
-
-func (s *server) AddUpstream(upstream Client) error {
-	return EUNSUPPORTED
 }
 
 func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
@@ -172,6 +191,22 @@ func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
 	s.listenwg.Add(1)
 	go s.acceptor(listener, allowChanges)
 	return nil
+}
+
+func (s *server) AddHTTPListener(listener net.Listener) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.failure != nil {
+		return s.failure
+	}
+	s.listeners = append(s.listeners, listener)
+	s.listenwg.Add(1)
+	go s.httpacceptor(listener)
+	return nil
+}
+
+func (s *server) SetUpstream(upstream Client) error {
+	return EUNSUPPORTED
 }
 
 func (s *server) Err() error {

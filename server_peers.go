@@ -36,16 +36,16 @@ func (remote *serverPeerRemote) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (remote *serverPeerRemote) handleRequestLocked(client Stream) handleRequestStatus {
+func (remote *serverPeerRemote) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
 	if peer := remote.peer; peer != nil {
 		peer.owner.lock.Unlock()
 		defer peer.owner.lock.Lock()
 		stream, err := remote.client.Open(remote.targetID)
 		if err != nil {
-			return handleRequestStatusFailure
+			return handleRequestStatusImpossible
 		}
-		passthruBoth(client, stream)
-		return handleRequestStatusDone
+		defer stream.Close()
+		return callback(stream)
 	}
 	return handleRequestStatusNoRoute
 }

@@ -32,7 +32,7 @@ func (r *serverRoute) getEndpointsLocked() []Endpoint {
 	return result
 }
 
-func (r *serverRoute) handleRequestLocked(client Stream) handleRequestStatus {
+func (r *serverRoute) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
 	sum := int64(0)
 	for _, c := range r.cases {
 		if c.weight > 0 && c.sub.isActiveLocked() {
@@ -47,7 +47,7 @@ func (r *serverRoute) handleRequestLocked(client Stream) handleRequestStatus {
 	for _, c := range r.cases {
 		if c.weight > 0 && c.sub.isActiveLocked() {
 			if bin < int64(c.weight) {
-				return c.sub.handleRequestLocked(client)
+				return c.sub.handleRequestLocked(callback)
 			}
 			bin -= int64(c.weight)
 		}

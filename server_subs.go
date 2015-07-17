@@ -40,19 +40,17 @@ func (sub *serverSubscription) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (sub *serverSubscription) handleRequestLocked(client Stream) handleRequestStatus {
+func (sub *serverSubscription) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
 	if sub.active < len(sub.settings.Options) {
 		if route := sub.routes[sub.active]; route != nil {
-			return route.handleRequestLocked(client)
+			return route.handleRequestLocked(callback)
 		}
 		if local := sub.locals[sub.active]; local != nil && local.settings.Priority <= sub.remotePriority[sub.active] {
-			return local.handleRequestLocked(client)
+			return local.handleRequestLocked(callback)
 		}
 		for remote := range sub.remotes[sub.active] {
-			switch status := remote.handleRequestLocked(client); status {
-			case handleRequestStatusNoRoute:
-				continue
-			case handleRequestStatusFailure:
+			switch status := remote.handleRequestLocked(callback); status {
+			case handleRequestStatusImpossible, handleRequestStatusNoRoute:
 				continue
 			default:
 				return status

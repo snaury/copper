@@ -47,6 +47,15 @@ func main() {
 
 	var hostports []string
 	for _, listen := range config.Listen {
+		ishttp := false
+		switch listen.Type {
+		case "":
+			// nothing
+		case "http":
+			ishttp = true
+		default:
+			log.Fatalf("Unsupported listen type %q", listen.Type)
+		}
 		if listen.Network == "" && len(listen.Address) > 0 {
 			if listen.Address[0] == '/' || listen.Address[0] == '.' {
 				listen.Network = "unix"
@@ -83,7 +92,11 @@ func main() {
 				log.Fatalf("Failed to chmod %s: %s", listen.Address, err)
 			}
 		}
-		server.AddListener(l, listen.AllowChanges)
+		if ishttp {
+			server.AddHTTPListener(l)
+		} else {
+			server.AddListener(l, listen.AllowChanges)
+		}
 		log.Printf("Listening on %s", listen.Address)
 	}
 
