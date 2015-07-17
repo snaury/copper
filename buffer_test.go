@@ -66,19 +66,6 @@ func TestBufferRead(t *testing.T) {
 	for index, c := range bufferReadTestCases {
 		b = makebuffer(c.data, c.off, c.size)
 		data := make([]byte, c.readsize)
-		// call peek() first
-		{
-			taken := b.peek(data)
-			if taken != len(c.expected) {
-				t.Errorf("read case %d: read returned %d (expected %d)", index, taken, len(c.expected))
-				continue
-			}
-			result := data[:taken]
-			if !reflect.DeepEqual(result, c.expected) {
-				t.Errorf("read case %d: read returned %v (expected %v)", index, result, c.expected)
-				continue
-			}
-		}
 		// call read() to consume the data
 		{
 			taken := b.read(data)

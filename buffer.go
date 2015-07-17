@@ -24,23 +24,6 @@ func (b *buffer) len() int {
 	return len(b.buf)
 }
 
-// peek returns up to len(dst) bytes from the buffer
-func (b *buffer) peek(dst []byte) (n int) {
-	end := b.off + len(b.buf)
-	if end <= cap(b.buf) {
-		// data does not wrap, keep it simple
-		n = copy(dst, b.buf[b.off:end])
-	} else {
-		// data wraps, first copy everything up to cap(b.buf)
-		n = copy(dst, b.buf[b.off:cap(b.buf)])
-		if b.off+n == cap(b.buf) {
-			// if we reached cap(b.buf) there is more data
-			n += copy(dst[n:], b.buf[:len(b.buf)-n])
-		}
-	}
-	return
-}
-
 // read takes up to len(dst) bytes from the buffer
 func (b *buffer) read(dst []byte) (n int) {
 	end := b.off + len(b.buf)
