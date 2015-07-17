@@ -24,34 +24,30 @@ func (endpoint *localEndpoint) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (endpoint *localEndpoint) handleRequestLocked(client Stream) handleRequestStatus {
+func (endpoint *localEndpoint) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
 	if endpoint.pub != nil && endpoint.active < endpoint.settings.Concurrency {
-		return endpoint.passthruRequestLocked(client)
+		endpoint.active++
+		if endpoint.active == endpoint.settings.Concurrency {
+			delete(endpoint.pub.ready, endpoint)
+		}
+		defer func() {
+			if endpoint.pub != nil {
+				endpoint.active--
+				endpoint.pub.ready[endpoint] = struct{}{}
+				endpoint.pub.wakeupWaitersLocked(1)
+			}
+		}()
+		endpoint.owner.lock.Unlock()
+		defer endpoint.owner.lock.Lock()
+		remote, err := endpoint.key.client.conn.Open(endpoint.key.targetID)
+		if err != nil {
+			// this client has already disconnected
+			return handleRequestStatusImpossible
+		}
+		defer remote.Close()
+		return callback(remote)
 	}
 	return handleRequestStatusOverCapacity
-}
-
-func (endpoint *localEndpoint) passthruRequestLocked(client Stream) handleRequestStatus {
-	endpoint.active++
-	if endpoint.active == endpoint.settings.Concurrency {
-		delete(endpoint.pub.ready, endpoint)
-	}
-	defer func() {
-		if endpoint.pub != nil {
-			endpoint.active--
-			endpoint.pub.ready[endpoint] = struct{}{}
-			endpoint.pub.wakeupWaitersLocked(1)
-		}
-	}()
-	endpoint.owner.lock.Unlock()
-	defer endpoint.owner.lock.Lock()
-	remote, err := endpoint.key.client.conn.Open(endpoint.key.targetID)
-	if err != nil {
-		// this client has already disconnected
-		return handleRequestStatusFailure
-	}
-	passthruBoth(client, remote)
-	return handleRequestStatusDone
 }
 
 type serverPublication struct {
@@ -98,15 +94,15 @@ func (pub *serverPublication) getEndpointsLocked() []Endpoint {
 	}
 }
 
-func (pub *serverPublication) handleRequestLocked(client Stream) handleRequestStatus {
+func (pub *serverPublication) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
 	var waiter *sync.Cond
 reqloop:
 	for len(pub.endpoints) > 0 {
 		for endpoint := range pub.ready {
-			switch status := endpoint.handleRequestLocked(client); status {
+			switch status := endpoint.handleRequestLocked(callback); status {
 			case handleRequestStatusDone:
 				return status
-			case handleRequestStatusFailure:
+			case handleRequestStatusImpossible:
 				// the endpoint is gone, we might just not know it yet
 				endpoint.unpublishLocked()
 				continue reqloop

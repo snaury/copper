@@ -1,1 +1,0 @@
-../../../protocol/copper_pb2.py

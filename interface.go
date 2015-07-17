@@ -142,11 +142,14 @@ type Server interface {
 	// AddPeer adds a peer to the server
 	AddPeer(network, address string, distance uint32) error
 
-	// AddUpstream adds an upstream to the server
-	AddUpstream(upstream Client) error
-
-	// Add given network listener to the pool of listeners
+	// Add a given network listener to the pool of listeners
 	AddListener(listener net.Listener, allowChanges bool) error
+
+	// Add a given network listener to the pool of http listeners
+	AddHTTPListener(listener net.Listener) error
+
+	// SetUpstream sets an upstream for the server
+	SetUpstream(upstream Client) error
 
 	// Err returns an error that caused the server to be closed
 	Err() error

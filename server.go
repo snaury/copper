@@ -1,8 +1,13 @@
 package copper
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"math/rand"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,19 +31,22 @@ type handleRequestStatus int
 const (
 	// Request was handled and the stream consumed
 	handleRequestStatusDone handleRequestStatus = iota
-	// There was an attempt to handle the request, but it failed. While the
-	// stream was not consumed, the lock was unlocked and the configuration
-	// may have changed in the mean time.
-	handleRequestStatusFailure
-	// There was no route to send the request to
-	handleRequestStatusNoRoute
+	// There was an attempt to handle the request, but it was impossible, and
+	// future requests are unlikely to succeed. While the stream was not
+	// consumed this status implies that locks had been unlocked and
+	// configuration has changed.
+	handleRequestStatusImpossible
 	// There was not enough capacity to handle the request
 	handleRequestStatusOverCapacity
+	// There was no route to send the request to
+	handleRequestStatusNoRoute
 )
+
+type handleRequestCallback func(remote Stream) handleRequestStatus
 
 type endpointReference interface {
 	getEndpointsLocked() []Endpoint
-	handleRequestLocked(client Stream) handleRequestStatus
+	handleRequestLocked(callback handleRequestCallback) handleRequestStatus
 }
 
 type server struct {
@@ -149,6 +157,170 @@ func (s *server) acceptor(listener net.Listener, allowChanges bool) {
 	}
 }
 
+func (s *server) findEndpointLocked(name string, minDistance, maxDistance uint32) (endpoint endpointReference) {
+	var minPriority uint32
+	route := s.routeByName[name]
+	if route != nil {
+		return route
+	}
+	pubs := s.pubsByName[name]
+	if len(pubs) > 0 {
+		for _, pub := range pubs {
+			if pub.settings.Distance < minDistance || pub.settings.Distance > maxDistance {
+				continue
+			}
+			if endpoint == nil || pub.settings.Priority < minPriority {
+				if pub.settings.Priority == 0 {
+					return pub
+				}
+				endpoint = pub
+				minPriority = pub.settings.Priority
+			}
+		}
+	}
+	for _, peer := range s.peers {
+		remotes := peer.remotesByName[name]
+		if len(remotes) > 0 {
+			for _, remote := range remotes {
+				if remote.settings.Distance < minDistance || remote.settings.Distance > maxDistance {
+					continue
+				}
+				if endpoint == nil || remote.settings.Priority < minPriority {
+					if remote.settings.Priority == 0 {
+						return remote
+					}
+					endpoint = remote
+					minPriority = remote.settings.Priority
+				}
+			}
+		}
+	}
+	return endpoint
+}
+
+func (s *server) findEndpointHTTPLocked(path string) (endpoint endpointReference) {
+	if len(path) == 0 {
+		path = "/"
+	} else if path[0] != '/' {
+		path = "/" + path
+	}
+	for len(path) > 0 {
+		endpoint = s.findEndpointLocked("http:"+path, 0, 1)
+		if endpoint != nil {
+			return endpoint
+		}
+		endpoint = s.findEndpointLocked("http:"+path, 2, 2)
+		if endpoint != nil {
+			return endpoint
+		}
+		if path[len(path)-1] == '/' {
+			path = path[:len(path)-1]
+		}
+		index := strings.LastIndex(path, "/")
+		if index == -1 {
+			break
+		}
+		path = path[:index+1]
+	}
+	return nil
+}
+
+// Hop-by-hop headers. These are removed when sent to the backend.
+// http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
+var hopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te", // canonicalized version of "TE"
+	"Trailers",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+func copyHeaders(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	status := func() handleRequestStatus {
+		s.lock.Lock()
+		defer s.lock.Unlock()
+		var endpoint endpointReference
+		service := req.Header.Get("X-Copper-Service")
+		if len(service) != 0 {
+			endpoint = s.findEndpointLocked("http:"+service, 0, 1)
+			if endpoint == nil {
+				endpoint = s.findEndpointLocked("http:"+service, 2, 2)
+			}
+		} else {
+			endpoint = s.findEndpointHTTPLocked(req.URL.Path)
+		}
+		if endpoint == nil {
+			return handleRequestStatusNoRoute
+		}
+		return endpoint.handleRequestLocked(func(remote Stream) handleRequestStatus {
+			outreq := new(http.Request)
+			*outreq = *req
+			modified := false
+			for _, h := range hopHeaders {
+				if len(outreq.Header[h]) > 0 {
+					if !modified {
+						outreq.Header = make(http.Header)
+						copyHeaders(outreq.Header, req.Header)
+					}
+					delete(outreq.Header, h)
+				}
+			}
+			go func() {
+				err := outreq.Write(remote)
+				if err != nil {
+					remote.CloseWithError(err)
+				}
+			}()
+			r := bufio.NewReader(remote)
+			res, err := http.ReadResponse(r, outreq)
+			if err == nil && res.StatusCode == 100 {
+				// Skip 100-continue
+				res, err = http.ReadResponse(r, outreq)
+			}
+			if err != nil {
+				remote.CloseWithError(err)
+				text := err.Error()
+				rw.Header().Set("Content-Length", fmt.Sprintf("%d", len(text)))
+				rw.WriteHeader(502)
+				rw.Write([]byte(text))
+			} else {
+				defer res.Body.Close()
+				copyHeaders(rw.Header(), res.Header)
+				rw.WriteHeader(res.StatusCode)
+				io.Copy(rw, res.Body)
+			}
+			return handleRequestStatusDone
+		})
+	}()
+	if status != handleRequestStatusDone {
+		rw.WriteHeader(404)
+	}
+}
+
+func (s *server) httpacceptor(listener net.Listener) {
+	defer s.listenwg.Done()
+	defer listener.Close()
+	httpserver := &http.Server{
+		Handler: s,
+	}
+	err := httpserver.Serve(listener)
+	if err != nil {
+		s.closeWithError(err)
+		return
+	}
+}
+
 func (s *server) AddPeer(network, address string, distance uint32) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -156,10 +328,6 @@ func (s *server) AddPeer(network, address string, distance uint32) error {
 		return s.failure
 	}
 	return s.addPeerLocked(network, address, distance)
-}
-
-func (s *server) AddUpstream(upstream Client) error {
-	return EUNSUPPORTED
 }
 
 func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
@@ -172,6 +340,22 @@ func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
 	s.listenwg.Add(1)
 	go s.acceptor(listener, allowChanges)
 	return nil
+}
+
+func (s *server) AddHTTPListener(listener net.Listener) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.failure != nil {
+		return s.failure
+	}
+	s.listeners = append(s.listeners, listener)
+	s.listenwg.Add(1)
+	go s.httpacceptor(listener)
+	return nil
+}
+
+func (s *server) SetUpstream(upstream Client) error {
+	return EUNSUPPORTED
 }
 
 func (s *server) Err() error {
