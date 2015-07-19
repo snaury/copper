@@ -22,32 +22,38 @@ const (
 	flagStreamDataCtrl  = flagStreamNeedOpen | flagStreamNeedAck
 )
 
+// read side of the stream
 type rawStreamRead struct {
-	err    error
-	buf    buffer
-	left   int
-	ready  condWithDeadline
-	acked  chan struct{}
-	closed chan struct{}
+	err  error  // non-nil if read side is closed (locally or remotely)
+	buf  buffer // buffered incoming bytes
+	left int    // number of bytes remote is allowed to send us
 
-	increment int
+	acked  chan struct{} // closed when acknowledged or read side is closed
+	closed chan struct{} // closed when read side is closed
+
+	increment int // pending outgoing window increment
+
+	ready condWithDeadline // signals when read() should be unblocked
 }
 
 func (r *rawStreamRead) init(l sync.Locker, window int) {
 	r.left = window
-	r.ready.init(l)
 	r.acked = make(chan struct{})
 	r.closed = make(chan struct{})
+	r.ready.init(l)
 }
 
+// write side of the stream
 type rawStreamWrite struct {
-	err     error
-	buf     buffer
-	left    int
-	wired   int
-	ready   condWithDeadline
-	flushed condWithDeadline
-	closed  chan struct{}
+	err   error  // non-nil if write side is closed (locally or remotely)
+	buf   buffer // buffered outgoing bytes
+	left  int    // number of bytes we are allowed to send (not including buf)
+	wired int    // number of bytes in buf that are being written on the wire
+
+	closed chan struct{} // closed when write side is closed
+
+	ready   condWithDeadline // signals when write() should be unblocked
+	flushed condWithDeadline // signals when flush() should be unblocked
 }
 
 func (w *rawStreamWrite) init(l sync.Locker, window int) {
@@ -57,75 +63,74 @@ func (w *rawStreamWrite) init(l sync.Locker, window int) {
 	w.closed = make(chan struct{})
 }
 
+// rawStream tracks state of the copper stream
 type rawStream struct {
-	mu       sync.RWMutex
-	owner    *rawConn
+	conn     *rawConn
 	streamID uint32
-	outgoing bool
-	flags    int
-	read     rawStreamRead
-	write    rawStreamWrite
-	reset    error
+
+	mu    sync.RWMutex
+	flags int            // stream state flags
+	read  rawStreamRead  // read side of the stream
+	write rawStreamWrite // write side of the stream
+	reset error          // error used to close the stream
 
 	// these are protected by the outgoing lock
-	inctrl bool
-	indata bool
+	inctrl bool // stream is in ctrl queue
+	indata bool // stream is in data queue
 }
 
 var _ Stream = &rawStream{}
 
-func newStream(owner *rawConn, streamID uint32) *rawStream {
+// Creates and registers a new stream, conn.mu must be locked
+func newStream(conn *rawConn, streamID uint32) *rawStream {
 	s := &rawStream{
-		owner:    owner,
+		conn:     conn,
 		streamID: streamID,
 	}
-	s.read.init(&s.mu, owner.settings.localStreamWindowSize)
-	s.write.init(&s.mu, owner.settings.remoteStreamWindowSize)
+	s.read.init(&s.mu, conn.settings.localStreamWindowSize)
+	s.write.init(&s.mu, conn.settings.remoteStreamWindowSize)
+	conn.streams.addLocked(s)
 	return s
 }
 
-func newIncomingStreamWithUnlock(owner *rawConn, streamID uint32) *rawStream {
-	s := newStream(owner, streamID)
-	owner.streams.addLockedWithUnlock(s)
-	return s
+// Creates and registers a new incoming stream, conn.mu must be locked
+func newIncomingStream(conn *rawConn, streamID uint32) *rawStream {
+	return newStream(conn, streamID)
 }
 
-func newOutgoingStreamWithUnlock(owner *rawConn, streamID uint32) *rawStream {
-	s := newStream(owner, streamID)
-	s.outgoing = true
+// Creates and registers a new outgoing stream, conn.mu must be locked
+func newOutgoingStream(conn *rawConn, streamID uint32) *rawStream {
+	s := newStream(conn, streamID)
 	s.flags |= flagStreamNeedOpen
-	owner.streams.addLockedWithUnlock(s)
 	s.scheduleCtrl()
 	return s
 }
 
-func (s *rawStream) canReceive() bool {
-	s.mu.RLock()
-	ok := s.read.err == nil
-	s.mu.RUnlock()
-	return ok
-}
-
+// Adds the stream to the ctrl queue
 func (s *rawStream) scheduleCtrl() {
-	s.owner.outgoing.addCtrl(s)
+	s.conn.outgoing.addCtrl(s)
 }
 
+// Adds the stream to the data queue
 func (s *rawStream) scheduleData() {
-	s.owner.outgoing.addData(s)
+	s.conn.outgoing.addData(s)
 }
 
+// Remove the stream from live streams if both sides are closed
 func (s *rawStream) cleanupLocked() {
 	if s.flags&flagStreamBothEOF == flagStreamBothEOF {
-		s.owner.streams.remove(s)
+		s.conn.streams.remove(s)
 	}
 }
 
+// Clears read buffer, called when user calls Close() on the stream
 func (s *rawStream) clearReadBufferLocked() {
 	if s.read.buf.size > 0 {
 		s.read.buf.clear()
 	}
 }
 
+// Clears write buffer, called when remote closes its read side
 func (s *rawStream) clearWriteBufferLocked() {
 	s.write.buf.clear()
 	s.write.wired = 0
@@ -147,6 +152,7 @@ func (s *rawStream) setWriteDeadlineLocked(t time.Time) {
 	s.write.flushed.setDeadline(t)
 }
 
+// Waits until a byte may be read, or read side is closed
 func (s *rawStream) waitReadReadyLocked() error {
 	for s.read.buf.size == 0 {
 		if s.read.err != nil {
@@ -160,6 +166,7 @@ func (s *rawStream) waitReadReadyLocked() error {
 	return nil
 }
 
+// Waits until a byte may be written, or write side is closed
 func (s *rawStream) waitWriteReadyLocked() error {
 	for s.write.err == nil && s.write.left <= 0 {
 		err := s.write.ready.Wait()
@@ -170,7 +177,9 @@ func (s *rawStream) waitWriteReadyLocked() error {
 	return s.write.err
 }
 
-func (s *rawStream) waitFlushLocked() error {
+// Waits until all data has been flushed on the wire, where the wire is the
+// outgoing connection buffer, not the actual connection.
+func (s *rawStream) waitFlushedLocked() error {
 	for s.write.buf.size > 0 {
 		if s.reset != nil {
 			break
@@ -183,6 +192,7 @@ func (s *rawStream) waitFlushLocked() error {
 	return s.write.err
 }
 
+// Processes incoming data, returns a connection-level error on failure
 func (s *rawStream) processDataLocked(data []byte, flags uint8) error {
 	if s.flags&flagStreamSeenEOF != 0 {
 		return copperError{
@@ -219,6 +229,7 @@ func (s *rawStream) processDataLocked(data []byte, flags uint8) error {
 	return nil
 }
 
+// Processes an incoming DATA frame, returns connection-level error on failure
 func (s *rawStream) processDataFrame(frame *dataFrame) error {
 	s.mu.Lock()
 	err := s.processDataLocked(frame.data, frame.flags)
@@ -226,6 +237,7 @@ func (s *rawStream) processDataFrame(frame *dataFrame) error {
 	return err
 }
 
+// Processes an incoming RESET frame, returns connection-level error on failure
 func (s *rawStream) processResetFrame(frame *resetFrame) error {
 	s.mu.Lock()
 	if frame.flags&flagResetRead != 0 {
@@ -247,7 +259,8 @@ func (s *rawStream) processResetFrame(frame *resetFrame) error {
 	return nil
 }
 
-func (s *rawStream) changeWindow(diff int) {
+// Changes the size of the write window (WINDOW or SETTINGS frames)
+func (s *rawStream) changeWriteWindow(diff int) {
 	s.mu.Lock()
 	if s.write.err == nil {
 		wasactive := s.activeData()
@@ -262,6 +275,7 @@ func (s *rawStream) changeWindow(diff int) {
 	s.mu.Unlock()
 }
 
+// Processes an incoming WINDOW frame
 func (s *rawStream) processWindowFrame(frame *windowFrame) error {
 	if frame.increment <= 0 {
 		return copperError{
@@ -269,10 +283,14 @@ func (s *rawStream) processWindowFrame(frame *windowFrame) error {
 			code:  EINVALIDFRAME,
 		}
 	}
-	s.changeWindow(int(frame.increment))
+	s.changeWriteWindow(int(frame.increment))
 	return nil
 }
 
+// Prepares a chunk of data for the wire, up to maxpayload bytes. The data is
+// restricted by current debt and credited towards the connection window. For
+// efficiency data is not removed from the write buffer, but is marked as
+// wired, so flags calculation may correctly take it into account.
 func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 	n := s.write.buf.size
 	if s.write.left < 0 {
@@ -284,7 +302,7 @@ func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 	if n > maxpayload {
 		n = maxpayload
 	}
-	n = s.owner.outgoing.takeSpace(n)
+	n = s.conn.outgoing.takeWriteWindow(n)
 	if n > 0 {
 		data := s.write.buf.peek()
 		if len(data) > n {
@@ -296,6 +314,12 @@ func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 	return nil
 }
 
+// This function is called when stream is allowed to send control frames, but
+// stream may send data as well if there is enough window. Before this function
+// is called the stream is removed from the ctrl queue and must be re-added if
+// this function needs to be called again. Currently it writes as many frames
+// as it can, but a different strategy may be to write a single frame and
+// re-register.
 func (s *rawStream) writeCtrl() error {
 	s.mu.Lock()
 	if s.flags&flagStreamDiscard == flagStreamDiscard && s.write.buf.size == 0 {
@@ -307,9 +331,10 @@ func (s *rawStream) writeCtrl() error {
 		s.mu.Unlock()
 		return nil
 	}
-	// keep going as long as this stream needs to send control frames
+	// Keep going as long as this stream needs to send frames
 	for {
 		if s.flags&flagStreamDataCtrl != 0 && s.flags&flagStreamSentEOF == 0 {
+			// Write DATA frame if we need to send OPEN or ACK
 			data := s.prepareDataLocked(maxDataFramePayloadSize)
 			frame := &dataFrame{
 				streamID: s.streamID,
@@ -317,7 +342,7 @@ func (s *rawStream) writeCtrl() error {
 				data:     data,
 			}
 			s.mu.Unlock()
-			err := s.owner.writeFrame(frame)
+			err := s.conn.writeFrame(frame)
 			if err != nil {
 				return err
 			}
@@ -330,13 +355,15 @@ func (s *rawStream) writeCtrl() error {
 			continue
 		}
 		if s.read.increment > 0 {
+			// Write WINDOW frame if we want the remote to send us more data
 			frame := &windowFrame{
 				streamID:  s.streamID,
 				increment: uint32(s.read.increment),
 			}
+			s.read.left += s.read.increment
 			s.read.increment = 0
 			s.mu.Unlock()
-			err := s.owner.writeFrame(frame)
+			err := s.conn.writeFrame(frame)
 			if err != nil {
 				return err
 			}
@@ -380,7 +407,7 @@ func (s *rawStream) writeCtrl() error {
 				err:      reset,
 			}
 			s.mu.Unlock()
-			err := s.owner.writeFrame(frame)
+			err := s.conn.writeFrame(frame)
 			if err != nil {
 				return err
 			}
@@ -388,25 +415,32 @@ func (s *rawStream) writeCtrl() error {
 			continue
 		}
 		if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
+			// We have an empty write buffer with a pending EOF. Since writeData
+			// callback is only called when there is pending data and sending
+			// EOF doesn't cost us any window bytes we do it right here.
 			frame := &dataFrame{
 				streamID: s.streamID,
 				flags:    s.outgoingFlags(),
 			}
 			s.mu.Unlock()
-			err := s.owner.writeFrame(frame)
+			err := s.conn.writeFrame(frame)
 			if err != nil {
 				return err
 			}
 			s.mu.Lock()
 			continue
 		}
-		// we've sent everything we could
+		// We've sent everything we could
 		break
 	}
 	s.mu.Unlock()
 	return nil
 }
 
+// This function is called when stream is allowed to send data frames. On entry
+// there is at least one byte in the connection window, but there may be nothing
+// left to write if it was consumed elsewhere. If there is no data to write it
+// doesn't do anything, since writing an empty EOF frame is done by writeCtrl.
 func (s *rawStream) writeData() error {
 	s.mu.Lock()
 	data := s.prepareDataLocked(maxDataFramePayloadSize)
@@ -417,14 +451,14 @@ func (s *rawStream) writeData() error {
 			data:     data,
 		}
 		if s.activeData() {
-			// we have more data, make sure to re-register
+			// We have more data, make sure to re-register
 			s.scheduleData()
 		} else if s.activeReset() {
-			// sending all data unlocked a pending RESET
+			// Sending all data unlocked a pending RESET
 			s.scheduleCtrl()
 		}
 		s.mu.Unlock()
-		err := s.owner.writeFrame(frame)
+		err := s.conn.writeFrame(frame)
 		if err != nil {
 			return err
 		}
@@ -439,6 +473,16 @@ func (s *rawStream) writeData() error {
 	return nil
 }
 
+// Returns true if there is pending data that needs to be written
+func (s *rawStream) activeData() bool {
+	pending := s.write.buf.size - s.write.wired
+	if s.write.left >= 0 {
+		return pending > 0
+	}
+	return pending+s.write.left > 0
+}
+
+// Returns true if there is a RESET frame pending and it needs to be written
 func (s *rawStream) activeReset() bool {
 	if s.flags&flagStreamNeedReset != 0 {
 		// there's a RESET frame pending
@@ -466,6 +510,7 @@ func (s *rawStream) activeReset() bool {
 	return false
 }
 
+// Returns true if there is EOF pending and it needs to be written now
 func (s *rawStream) activeEOF() bool {
 	if s.write.buf.size == s.write.wired && s.flags&flagStreamNeedEOF != 0 {
 		// there's no data and a EOF is pending
@@ -478,6 +523,9 @@ func (s *rawStream) activeEOF() bool {
 	return false
 }
 
+// Returns outgoing flags that should be used for DATA frames
+// This function must be called exactly once per frame, since it clears various
+// flags before returning and will not return the same flags a second time.
 func (s *rawStream) outgoingFlags() uint8 {
 	var flags uint8
 	if s.flags&flagStreamNeedOpen != 0 {
@@ -497,14 +545,7 @@ func (s *rawStream) outgoingFlags() uint8 {
 	return flags
 }
 
-func (s *rawStream) activeData() bool {
-	pending := s.write.buf.size - s.write.wired
-	if s.write.left >= 0 {
-		return pending > 0
-	}
-	return pending+s.write.left > 0
-}
-
+// Schedules a RESET on the read side, preventing remote from sending more data
 func (s *rawStream) resetReadSideLocked() {
 	if s.flags&flagStreamSeenEOF == 0 {
 		s.flags |= flagStreamNeedReset
@@ -514,6 +555,8 @@ func (s *rawStream) resetReadSideLocked() {
 	}
 }
 
+// Schedules a RESET on both sides, so not only the remote is prevented from
+// sending more data, it also receives an error code in any of its read calls.
 func (s *rawStream) resetBothSidesLocked() {
 	if s.flags&flagStreamBothEOF != flagStreamBothEOF {
 		s.flags |= flagStreamNeedReset
@@ -523,6 +566,7 @@ func (s *rawStream) resetBothSidesLocked() {
 	}
 }
 
+// Sets the read error to err
 func (s *rawStream) setReadErrorLocked(err error) {
 	if s.read.err == nil {
 		s.read.err = err
@@ -535,6 +579,7 @@ func (s *rawStream) setReadErrorLocked(err error) {
 	}
 }
 
+// Sets the write error to err
 func (s *rawStream) setWriteErrorLocked(err error) {
 	if s.write.err == nil {
 		s.write.err = err
@@ -590,7 +635,6 @@ func (s *rawStream) Discard(n int) int {
 	s.mu.Lock()
 	n = s.read.buf.discard(n)
 	if n > 0 {
-		s.read.left += n
 		if s.read.err == nil {
 			s.read.increment += n
 			s.scheduleCtrl()
@@ -609,7 +653,6 @@ func (s *rawStream) Read(b []byte) (n int, err error) {
 			return
 		}
 		n = s.read.buf.read(b)
-		s.read.left += n
 		if s.read.err == nil {
 			s.read.increment += n
 			s.scheduleCtrl()
@@ -631,7 +674,6 @@ func (s *rawStream) ReadByte() (byte, error) {
 		return 0, err
 	}
 	b := s.read.buf.readbyte()
-	s.read.left++
 	if s.read.err == nil {
 		s.read.increment++
 		s.scheduleCtrl()
@@ -676,7 +718,7 @@ func (s *rawStream) WriteByte(b byte) error {
 
 func (s *rawStream) Flush() error {
 	s.mu.Lock()
-	err := s.waitFlushLocked()
+	err := s.waitFlushedLocked()
 	s.mu.Unlock()
 	return err
 }
@@ -797,54 +839,9 @@ func (s *rawStream) StreamID() uint32 {
 }
 
 func (s *rawStream) LocalAddr() net.Addr {
-	return s.owner.conn.LocalAddr()
+	return s.conn.conn.LocalAddr()
 }
 
 func (s *rawStream) RemoteAddr() net.Addr {
-	return s.owner.conn.RemoteAddr()
-}
-
-// rawStreamQueue is a ring-buffer queue of rawStream pointers
-type rawStreamQueue struct {
-	buf  []*rawStream
-	off  int
-	size int
-}
-
-// push adds a pointer to the end of the queue, expanding it when necessary
-func (q *rawStreamQueue) push(s *rawStream) {
-	pos := q.off + q.size
-	if q.size == len(q.buf) {
-		dst := make([]*rawStream, minpow2(len(q.buf)+1))
-		if pos == len(q.buf) {
-			// queue doesn't wrap, simple copy
-			copy(dst, q.buf)
-		} else {
-			// queue wraps, copy with two steps
-			z := copy(dst, q.buf[q.off:])
-			copy(dst[z:], q.buf[:q.size-z])
-			pos = q.size
-		}
-		q.buf = dst
-		q.off = 0
-	} else if pos >= len(q.buf) {
-		pos -= len(q.buf)
-	}
-	q.buf[pos] = s
-	q.size++
-}
-
-// take removes a pointer from the front of the queue
-func (q *rawStreamQueue) take() *rawStream {
-	if q.size == 0 {
-		return nil
-	}
-	stream := q.buf[q.off]
-	q.buf[q.off] = nil
-	q.off++
-	q.size--
-	if q.off == len(q.buf) || q.size == 0 {
-		q.off = 0
-	}
-	return stream
+	return s.conn.conn.RemoteAddr()
 }

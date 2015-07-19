@@ -133,6 +133,7 @@ func (c *rawConn) closeWithError(err error, closed bool) error {
 		c.failure = err
 		close(c.closedchan)
 		c.outgoing.fail(err)
+		c.outgoing.clearPingQueue()
 	}
 	c.streams.failLocked(err, closed)
 	c.mu.Unlock()
@@ -211,7 +212,9 @@ func (c *rawConn) NewStream() (Stream, error) {
 		c.mu.Unlock()
 		return nil, err
 	}
-	return newOutgoingStreamWithUnlock(c, streamID), nil
+	stream := newOutgoingStream(c, streamID)
+	c.mu.Unlock()
+	return stream, nil
 }
 
 func (c *rawConn) handleStream(handler Handler, stream Stream) {
@@ -248,7 +251,7 @@ func (c *rawConn) processDataFrame(frame *dataFrame) error {
 	stream := c.streams.find(frame.streamID)
 	if frame.flags&flagDataOpen != 0 {
 		// This frame is starting a new stream
-		if c.streams.ownedID(frame.streamID) {
+		if c.streams.isOwnedID(frame.streamID) {
 			return copperError{
 				error: fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.streamID),
 				code:  EINVALIDSTREAM,
@@ -269,8 +272,7 @@ func (c *rawConn) processDataFrame(frame *dataFrame) error {
 				code:  EWINDOWOVERFLOW,
 			}
 		}
-		stream = newIncomingStreamWithUnlock(c, frame.streamID)
-		c.mu.Lock()
+		stream = newIncomingStream(c, frame.streamID)
 		if c.failure != nil {
 			// we are closed and ignore valid DATA frames
 			err := c.failure
@@ -303,12 +305,18 @@ func (c *rawConn) processDataFrame(frame *dataFrame) error {
 		}
 		c.mu.RUnlock()
 	}
+	if len(frame.data) > 0 {
+		if !c.outgoing.takeReadWindow(len(frame.data)) {
+			return copperError{
+				error: fmt.Errorf("stream 0x%08x received %d bytes, which overflowed the connection window", stream.streamID, len(frame.data)),
+				code:  EWINDOWOVERFLOW,
+			}
+		}
+		c.outgoing.incrementReadWindow(len(frame.data))
+	}
 	err := stream.processDataFrame(frame)
 	if err != nil {
 		return err
-	}
-	if len(frame.data) > 0 {
-		c.outgoing.incrementRemote(len(frame.data))
 	}
 	return nil
 }
@@ -340,7 +348,7 @@ func (c *rawConn) processResetFrame(frame *resetFrame) error {
 
 func (c *rawConn) processWindowFrame(frame *windowFrame) error {
 	if frame.streamID == 0 {
-		c.outgoing.changeWindow(int(frame.increment))
+		c.outgoing.changeWriteWindow(int(frame.increment))
 		return nil
 	}
 	stream := c.streams.find(frame.streamID)
@@ -406,131 +414,6 @@ func (c *rawConn) readloop() {
 	c.mu.Unlock()
 }
 
-func (c *rawConn) streamCanReceive(streamID uint32) bool {
-	if streamID == 0 {
-		return true
-	}
-	stream := c.streams.find(streamID)
-	if stream != nil {
-		return stream.canReceive()
-	}
-	return false
-}
-
-func (c *rawConn) writeOutgoingFrames() (result bool) {
-	c.outgoing.mu.Lock()
-	for c.outgoing.blocked > 0 {
-		c.outgoing.unblocked.Wait()
-	}
-
-writeloop:
-	for {
-		pingAcks := c.outgoing.pingAcks
-		if len(pingAcks) > 0 {
-			c.outgoing.pingAcks = nil
-			c.outgoing.mu.Unlock()
-			for _, value := range pingAcks {
-				err := c.writeFrame(&pingFrame{
-					flags: flagPingAck,
-					value: value,
-				})
-				if err != nil {
-					c.closeWithError(err, false)
-					return false
-				}
-			}
-			c.outgoing.mu.Lock()
-			continue writeloop
-		}
-		pingQueue := c.outgoing.pingQueue
-		if len(pingQueue) > 0 {
-			c.outgoing.pingQueue = nil
-			c.outgoing.mu.Unlock()
-			for _, value := range pingQueue {
-				err := c.writeFrame(&pingFrame{
-					value: value,
-				})
-				if err != nil {
-					c.closeWithError(err, false)
-					return false
-				}
-			}
-			c.outgoing.mu.Lock()
-			continue writeloop
-		}
-		if c.outgoing.settingsAcks > 0 {
-			c.outgoing.settingsAcks--
-			c.outgoing.mu.Unlock()
-			err := c.writeFrame(&settingsFrame{
-				flags: flagSettingsAck,
-			})
-			if err != nil {
-				c.closeWithError(err, false)
-				return false
-			}
-			c.outgoing.mu.Lock()
-			continue writeloop
-		}
-		if c.outgoing.remoteIncrement > 0 {
-			increment := c.outgoing.remoteIncrement
-			c.outgoing.remoteIncrement = 0
-			c.outgoing.mu.Unlock()
-			err := c.writeFrame(&windowFrame{
-				streamID:  0,
-				increment: uint32(increment),
-			})
-			if err != nil {
-				c.closeWithError(err, false)
-				return false
-			}
-			c.outgoing.mu.Lock()
-			continue writeloop
-		}
-		if c.outgoing.ctrl.size > 0 {
-			stream := c.outgoing.ctrl.take()
-			stream.inctrl = false
-			c.outgoing.mu.Unlock()
-			err := stream.writeCtrl()
-			if err != nil {
-				c.closeWithError(err, false)
-				return false
-			}
-			c.outgoing.mu.Lock()
-			continue writeloop
-		}
-		if c.outgoing.failure != nil {
-			failure := c.outgoing.failure
-			c.outgoing.mu.Unlock()
-			// Attempt to notify the other side that we have an error
-			// It's ok if any of this fails, the read side will stop
-			// when we close the connection.
-			c.writeFrame(&resetFrame{
-				streamID: 0,
-				flags:    0,
-				err:      failure,
-			})
-			return false
-		}
-		if c.outgoing.data.size > 0 && c.outgoing.writeleft > 0 {
-			stream := c.outgoing.data.take()
-			stream.indata = false
-			c.outgoing.mu.Unlock()
-			err := stream.writeData()
-			if err != nil {
-				c.closeWithError(err, false)
-				return false
-			}
-			c.outgoing.mu.Lock()
-			continue writeloop
-		}
-		break
-	}
-	// if we reach here there's nothing to write
-	c.outgoing.writeready = false
-	c.outgoing.mu.Unlock()
-	return true
-}
-
 func (c *rawConn) writeloop() {
 	defer c.finishgroup.Done()
 	defer c.conn.Close()
@@ -538,14 +421,11 @@ func (c *rawConn) writeloop() {
 	lastwrite := c.lastwrite
 	deadline := lastwrite.Add(c.settings.getRemoteInactivityTimeout() * 2 / 3)
 	t := time.AfterFunc(deadline.Sub(time.Now()), func() {
-		c.outgoing.mu.Lock()
-		c.outgoing.wakeupLocked()
-		c.outgoing.mu.Unlock()
+		c.outgoing.wakeup()
 	})
 	defer t.Stop()
 	for {
-		c.outgoing.wait()
-		ok := c.writeOutgoingFrames()
+		ok := c.outgoing.writeFrames()
 		newlastwrite := c.lastwrite
 		if ok && lastwrite == newlastwrite && c.writer.Buffered() == 0 {
 			// We haven't written anything for a while, write an empty frame

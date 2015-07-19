@@ -5,17 +5,17 @@ import (
 )
 
 type rawConnReader struct {
-	owner *rawConn
+	conn *rawConn
 }
 
-func newRawConnReader(owner *rawConn) *rawConnReader {
+func newRawConnReader(conn *rawConn) *rawConnReader {
 	return &rawConnReader{
-		owner: owner,
+		conn: conn,
 	}
 }
 
 func (r *rawConnReader) Read(b []byte) (int, error) {
-	r.owner.lastread = time.Now()
-	r.owner.conn.SetReadDeadline(r.owner.lastread.Add(r.owner.settings.getLocalInactivityTimeout()))
-	return r.owner.conn.Read(b)
+	r.conn.lastread = time.Now()
+	r.conn.conn.SetReadDeadline(r.conn.lastread.Add(r.conn.settings.getLocalInactivityTimeout()))
+	return r.conn.conn.Read(b)
 }

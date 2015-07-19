@@ -5,8 +5,10 @@ import (
 	"time"
 )
 
+// rawConnSettings is used to keep track of settings
+// It uses the connection lock for protecting its fields
 type rawConnSettings struct {
-	owner     *rawConn
+	conn      *rawConn
 	callbacks []func(error)
 
 	localConnWindowSize     int
@@ -17,8 +19,8 @@ type rawConnSettings struct {
 	remoteInactivityTimeout time.Duration
 }
 
-func (s *rawConnSettings) init(owner *rawConn) {
-	s.owner = owner
+func (s *rawConnSettings) init(conn *rawConn) {
+	s.conn = conn
 	s.localConnWindowSize = defaultConnWindowSize
 	s.remoteConnWindowSize = defaultConnWindowSize
 	s.localStreamWindowSize = defaultStreamWindowSize
@@ -27,6 +29,7 @@ func (s *rawConnSettings) init(owner *rawConn) {
 	s.remoteInactivityTimeout = defaultInactivityTimeout
 }
 
+// Fails all pending callbacks with err, called when closing the connection
 func (s *rawConnSettings) failLocked(err error) {
 	callbacks := s.callbacks
 	s.callbacks = nil
@@ -37,50 +40,53 @@ func (s *rawConnSettings) failLocked(err error) {
 	}
 }
 
+// Handles an incoming settings ack
+// Find and call the callback that registered for the outgoing frame.
 func (s *rawConnSettings) handleAck() {
 	var callback func(error)
-	s.owner.mu.Lock()
+	s.conn.mu.Lock()
 	if len(s.callbacks) > 0 {
 		callback = s.callbacks[0]
 		copy(s.callbacks, s.callbacks[1:])
 		s.callbacks[len(s.callbacks)-1] = nil
 		s.callbacks = s.callbacks[:len(s.callbacks)-1]
 	}
-	s.owner.mu.Unlock()
+	s.conn.mu.Unlock()
 	if callback != nil {
 		callback(nil)
 	}
 }
 
+// Handles an incoming settings frame, updates to new settings
 func (s *rawConnSettings) handleSettings(frame *settingsFrame) error {
-	s.owner.mu.Lock()
+	s.conn.mu.Lock()
 	for key, value := range frame.values {
 		switch key {
 		case settingConnWindow:
 			if value < minWindowSize || value > maxWindowSize {
-				s.owner.mu.Unlock()
+				s.conn.mu.Unlock()
 				return copperError{
 					error: fmt.Errorf("cannot set connection window to %d bytes", value),
 					code:  EINVALIDFRAME,
 				}
 			}
 			diff := int(value) - s.remoteConnWindowSize
-			s.owner.outgoing.changeWindow(diff)
+			s.conn.outgoing.changeWriteWindow(diff)
 			s.remoteConnWindowSize = int(value)
 		case settingStreamWindow:
 			if value < minWindowSize || value > maxWindowSize {
-				s.owner.mu.Unlock()
+				s.conn.mu.Unlock()
 				return copperError{
 					error: fmt.Errorf("cannot set stream window to %d bytes", value),
 					code:  EINVALIDFRAME,
 				}
 			}
 			diff := int(value) - s.remoteStreamWindowSize
-			s.owner.streams.changeWindow(diff)
+			s.conn.streams.changeWriteWindow(diff)
 			s.remoteStreamWindowSize = int(value)
 		case settingInactivityMilliseconds:
 			if value < 1000 {
-				s.owner.mu.Unlock()
+				s.conn.mu.Unlock()
 				return copperError{
 					error: fmt.Errorf("cannot set inactivity timeout to %dms", value),
 					code:  EINVALIDFRAME,
@@ -88,42 +94,42 @@ func (s *rawConnSettings) handleSettings(frame *settingsFrame) error {
 			}
 			s.remoteInactivityTimeout = time.Duration(value) * time.Millisecond
 		default:
-			s.owner.mu.Unlock()
+			s.conn.mu.Unlock()
 			return copperError{
 				error: fmt.Errorf("unknown settings key %d", key),
 				code:  EINVALIDFRAME,
 			}
 		}
 	}
-	s.owner.mu.Unlock()
-	s.owner.outgoing.addSettingsAck()
+	s.conn.outgoing.addSettingsAck()
+	s.conn.mu.Unlock()
 	return nil
 }
 
 func (s *rawConnSettings) getLocalStreamWindowSize() int {
-	s.owner.mu.RLock()
+	s.conn.mu.RLock()
 	window := s.localStreamWindowSize
-	s.owner.mu.RUnlock()
+	s.conn.mu.RUnlock()
 	return window
 }
 
 func (s *rawConnSettings) getRemoteStreamWindowSize() int {
-	s.owner.mu.RLock()
+	s.conn.mu.RLock()
 	window := s.remoteStreamWindowSize
-	s.owner.mu.RUnlock()
+	s.conn.mu.RUnlock()
 	return window
 }
 
 func (s *rawConnSettings) getLocalInactivityTimeout() time.Duration {
-	s.owner.mu.RLock()
+	s.conn.mu.RLock()
 	d := s.localInactivityTimeout
-	s.owner.mu.RUnlock()
+	s.conn.mu.RUnlock()
 	return d
 }
 
 func (s *rawConnSettings) getRemoteInactivityTimeout() time.Duration {
-	s.owner.mu.RLock()
+	s.conn.mu.RLock()
 	d := s.remoteInactivityTimeout
-	s.owner.mu.RUnlock()
+	s.conn.mu.RUnlock()
 	return d
 }

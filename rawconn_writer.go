@@ -5,17 +5,17 @@ import (
 )
 
 type rawConnWriter struct {
-	owner *rawConn
+	conn *rawConn
 }
 
-func newRawConnWriter(owner *rawConn) *rawConnWriter {
+func newRawConnWriter(conn *rawConn) *rawConnWriter {
 	return &rawConnWriter{
-		owner: owner,
+		conn: conn,
 	}
 }
 
 func (w *rawConnWriter) Write(p []byte) (int, error) {
-	w.owner.lastwrite = time.Now()
-	w.owner.conn.SetWriteDeadline(w.owner.lastwrite.Add(w.owner.settings.getLocalInactivityTimeout()))
-	return w.owner.conn.Write(p)
+	w.conn.lastwrite = time.Now()
+	w.conn.conn.SetWriteDeadline(w.conn.lastwrite.Add(w.conn.settings.getLocalInactivityTimeout()))
+	return w.conn.conn.Write(p)
 }
