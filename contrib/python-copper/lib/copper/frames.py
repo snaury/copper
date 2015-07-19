@@ -226,7 +226,7 @@ class SettingsFrame(Frame):
     __slots__ = ('flags', 'values')
 
     ID = 4
-    FMT = struct.Struct('>II')
+    FMT = struct.Struct('>HI')
 
     def __init__(self, flags, values):
         self.flags = flags
@@ -251,17 +251,17 @@ class SettingsFrame(Frame):
                 raise InvalidFrameError()
             values = {}
         else:
-            if (header.payload_size % 8) != 0:
+            if (header.payload_size % 6) != 0:
                 raise InvalidFrameError()
-            count = header.payload_size // 8
+            count = header.payload_size // 6
             values = {}
             while count > 0:
-                sid, value = cls.FMT.unpack(reader.read(8))
+                sid, value = cls.FMT.unpack(reader.read(6))
                 values[sid] = value
                 count -= 1
         return cls(header.flags, values)
 
     def dump(self, writer):
-        Header(0, 8 * len(self.values), self.flags, self.ID).dump(writer)
-        for sid, value in self.values.iteritems():
+        Header(0, 6 * len(self.values), self.flags, self.ID).dump(writer)
+        for sid, value in sorted(self.values.items()):
             writer.write(self.FMT.pack(sid, value))

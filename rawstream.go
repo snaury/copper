@@ -193,14 +193,14 @@ func (s *rawStream) waitFlushedLocked() error {
 }
 
 // Processes incoming data, returns a connection-level error on failure
-func (s *rawStream) processDataLocked(data []byte, flags uint8) error {
+func (s *rawStream) processDataLocked(data []byte, flags FrameFlags) error {
 	if s.flags&flagStreamSeenEOF != 0 {
 		return copperError{
 			error: fmt.Errorf("stream 0x%08x cannot have DATA after EOF", s.streamID),
 			code:  EINVALIDSTREAM,
 		}
 	}
-	if flags&flagDataAck != 0 {
+	if flags.Has(FlagDataAck) {
 		if s.read.err == nil && s.flags&flagStreamSeenAck == 0 {
 			s.flags |= flagStreamSeenAck
 			close(s.read.acked)
@@ -221,7 +221,7 @@ func (s *rawStream) processDataLocked(data []byte, flags uint8) error {
 		}
 		s.read.left -= len(data)
 	}
-	if flags&flagDataEOF != 0 {
+	if flags.Has(FlagDataEOF) {
 		s.flags |= flagStreamSeenEOF
 		s.setReadErrorLocked(io.EOF)
 		s.cleanupLocked()
@@ -230,23 +230,23 @@ func (s *rawStream) processDataLocked(data []byte, flags uint8) error {
 }
 
 // Processes an incoming DATA frame, returns connection-level error on failure
-func (s *rawStream) processDataFrame(frame *dataFrame) error {
+func (s *rawStream) processDataFrame(frame *DataFrame) error {
 	s.mu.Lock()
-	err := s.processDataLocked(frame.data, frame.flags)
+	err := s.processDataLocked(frame.Data, frame.Flags)
 	s.mu.Unlock()
 	return err
 }
 
 // Processes an incoming RESET frame, returns connection-level error on failure
-func (s *rawStream) processResetFrame(frame *resetFrame) error {
+func (s *rawStream) processResetFrame(frame *ResetFrame) error {
 	s.mu.Lock()
-	if frame.flags&flagResetRead != 0 {
-		err := frame.err
+	if frame.Flags.Has(FlagResetRead) {
+		err := frame.Error
 		s.clearWriteBufferLocked()
 		s.setWriteErrorLocked(err)
 	}
-	if frame.flags&flagResetWrite != 0 {
-		err := frame.err
+	if frame.Flags.Has(FlagResetWrite) {
+		err := frame.Error
 		if err == ECLOSED {
 			// ECLOSED is special, it translates to a normal EOF
 			err = io.EOF
@@ -276,14 +276,14 @@ func (s *rawStream) changeWriteWindow(diff int) {
 }
 
 // Processes an incoming WINDOW frame
-func (s *rawStream) processWindowFrame(frame *windowFrame) error {
-	if frame.increment <= 0 {
+func (s *rawStream) processWindowFrame(frame *WindowFrame) error {
+	if frame.Increment <= 0 {
 		return copperError{
-			error: fmt.Errorf("stream 0x%08x received invalid increment %d", s.streamID, frame.increment),
+			error: fmt.Errorf("stream 0x%08x received invalid increment %d", s.streamID, frame.Increment),
 			code:  EINVALIDFRAME,
 		}
 	}
-	s.changeWriteWindow(int(frame.increment))
+	s.changeWriteWindow(int(frame.Increment))
 	return nil
 }
 
@@ -335,14 +335,10 @@ func (s *rawStream) writeCtrl() error {
 	for {
 		if s.flags&flagStreamDataCtrl != 0 && s.flags&flagStreamSentEOF == 0 {
 			// Write DATA frame if we need to send OPEN or ACK
-			data := s.prepareDataLocked(maxDataFramePayloadSize)
-			frame := &dataFrame{
-				streamID: s.streamID,
-				flags:    s.outgoingFlags(),
-				data:     data,
-			}
+			data := s.prepareDataLocked(MaxDataFramePayloadSize)
+			flags := s.outgoingFlags()
 			s.mu.Unlock()
-			err := s.conn.writeFrame(frame)
+			err := s.conn.writer.WriteData(s.streamID, flags, data)
 			if err != nil {
 				return err
 			}
@@ -356,14 +352,11 @@ func (s *rawStream) writeCtrl() error {
 		}
 		if s.read.increment > 0 {
 			// Write WINDOW frame if we want the remote to send us more data
-			frame := &windowFrame{
-				streamID:  s.streamID,
-				increment: uint32(s.read.increment),
-			}
+			increment := uint32(s.read.increment)
 			s.read.left += s.read.increment
 			s.read.increment = 0
 			s.mu.Unlock()
-			err := s.conn.writeFrame(frame)
+			err := s.conn.writer.WriteWindow(s.streamID, increment)
 			if err != nil {
 				return err
 			}
@@ -383,9 +376,9 @@ func (s *rawStream) writeCtrl() error {
 				// Instead of ECONNCLOSED remote should receive ECONNSHUTDOWN
 				reset = ECONNSHUTDOWN
 			}
-			flags := uint8(0)
+			var flags FrameFlags
 			if s.flags&(flagStreamSeenEOF|flagStreamSentReset) == 0 {
-				flags |= flagResetRead
+				flags |= FlagResetRead
 			}
 			if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
 				// This RESET closes both sides of the stream, otherwise it only
@@ -395,19 +388,14 @@ func (s *rawStream) writeCtrl() error {
 				s.flags &^= flagStreamNeedEOF
 				s.flags |= flagStreamSentEOF
 				s.cleanupLocked()
-				flags |= flagResetWrite
+				flags |= FlagResetWrite
 			}
 			// N.B.: we may send RESET twice. First without EOF, to stop the other
 			// side from sending us more data. Second with EOF, after sending all
 			// our pending data, to convey the error message to the other side.
 			s.flags |= flagStreamSentReset
-			frame := &resetFrame{
-				streamID: s.streamID,
-				flags:    flags,
-				err:      reset,
-			}
 			s.mu.Unlock()
-			err := s.conn.writeFrame(frame)
+			err := s.conn.writer.WriteReset(s.streamID, flags, reset)
 			if err != nil {
 				return err
 			}
@@ -418,12 +406,9 @@ func (s *rawStream) writeCtrl() error {
 			// We have an empty write buffer with a pending EOF. Since writeData
 			// callback is only called when there is pending data and sending
 			// EOF doesn't cost us any window bytes we do it right here.
-			frame := &dataFrame{
-				streamID: s.streamID,
-				flags:    s.outgoingFlags(),
-			}
+			flags := s.outgoingFlags()
 			s.mu.Unlock()
-			err := s.conn.writeFrame(frame)
+			err := s.conn.writer.WriteData(s.streamID, flags, nil)
 			if err != nil {
 				return err
 			}
@@ -443,13 +428,9 @@ func (s *rawStream) writeCtrl() error {
 // doesn't do anything, since writing an empty EOF frame is done by writeCtrl.
 func (s *rawStream) writeData() error {
 	s.mu.Lock()
-	data := s.prepareDataLocked(maxDataFramePayloadSize)
+	data := s.prepareDataLocked(MaxDataFramePayloadSize)
 	if len(data) > 0 {
-		frame := &dataFrame{
-			streamID: s.streamID,
-			flags:    s.outgoingFlags(),
-			data:     data,
-		}
+		flags := s.outgoingFlags()
 		if s.activeData() {
 			// We have more data, make sure to re-register
 			s.scheduleData()
@@ -458,7 +439,7 @@ func (s *rawStream) writeData() error {
 			s.scheduleCtrl()
 		}
 		s.mu.Unlock()
-		err := s.conn.writeFrame(frame)
+		err := s.conn.writer.WriteData(s.streamID, flags, data)
 		if err != nil {
 			return err
 		}
@@ -526,21 +507,21 @@ func (s *rawStream) activeEOF() bool {
 // Returns outgoing flags that should be used for DATA frames
 // This function must be called exactly once per frame, since it clears various
 // flags before returning and will not return the same flags a second time.
-func (s *rawStream) outgoingFlags() uint8 {
-	var flags uint8
+func (s *rawStream) outgoingFlags() FrameFlags {
+	var flags FrameFlags
 	if s.flags&flagStreamNeedOpen != 0 {
 		s.flags &^= flagStreamNeedOpen
-		flags |= flagDataOpen
+		flags |= FlagDataOpen
 	}
 	if s.flags&flagStreamNeedAck != 0 {
 		s.flags &^= flagStreamNeedAck
-		flags |= flagDataAck
+		flags |= FlagDataAck
 	}
 	if s.activeEOF() {
 		s.flags &^= flagStreamNeedEOF
 		s.flags |= flagStreamSentEOF
 		s.cleanupLocked()
-		flags |= flagDataEOF
+		flags |= FlagDataEOF
 	}
 	return flags
 }

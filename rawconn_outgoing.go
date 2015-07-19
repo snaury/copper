@@ -22,8 +22,8 @@ type rawConnOutgoing struct {
 	blocked   int       // blocks writing when >0, used during testing
 	unblocked sync.Cond // signals when blocked becomes 0
 
-	pingAcks  []int64 // a list of outgoing ping replies
-	pingQueue []int64 // a list of outgoing ping requests
+	pingAcks  []PingData // a list of outgoing ping replies
+	pingQueue []PingData // a list of outgoing ping requests
 
 	settingsAcks int // number of SETTINGS/ACK frames that need to be sent
 
@@ -35,8 +35,8 @@ type rawConnOutgoing struct {
 
 func (o *rawConnOutgoing) init(conn *rawConn) {
 	o.conn = conn
-	o.readleft = defaultConnWindowSize
-	o.writeleft = defaultConnWindowSize
+	o.readleft = DefaultWindowSize
+	o.writeleft = DefaultWindowSize
 	o.writecond.L = &o.mu
 	o.unblocked.L = &o.mu
 }
@@ -82,7 +82,7 @@ func (o *rawConnOutgoing) changeWriteWindow(diff int) {
 }
 
 // Schedules a ping reply on the connection.
-func (o *rawConnOutgoing) addPingAck(value int64) {
+func (o *rawConnOutgoing) addPingAck(value PingData) {
 	o.mu.Lock()
 	o.pingAcks = append(o.pingAcks, value)
 	o.wakeupLocked()
@@ -90,7 +90,7 @@ func (o *rawConnOutgoing) addPingAck(value int64) {
 }
 
 // Schedules a ping request on the connection.
-func (o *rawConnOutgoing) addPingQueue(value int64) {
+func (o *rawConnOutgoing) addPingQueue(value PingData) {
 	o.mu.Lock()
 	if o.err == nil {
 		o.pingQueue = append(o.pingQueue, value)
@@ -189,11 +189,8 @@ writeloop:
 		if len(pingAcks) > 0 {
 			o.pingAcks = nil
 			o.mu.Unlock()
-			for _, value := range pingAcks {
-				err := o.conn.writeFrame(&pingFrame{
-					flags: flagPingAck,
-					value: value,
-				})
+			for _, data := range pingAcks {
+				err := o.conn.writer.WritePing(FlagPingAck, data)
 				if err != nil {
 					o.conn.closeWithError(err, false)
 					return false
@@ -206,10 +203,8 @@ writeloop:
 		if len(pingQueue) > 0 {
 			o.pingQueue = nil
 			o.mu.Unlock()
-			for _, value := range pingQueue {
-				err := o.conn.writeFrame(&pingFrame{
-					value: value,
-				})
+			for _, data := range pingQueue {
+				err := o.conn.writer.WritePing(0, data)
 				if err != nil {
 					o.conn.closeWithError(err, false)
 					return false
@@ -221,9 +216,7 @@ writeloop:
 		if o.settingsAcks > 0 {
 			o.settingsAcks--
 			o.mu.Unlock()
-			err := o.conn.writeFrame(&settingsFrame{
-				flags: flagSettingsAck,
-			})
+			err := o.conn.writer.WriteSettingsAck()
 			if err != nil {
 				o.conn.closeWithError(err, false)
 				return false
@@ -236,10 +229,7 @@ writeloop:
 			o.readleft += increment
 			o.remoteIncrement = 0
 			o.mu.Unlock()
-			err := o.conn.writeFrame(&windowFrame{
-				streamID:  0,
-				increment: uint32(increment),
-			})
+			err := o.conn.writer.WriteWindow(0, uint32(increment))
 			if err != nil {
 				o.conn.closeWithError(err, false)
 				return false
@@ -265,11 +255,7 @@ writeloop:
 			// Attempt to notify the other side that we have an error
 			// It's ok if any of this fails, the read side will stop
 			// when we close the connection.
-			o.conn.writeFrame(&resetFrame{
-				streamID: 0,
-				flags:    0,
-				err:      err,
-			})
+			o.conn.writer.WriteReset(0, 0, err)
 			return false
 		}
 		if o.data.size > 0 && o.writeleft > 0 {

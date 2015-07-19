@@ -194,12 +194,12 @@ func TestRawConnPing(t *testing.T) {
 	runRawClientServer(nil, func(client RawConn) {
 		var ch1, ch2 <-chan error
 		// simple ping
-		if err := <-client.Ping(123); err != nil {
+		if err := <-client.Ping(PingDataInt64(123)); err != nil {
 			t.Fatalf("client: Ping: unexpected error: %v", err)
 		}
 		// two simultaneous pings, same id
-		ch1 = client.Ping(42)
-		ch2 = client.Ping(42)
+		ch1 = client.Ping(PingDataInt64(42))
+		ch2 = client.Ping(PingDataInt64(42))
 		if err := <-ch1; err != nil {
 			t.Fatalf("client: Ping: unexpected error: %v", err)
 		}
@@ -208,8 +208,8 @@ func TestRawConnPing(t *testing.T) {
 		}
 		// two simultaneous pings that fail before getting response
 		client.(*rawConn).blockWrite()
-		ch1 = client.Ping(51)
-		ch2 = client.Ping(51)
+		ch1 = client.Ping(PingDataInt64(51))
+		ch2 = client.Ping(PingDataInt64(51))
 		client.Close()
 		client.(*rawConn).unblockWrite()
 		if err := <-ch1; err != ECONNCLOSED {
@@ -219,7 +219,7 @@ func TestRawConnPing(t *testing.T) {
 			t.Fatalf("client: Ping: expected ECONNCLOSED, not %v", err)
 		}
 		// simple ping on closed connection should immediately fail
-		if err := <-client.Ping(321); err != ECONNCLOSED {
+		if err := <-client.Ping(PingDataInt64(321)); err != ECONNCLOSED {
 			t.Fatalf("client: Ping: expected ECONNCLOSED, not %v", err)
 		}
 	})

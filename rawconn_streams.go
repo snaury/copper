@@ -61,12 +61,12 @@ func (s *rawConnStreams) allocateLocked() (uint32, error) {
 	for {
 		streamID := s.next
 		s.next += 2
-		if s.next > maxStreamID {
+		if s.next > MaxStreamID {
 			if wrapped {
 				return 0, ErrNoFreeStreamID
 			}
 			wrapped = true
-			s.next &= maxStreamID
+			s.next &= MaxStreamID
 			if s.next == 0 {
 				s.next = 2
 			}

@@ -21,12 +21,12 @@ type rawConnSettings struct {
 
 func (s *rawConnSettings) init(conn *rawConn) {
 	s.conn = conn
-	s.localConnWindowSize = defaultConnWindowSize
-	s.remoteConnWindowSize = defaultConnWindowSize
-	s.localStreamWindowSize = defaultStreamWindowSize
-	s.remoteStreamWindowSize = defaultStreamWindowSize
-	s.localInactivityTimeout = defaultInactivityTimeout
-	s.remoteInactivityTimeout = defaultInactivityTimeout
+	s.localConnWindowSize = DefaultWindowSize
+	s.remoteConnWindowSize = DefaultWindowSize
+	s.localStreamWindowSize = DefaultWindowSize
+	s.remoteStreamWindowSize = DefaultWindowSize
+	s.localInactivityTimeout = DefaultInactivityTimeout
+	s.remoteInactivityTimeout = DefaultInactivityTimeout
 }
 
 // Fails all pending callbacks with err, called when closing the connection
@@ -58,48 +58,41 @@ func (s *rawConnSettings) handleAck() {
 }
 
 // Handles an incoming settings frame, updates to new settings
-func (s *rawConnSettings) handleSettings(frame *settingsFrame) error {
+func (s *rawConnSettings) handleSettings(frame *SettingsFrame) error {
 	s.conn.mu.Lock()
-	for key, value := range frame.values {
-		switch key {
-		case settingConnWindow:
-			if value < minWindowSize || value > maxWindowSize {
-				s.conn.mu.Unlock()
-				return copperError{
-					error: fmt.Errorf("cannot set connection window to %d bytes", value),
-					code:  EINVALIDFRAME,
-				}
-			}
-			diff := int(value) - s.remoteConnWindowSize
-			s.conn.outgoing.changeWriteWindow(diff)
-			s.remoteConnWindowSize = int(value)
-		case settingStreamWindow:
-			if value < minWindowSize || value > maxWindowSize {
-				s.conn.mu.Unlock()
-				return copperError{
-					error: fmt.Errorf("cannot set stream window to %d bytes", value),
-					code:  EINVALIDFRAME,
-				}
-			}
-			diff := int(value) - s.remoteStreamWindowSize
-			s.conn.streams.changeWriteWindow(diff)
-			s.remoteStreamWindowSize = int(value)
-		case settingInactivityMilliseconds:
-			if value < 1000 {
-				s.conn.mu.Unlock()
-				return copperError{
-					error: fmt.Errorf("cannot set inactivity timeout to %dms", value),
-					code:  EINVALIDFRAME,
-				}
-			}
-			s.remoteInactivityTimeout = time.Duration(value) * time.Millisecond
-		default:
+	if value, ok := frame.Value(SettingConnWindow); ok {
+		if value < MinWindowSize || value > MaxWindowSize {
 			s.conn.mu.Unlock()
 			return copperError{
-				error: fmt.Errorf("unknown settings key %d", key),
+				error: fmt.Errorf("cannot set connection window to %d bytes", value),
 				code:  EINVALIDFRAME,
 			}
 		}
+		diff := int(value) - s.remoteConnWindowSize
+		s.conn.outgoing.changeWriteWindow(diff)
+		s.remoteConnWindowSize = int(value)
+	}
+	if value, ok := frame.Value(SettingStreamWindow); ok {
+		if value < MinWindowSize || value > MaxWindowSize {
+			s.conn.mu.Unlock()
+			return copperError{
+				error: fmt.Errorf("cannot set stream window to %d bytes", value),
+				code:  EINVALIDFRAME,
+			}
+		}
+		diff := int(value) - s.remoteStreamWindowSize
+		s.conn.streams.changeWriteWindow(diff)
+		s.remoteStreamWindowSize = int(value)
+	}
+	if value, ok := frame.Value(SettingInactivityMilliseconds); ok {
+		if value < 1000 {
+			s.conn.mu.Unlock()
+			return copperError{
+				error: fmt.Errorf("cannot set inactivity timeout to %dms", value),
+				code:  EINVALIDFRAME,
+			}
+		}
+		s.remoteInactivityTimeout = time.Duration(value) * time.Millisecond
 	}
 	s.conn.outgoing.addSettingsAck()
 	s.conn.mu.Unlock()

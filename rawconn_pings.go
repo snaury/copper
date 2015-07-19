@@ -10,13 +10,13 @@ type rawConnPings struct {
 
 	mu sync.Mutex
 
-	err   error                   // becomes non-nil when the connection fails
-	pings map[int64][]func(error) // map from ping value to a list of callbacks
+	err   error                      // becomes non-nil when the connection fails
+	pings map[PingData][]func(error) // map from ping data to a list of callbacks
 }
 
 func (p *rawConnPings) init(conn *rawConn) {
 	p.conn = conn
-	p.pings = make(map[int64][]func(error))
+	p.pings = make(map[PingData][]func(error))
 }
 
 // Immediately fails all current pings with err.
@@ -43,35 +43,35 @@ func (p *rawConnPings) fail(err error) {
 // Schedules an outgoing ping, registering callback to be called when reply
 // is received. Care must be taken to not block in the callback, since that
 // might prevent further frames from being read.
-func (p *rawConnPings) addPing(value int64, callback func(error)) error {
+func (p *rawConnPings) addPing(data PingData, callback func(error)) error {
 	p.mu.Lock()
 	err := p.err
 	if err == nil {
-		p.pings[value] = append(p.pings[value], callback)
-		p.conn.outgoing.addPingQueue(value)
+		p.pings[data] = append(p.pings[data], callback)
+		p.conn.outgoing.addPingQueue(data)
 	}
 	p.mu.Unlock()
 	return err
 }
 
 // Handles an incoming ping requests. Schedules an outgoing reply.
-func (p *rawConnPings) handlePing(value int64) {
-	p.conn.outgoing.addPingAck(value)
+func (p *rawConnPings) handlePing(data PingData) {
+	p.conn.outgoing.addPingAck(data)
 }
 
 // Handles an incoming ping reply. Run a registered callback, if found.
-func (p *rawConnPings) handleAck(value int64) {
+func (p *rawConnPings) handleAck(data PingData) {
 	var callback func(error)
 	p.mu.Lock()
-	callbacks := p.pings[value]
+	callbacks := p.pings[data]
 	if len(callbacks) > 0 {
 		callback = callbacks[0]
 		if len(callbacks) > 1 {
 			copy(callbacks, callbacks[1:])
 			callbacks[len(callbacks)-1] = nil
-			p.pings[value] = callbacks[:len(callbacks)-1]
+			p.pings[data] = callbacks[:len(callbacks)-1]
 		} else {
-			delete(p.pings, value)
+			delete(p.pings, data)
 		}
 	}
 	p.mu.Unlock()

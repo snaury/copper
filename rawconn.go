@@ -3,22 +3,13 @@ package copper
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
 )
 
 const (
-	debugConnReadFrame = false
-	debugConnSendFrame = false
-)
-
-const (
-	defaultConnWindowSize    = 65536
-	defaultStreamWindowSize  = 65536
-	defaultInactivityTimeout = 60 * time.Second
-	defaultConnBufferSize    = 4096
+	rawConnBufferSize = 4096
 )
 
 // RawConn is a multiplexed connection implementing the copper protocol
@@ -30,7 +21,7 @@ type RawConn interface {
 	Shutdown() <-chan struct{}
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
-	Ping(value int64) <-chan error
+	Ping(data PingData) <-chan error
 	NewStream() (stream Stream, err error)
 }
 
@@ -52,11 +43,13 @@ type rawConn struct {
 	outgoing rawConnOutgoing
 
 	// only accessible from the readloop
-	reader   *bufio.Reader
+	br       *bufio.Reader
+	reader   *FrameReader
 	lastread time.Time
 
 	// only accessible from the writeloop
-	writer    *bufio.Writer
+	bw        *bufio.Writer
+	writer    *FrameWriter
 	lastwrite time.Time
 }
 
@@ -75,9 +68,11 @@ func NewRawConn(conn net.Conn, handler Handler, server bool) RawConn {
 	c.settings.init(c)
 	c.outgoing.init(c)
 
-	c.reader = bufio.NewReaderSize(newRawConnReader(c), defaultConnBufferSize)
+	c.br = bufio.NewReaderSize(newRawConnReader(c), rawConnBufferSize)
+	c.reader = NewFrameReader(c.br)
 	c.lastread = time.Now()
-	c.writer = bufio.NewWriterSize(newRawConnWriter(c), defaultConnBufferSize)
+	c.bw = bufio.NewWriterSize(newRawConnWriter(c), rawConnBufferSize)
+	c.writer = NewFrameWriter(c.bw)
 	c.lastwrite = time.Now()
 
 	c.finishgroup.Add(2)
@@ -89,33 +84,6 @@ func NewRawConn(conn net.Conn, handler Handler, server bool) RawConn {
 var debugPrefixByClientFlag = map[bool]string{
 	true:  "client",
 	false: "server",
-}
-
-func (c *rawConn) debugPrefix() string {
-	return debugPrefixByClientFlag[c.streams.isClient()]
-}
-
-func (c *rawConn) readFrame(scratch []byte) (rawFrame frame, err error) {
-	rawFrame, err = readFrame(c.reader, scratch)
-	if debugConnReadFrame {
-		if err != nil {
-			log.Printf("%s: read error: %v", c.debugPrefix(), err)
-		} else {
-			log.Printf("%s: read: %v", c.debugPrefix(), rawFrame)
-		}
-	}
-	return
-}
-
-func (c *rawConn) writeFrame(rawFrame frame) (err error) {
-	if debugConnSendFrame {
-		log.Printf("%s: send: %v", c.debugPrefix(), rawFrame)
-	}
-	err = rawFrame.writeFrameTo(c.writer)
-	if debugConnSendFrame && err != nil {
-		log.Printf("%s: send error: %v", c.debugPrefix(), err)
-	}
-	return
 }
 
 func (c *rawConn) closeWithError(err error, closed bool) error {
@@ -189,17 +157,17 @@ func (c *rawConn) RemoteAddr() net.Addr {
 	return c.conn.RemoteAddr()
 }
 
-func (c *rawConn) Ping(value int64) <-chan error {
+func (c *rawConn) Ping(data PingData) <-chan error {
 	result := make(chan error, 1)
-	c.ping(value, func(err error) {
+	c.ping(data, func(err error) {
 		result <- err
 		close(result)
 	})
 	return result
 }
 
-func (c *rawConn) ping(value int64, callback func(err error)) {
-	err := c.pings.addPing(value, callback)
+func (c *rawConn) ping(data PingData, callback func(err error)) {
+	err := c.pings.addPing(data, callback)
 	if err != nil {
 		callback(err)
 	}
@@ -229,18 +197,18 @@ func (c *rawConn) handleStream(handler Handler, stream Stream) {
 	handler.ServeCopper(stream)
 }
 
-func (c *rawConn) processPingFrame(frame *pingFrame) error {
-	if (frame.flags & flagPingAck) != 0 {
-		c.pings.handleAck(frame.value)
+func (c *rawConn) processPingFrame(frame *PingFrame) error {
+	if frame.Flags.Has(FlagPingAck) {
+		c.pings.handleAck(frame.Data)
 	} else {
-		c.pings.handlePing(frame.value)
+		c.pings.handlePing(frame.Data)
 	}
 	return nil
 }
 
-func (c *rawConn) processDataFrame(frame *dataFrame) error {
-	if frame.streamID == 0 {
-		if frame.flags != 0 || len(frame.data) != 0 {
+func (c *rawConn) processDataFrame(frame *DataFrame) error {
+	if frame.StreamID == 0 {
+		if frame.Flags != 0 || len(frame.Data) != 0 {
 			return copperError{
 				error: fmt.Errorf("stream 0 cannot be used for data"),
 				code:  EINVALIDSTREAM,
@@ -248,31 +216,31 @@ func (c *rawConn) processDataFrame(frame *dataFrame) error {
 		}
 		return nil
 	}
-	stream := c.streams.find(frame.streamID)
-	if frame.flags&flagDataOpen != 0 {
+	stream := c.streams.find(frame.StreamID)
+	if frame.Flags.Has(FlagDataOpen) {
 		// This frame is starting a new stream
-		if c.streams.isOwnedID(frame.streamID) {
+		if c.streams.isOwnedID(frame.StreamID) {
 			return copperError{
-				error: fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.streamID),
+				error: fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.StreamID),
 				code:  EINVALIDSTREAM,
 			}
 		}
 		if stream != nil {
 			return copperError{
-				error: fmt.Errorf("stream 0x%08x cannot be reopened until fully closed", frame.streamID),
+				error: fmt.Errorf("stream 0x%08x cannot be reopened until fully closed", frame.StreamID),
 				code:  EINVALIDSTREAM,
 			}
 		}
 		c.mu.Lock()
 		window := c.settings.localStreamWindowSize
-		if len(frame.data) > window {
+		if len(frame.Data) > window {
 			c.mu.Unlock()
 			return copperError{
-				error: fmt.Errorf("stream 0x%08x initial %d bytes, which is more than %d bytes window", frame.streamID, len(frame.data), window),
+				error: fmt.Errorf("stream 0x%08x initial %d bytes, which is more than %d bytes window", frame.StreamID, len(frame.Data), window),
 				code:  EWINDOWOVERFLOW,
 			}
 		}
-		stream = newIncomingStream(c, frame.streamID)
+		stream = newIncomingStream(c, frame.StreamID)
 		if c.failure != nil {
 			// we are closed and ignore valid DATA frames
 			err := c.failure
@@ -293,7 +261,7 @@ func (c *rawConn) processDataFrame(frame *dataFrame) error {
 	} else {
 		if stream == nil {
 			return copperError{
-				error: fmt.Errorf("stream 0x%08x cannot be found", frame.streamID),
+				error: fmt.Errorf("stream 0x%08x cannot be found", frame.StreamID),
 				code:  EINVALIDSTREAM,
 			}
 		}
@@ -305,14 +273,14 @@ func (c *rawConn) processDataFrame(frame *dataFrame) error {
 		}
 		c.mu.RUnlock()
 	}
-	if len(frame.data) > 0 {
-		if !c.outgoing.takeReadWindow(len(frame.data)) {
+	if len(frame.Data) > 0 {
+		if !c.outgoing.takeReadWindow(len(frame.Data)) {
 			return copperError{
-				error: fmt.Errorf("stream 0x%08x received %d bytes, which overflowed the connection window", stream.streamID, len(frame.data)),
+				error: fmt.Errorf("stream 0x%08x received %d bytes, which overflowed the connection window", stream.StreamID, len(frame.Data)),
 				code:  EWINDOWOVERFLOW,
 			}
 		}
-		c.outgoing.incrementReadWindow(len(frame.data))
+		c.outgoing.incrementReadWindow(len(frame.Data))
 	}
 	err := stream.processDataFrame(frame)
 	if err != nil {
@@ -321,13 +289,13 @@ func (c *rawConn) processDataFrame(frame *dataFrame) error {
 	return nil
 }
 
-func (c *rawConn) processResetFrame(frame *resetFrame) error {
-	if frame.streamID == 0 {
+func (c *rawConn) processResetFrame(frame *ResetFrame) error {
+	if frame.StreamID == 0 {
 		// send ECONNCLOSED unless other error is pending
 		c.outgoing.fail(ECONNSHUTDOWN)
-		return frame.err
+		return frame.Error
 	}
-	stream := c.streams.find(frame.streamID)
+	stream := c.streams.find(frame.StreamID)
 	if stream == nil {
 		// it's ok to receive RESET for a dead stream
 		return nil
@@ -346,12 +314,12 @@ func (c *rawConn) processResetFrame(frame *resetFrame) error {
 	return nil
 }
 
-func (c *rawConn) processWindowFrame(frame *windowFrame) error {
-	if frame.streamID == 0 {
-		c.outgoing.changeWriteWindow(int(frame.increment))
+func (c *rawConn) processWindowFrame(frame *WindowFrame) error {
+	if frame.StreamID == 0 {
+		c.outgoing.changeWriteWindow(int(frame.Increment))
 		return nil
 	}
-	stream := c.streams.find(frame.streamID)
+	stream := c.streams.find(frame.StreamID)
 	if stream == nil {
 		// it's ok to receive WINDOW for a dead stream
 		return nil
@@ -359,29 +327,26 @@ func (c *rawConn) processWindowFrame(frame *windowFrame) error {
 	return stream.processWindowFrame(frame)
 }
 
-func (c *rawConn) processSettingsFrame(frame *settingsFrame) error {
-	if frame.flags&flagSettingsAck != 0 {
+func (c *rawConn) processSettingsFrame(frame *SettingsFrame) error {
+	if frame.Flags.Has(FlagSettingsAck) {
 		c.settings.handleAck()
 		return nil
 	}
 	return c.settings.handleSettings(frame)
 }
 
-func (c *rawConn) processFrame(rawFrame frame, scratch *[]byte) bool {
+func (c *rawConn) processFrame(rawFrame Frame) bool {
 	var err error
 	switch frame := rawFrame.(type) {
-	case *pingFrame:
+	case *PingFrame:
 		err = c.processPingFrame(frame)
-	case *dataFrame:
+	case *DataFrame:
 		err = c.processDataFrame(frame)
-		if len(frame.data) > len(*scratch) {
-			*scratch = frame.data
-		}
-	case *resetFrame:
+	case *ResetFrame:
 		err = c.processResetFrame(frame)
-	case *windowFrame:
+	case *WindowFrame:
 		err = c.processWindowFrame(frame)
-	case *settingsFrame:
+	case *SettingsFrame:
 		err = c.processSettingsFrame(frame)
 	default:
 		err = EUNKNOWNFRAME
@@ -395,14 +360,13 @@ func (c *rawConn) processFrame(rawFrame frame, scratch *[]byte) bool {
 
 func (c *rawConn) readloop() {
 	defer c.finishgroup.Done()
-	var scratch []byte
 	for {
-		rawFrame, err := c.readFrame(scratch)
+		rawFrame, err := c.reader.ReadFrame()
 		if err != nil {
 			c.closeWithError(err, false)
 			break
 		}
-		if !c.processFrame(rawFrame, &scratch) {
+		if !c.processFrame(rawFrame) {
 			break
 		}
 	}
@@ -427,16 +391,16 @@ func (c *rawConn) writeloop() {
 	for {
 		ok := c.outgoing.writeFrames()
 		newlastwrite := c.lastwrite
-		if ok && lastwrite == newlastwrite && c.writer.Buffered() == 0 {
+		if ok && lastwrite == newlastwrite && c.bw.Buffered() == 0 {
 			// We haven't written anything for a while, write an empty frame
-			err := c.writeFrame(&dataFrame{})
+			err := c.writer.WriteData(0, 0, nil)
 			if err != nil {
 				c.closeWithError(err, false)
 				break
 			}
 		}
-		if c.writer.Buffered() > 0 {
-			err := c.writer.Flush()
+		if c.bw.Buffered() > 0 {
+			err := c.bw.Flush()
 			if err != nil {
 				c.closeWithError(err, false)
 				break

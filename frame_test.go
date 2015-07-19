@@ -9,69 +9,69 @@ import (
 	"testing"
 )
 
-var decodedFrames = []frame{
-	&pingFrame{
-		flags: 0,
-		value: 0x1122334455667788,
+var decodedFrames = []Frame{
+	&PingFrame{
+		Flags: 0,
+		Data:  PingDataInt64(0x1122334455667788),
 	},
-	&pingFrame{
-		flags: flagPingAck,
-		value: 0x1122334455667788,
+	&PingFrame{
+		Flags: FlagPingAck,
+		Data:  PingDataInt64(0x1122334455667788),
 	},
-	&dataFrame{
-		streamID: 0x42,
-		flags:    flagDataOpen,
-		data:     []byte{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},
+	&DataFrame{
+		StreamID: 0x42,
+		Flags:    FlagDataOpen,
+		Data:     []byte{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},
 	},
-	&dataFrame{
-		streamID: 0x42,
-		flags:    flagDataEOF,
-		data:     []byte{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},
+	&DataFrame{
+		StreamID: 0x42,
+		Flags:    FlagDataEOF,
+		Data:     []byte{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8},
 	},
-	&resetFrame{
-		streamID: 0x42,
-		flags:    flagResetRead | flagResetWrite,
-		err:      EINVALID,
+	&ResetFrame{
+		StreamID: 0x42,
+		Flags:    FlagResetRead | FlagResetWrite,
+		Error:    EINVALID,
 	},
-	&resetFrame{
-		streamID: 0x42,
-		flags:    flagResetRead | flagResetWrite,
-		err: &copperError{
+	&ResetFrame{
+		StreamID: 0x42,
+		Flags:    FlagResetRead | FlagResetWrite,
+		Error: &copperError{
 			error: errors.New("test"),
 			code:  EINVALID,
 		},
 	},
-	&windowFrame{
-		streamID:  0x42,
-		flags:     0x25,
-		increment: 0x11223344,
+	&WindowFrame{
+		StreamID:  0x42,
+		Flags:     0x25,
+		Increment: 0x11223344,
 	},
-	&settingsFrame{
-		flags: 0,
-		values: map[settingID]uint32{
-			settingStreamWindow: 3,
+	&SettingsFrame{
+		Flags: 0,
+		Data: []Setting{
+			{SettingConnWindow, 7},
+			{SettingStreamWindow, 6},
 		},
 	},
-	&settingsFrame{
-		flags:  flagSettingsAck,
-		values: nil,
+	&SettingsFrame{
+		Flags: FlagSettingsAck,
 	},
-	&resetFrame{
-		err: EINTERNAL,
+	&ResetFrame{
+		Error: EINTERNAL,
 	},
 }
 
 var printedFrames = []string{
-	`PING[flags:0x00 value:1234605616436508552]`,
-	`PING[flags:0x01(ACK) value:1234605616436508552]`,
-	`DATA[stream:66 flags:0x02(OPEN) data:ff fe fd fc fb fa f9 f8]`,
-	`DATA[stream:66 flags:0x01(EOF) data:ff fe fd fc fb fa f9 f8]`,
-	`RESET[stream:66 flags:0x03(READ)(WRITE) error:data is not valid]`,
-	`RESET[stream:66 flags:0x03(READ)(WRITE) error:test]`,
+	`PING[flags:0 value:1122334455667788]`,
+	`PING[flags:ACK value:1122334455667788]`,
+	`DATA[stream:66 flags:OPEN data:ff fe fd fc fb fa f9 f8]`,
+	`DATA[stream:66 flags:EOF data:ff fe fd fc fb fa f9 f8]`,
+	`RESET[stream:66 flags:READ|WRITE error:data is not valid]`,
+	`RESET[stream:66 flags:READ|WRITE error:test]`,
 	`WINDOW[stream:66 flags:0x25 increment:287454020]`,
-	`SETTINGS[flags:0x00 values:map[2:3]]`,
-	`SETTINGS[flags:0x01(ACK) values:map[]]`,
-	`RESET[stream:0 flags:0x00 error:internal error]`,
+	`SETTINGS[flags:0 data:[{1 7} {2 6}]]`,
+	`SETTINGS[flags:ACK data:[]]`,
+	`RESET[stream:0 flags:0 error:internal error]`,
 }
 
 var rawFrameData = []byte{
@@ -98,8 +98,9 @@ var rawFrameData = []byte{
 	0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x04, 0x25, 0x03,
 	0x11, 0x22, 0x33, 0x44,
 	// a SETTINGS frame
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x04,
-	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x04,
+	0x00, 0x01, 0x00, 0x00, 0x00, 0x07,
+	0x00, 0x02, 0x00, 0x00, 0x00, 0x06,
 	// a SETTINGS ack frame
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x04,
 	// a RESET frame with a EINTERNAL error
@@ -108,10 +109,10 @@ var rawFrameData = []byte{
 }
 
 func TestFrameReading(t *testing.T) {
-	r := bytes.NewReader(rawFrameData)
+	r := NewFrameReader(bytes.NewReader(rawFrameData))
 
 	for _, expected := range decodedFrames {
-		f, err := readFrame(r, nil)
+		f, err := r.ReadFrame()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v\nExpected: %v", err, expected)
 		}
@@ -120,7 +121,7 @@ func TestFrameReading(t *testing.T) {
 		}
 	}
 
-	f, err := readFrame(r, nil)
+	f, err := r.ReadFrame()
 	if err == nil {
 		t.Fatalf("Unexpected frame: %#v", f)
 	}
@@ -130,7 +131,8 @@ func TestFrameReading(t *testing.T) {
 }
 
 func TestFrameWriting(t *testing.T) {
-	w := new(bytes.Buffer)
+	var buf bytes.Buffer
+	w := NewFrameWriter(&buf)
 
 	for _, frame := range decodedFrames {
 		err := frame.writeFrameTo(w)
@@ -139,9 +141,9 @@ func TestFrameWriting(t *testing.T) {
 		}
 	}
 
-	buf := w.Bytes()
-	if !reflect.DeepEqual(buf, rawFrameData) {
-		t.Fatalf("Unexpected frame data:\n% x\nExpected:\n% x", buf, rawFrameData)
+	data := buf.Bytes()
+	if !reflect.DeepEqual(data, rawFrameData) {
+		t.Fatalf("Unexpected frame data:\n% x\nExpected:\n% x", data, rawFrameData)
 	}
 }
 
@@ -156,14 +158,14 @@ func TestFramePrinting(t *testing.T) {
 }
 
 func TestFrameErrors(t *testing.T) {
-	r := bytes.NewReader([]byte{
+	r := NewFrameReader(bytes.NewReader([]byte{
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
-	})
-	f, err := readFrame(r, nil)
-	if err == nil {
-		t.Fatalf("Unexpected frame: %#v", f)
-	}
-	if err != EUNKNOWNFRAME {
+	}))
+	f, err := r.ReadFrame()
+	if err != nil {
 		t.Fatalf("Got unexpected error: %v", err)
+	}
+	if _, ok := f.(*UnknownFrame); !ok {
+		t.Fatalf("Unexpected frame: %#v", f)
 	}
 }
