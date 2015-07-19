@@ -74,12 +74,9 @@ func newStream(owner *rawConn, streamID uint32) *rawStream {
 	return s
 }
 
-func newIncomingStreamWithUnlock(owner *rawConn, frame *openFrame) *rawStream {
-	s := newStream(owner, frame.streamID)
+func newIncomingStreamWithUnlock(owner *rawConn, streamID uint32) *rawStream {
+	s := newStream(owner, streamID)
 	owner.streams.addLockedWithUnlock(s)
-	s.mu.Lock()
-	s.processDataLocked(frame.data, frame.flags&flagFin != 0)
-	s.mu.Unlock()
 	return s
 }
 
@@ -208,23 +205,26 @@ func (s *rawStream) processDataLocked(data []byte, eof bool) error {
 
 func (s *rawStream) processDataFrame(frame *dataFrame) error {
 	s.mu.Lock()
-	err := s.processDataLocked(frame.data, frame.flags&flagFin != 0)
+	err := s.processDataLocked(frame.data, frame.flags&flagDataEOF != 0)
 	s.mu.Unlock()
 	return err
 }
 
 func (s *rawStream) processResetFrame(frame *resetFrame) error {
 	s.mu.Lock()
-	s.clearWriteBufferLocked()
-	s.setWriteErrorLocked(frame.err)
-	if frame.flags&flagFin != 0 {
-		reset := frame.err
-		if reset == ECLOSED {
+	if frame.flags&flagResetRead != 0 {
+		err := frame.err
+		s.clearWriteBufferLocked()
+		s.setWriteErrorLocked(err)
+	}
+	if frame.flags&flagResetWrite != 0 {
+		err := frame.err
+		if err == ECLOSED {
 			// ECLOSED is special, it translates to a normal EOF
-			reset = io.EOF
+			err = io.EOF
 		}
 		s.flags |= flagStreamSeenEOF
-		s.setReadErrorLocked(reset)
+		s.setReadErrorLocked(err)
 		s.cleanupLocked()
 	}
 	s.mu.Unlock()
@@ -298,9 +298,8 @@ func (s *rawStream) writeCtrl() error {
 		return nil
 	}
 	if s.activeOpen() {
-		s.flags &^= flagStreamNeedOpen
-		data := s.prepareDataLocked(maxOpenFramePayloadSize)
-		frame := &openFrame{
+		data := s.prepareDataLocked(maxDataFramePayloadSize)
+		frame := &dataFrame{
 			streamID: s.streamID,
 			flags:    s.outgoingFlags(),
 			data:     data,
@@ -335,7 +334,6 @@ func (s *rawStream) writeCtrl() error {
 		return s.owner.writeFrame(frame)
 	}
 	if s.activeReset() {
-		var flags uint8
 		reset := s.reset
 		if reset == nil {
 			// The only way we may end up with reset being nil, but with an
@@ -348,6 +346,10 @@ func (s *rawStream) writeCtrl() error {
 			// Instead of ECONNCLOSED remote should receive ECONNSHUTDOWN
 			reset = ECONNSHUTDOWN
 		}
+		flags := uint8(0)
+		if s.flags&flagStreamSentReset == 0 {
+			flags |= flagResetRead
+		}
 		if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
 			// This RESET closes both sides of the stream, otherwise it only
 			// closes the read side and write side is delayed until we need to
@@ -356,7 +358,7 @@ func (s *rawStream) writeCtrl() error {
 			s.flags &^= flagStreamNeedEOF
 			s.flags |= flagStreamSentEOF
 			s.cleanupLocked()
-			flags |= flagFin
+			flags |= flagResetWrite
 		}
 		// N.B.: we may send RESET twice. First without EOF, to stop the other
 		// side from sending us more data. Second with EOF, after sending all
@@ -371,12 +373,9 @@ func (s *rawStream) writeCtrl() error {
 		return s.owner.writeFrame(frame)
 	}
 	if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
-		s.flags &^= flagStreamNeedEOF
-		s.flags |= flagStreamSentEOF
-		s.cleanupLocked()
 		frame := &dataFrame{
 			streamID: s.streamID,
-			flags:    flagFin,
+			flags:    s.outgoingFlags(),
 		}
 		s.mu.Unlock()
 		return s.owner.writeFrame(frame)
@@ -463,11 +462,15 @@ func (s *rawStream) activeEOF() bool {
 
 func (s *rawStream) outgoingFlags() uint8 {
 	var flags uint8
+	if s.activeOpen() {
+		s.flags &^= flagStreamNeedOpen
+		flags |= flagDataOpen
+	}
 	if s.activeEOF() {
 		s.flags &^= flagStreamNeedEOF
 		s.flags |= flagStreamSentEOF
 		s.cleanupLocked()
-		flags |= flagFin
+		flags |= flagDataEOF
 	}
 	return flags
 }

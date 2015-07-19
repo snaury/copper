@@ -8,15 +8,18 @@ from gevent.hub import get_hub
 from gevent.event import Event
 from gevent.socket import EBADF, error as socket_error
 from .frames import (
-    FLAG_FIN,
-    FLAG_ACK,
     Frame,
     PingFrame,
-    OpenFrame,
     DataFrame,
     ResetFrame,
     WindowFrame,
     SettingsFrame,
+    FLAG_PING_ACK,
+    FLAG_DATA_EOF,
+    FLAG_DATA_OPEN,
+    FLAG_RESET_READ,
+    FLAG_RESET_WRITE,
+    FLAG_SETTINGS_ACK,
 )
 from .errors import (
     NoTargetError,
@@ -253,7 +256,7 @@ class RawConn(object):
             self._data_streams.discard(stream)
 
     def _process_ping_frame(self, frame):
-        if frame.flags & FLAG_ACK:
+        if frame.flags & FLAG_PING_ACK:
             waiters = self._ping_waiters.get(frame.value)
             if len(waiters) > 1:
                 waiter = waiters.pop(0)
@@ -268,38 +271,35 @@ class RawConn(object):
             self._ping_acks.append(frame.value)
             self._write_ready.set()
 
-    def _process_open_frame(self, frame):
-        if frame.stream_id <= 0 or (frame.stream_id & 1) == (0 if self._is_server else 1):
-            raise InvalidStreamError('stream 0x%08x cannot be used for opening streams' % (frame.stream_id,))
-        old = self._streams.get(frame.stream_id)
-        if old is not None:
-            raise InvalidStreamError('stream 0x%08x cannot be reopened until fully closed' % (frame.stream_id,))
-        if len(frame.data) > self._local_conn_window:
-            raise WindowOverflowError('stream 0x%08x opened with %d bytes, which is more than %d bytes window' % (frame.stream_id, len(frame.data), self._local_conn_window))
-        stream = RawStream.new_incoming(self, frame)
-        if self._closed:
-            # We are closed and ignore valid OPEN frames
-            stream.close_with_error(self._failure)
-            return
-        if self._shutdown:
-            # We are shutting down and close new streams
-            stream.close_with_error(ConnectionShutdownError())
-            return
-        self._spawn_handler(self._handle_stream, stream)
-        if len(frame.data) > 0:
-            self._add_window_ack(0, len(frame.data))
-
     def _process_data_frame(self, frame):
         if frame.stream_id == 0:
             if frame.flags != 0 or len(frame.data) != 0:
-                raise InvalidStreamError("stream 0 cannot be used for sending data")
+                raise InvalidStreamError("stream 0 cannot be used for data")
             return
         stream = self._streams.get(frame.stream_id)
-        if stream is None:
-            raise InvalidStreamError("stream 0x%08x cannot be found" % (frame.stream_id,))
-        if self._closed:
-            # We are closed and ignore valid DATA frames
-            return
+        if frame.flags & FLAG_DATA_OPEN:
+            if (frame.stream_id & 1) == (0 if self._is_server else 1):
+                raise InvalidStreamError('stream 0x%08x cannot be used for opening streams' % (frame.stream_id,))
+            if stream is not None:
+                raise InvalidStreamError('stream 0x%08x cannot be reopened until fully closed' % (frame.stream_id,))
+            if len(frame.data) > self._local_conn_window:
+                raise WindowOverflowError('stream 0x%08x opened with %d bytes, which is more than %d bytes window' % (frame.stream_id, len(frame.data), self._local_conn_window))
+            stream = RawStream.new_incoming(self, frame.stream_id)
+            if self._closed:
+                # We are closed and ignore valid DATA frames
+                stream.close_with_error(self._failure)
+                return
+            if self._shutdown:
+                # We are shutting down and close new streams
+                stream.close_with_error(ConnectionShutdownError())
+                return
+            self._spawn_handler(self._handle_stream, stream)
+        else:
+            if stream is None:
+                raise InvalidStreamError("stream 0x%08x cannot be found" % (frame.stream_id,))
+            if self._closed:
+                # We are closed and ignore valid DATA frames
+                return
         stream._process_data_frame(frame)
         if len(frame.data) > 0:
             self._add_window_ack(0, len(frame.data))
@@ -334,7 +334,6 @@ class RawConn(object):
 
     _process_frame_by_type = {
         PingFrame: _process_ping_frame,
-        OpenFrame: _process_open_frame,
         DataFrame: _process_data_frame,
         ResetFrame: _process_reset_frame,
         WindowFrame: _process_window_frame,
@@ -399,7 +398,7 @@ class RawConn(object):
             if self._ping_acks:
                 ping_acks, self._ping_acks = self._ping_acks, []
                 for value in ping_acks:
-                    self._writer.write_frame(PingFrame(FLAG_ACK, value))
+                    self._writer.write_frame(PingFrame(FLAG_PING_ACK, value))
                 if sent_marker is not self._writer.sent_marker:
                     continue
             if self._ping_reqs:
@@ -418,7 +417,7 @@ class RawConn(object):
             if send_detected:
                 continue
             if self._failure_out is not None:
-                self._writer.write_frame(ResetFrame(0, FLAG_FIN, self._failure_out))
+                self._writer.write_frame(ResetFrame(0, 0, self._failure_out))
                 self._writer.flush()
                 return False
             while self._ctrl_streams:
@@ -499,14 +498,8 @@ class RawStream(object):
         conn._streams[stream_id] = self
 
     @classmethod
-    def new_incoming(cls, conn, frame):
-        self = cls(conn, frame.stream_id)
-        self._readbuf = frame.data
-        self._readleft -= len(frame.data)
-        if frame.flags & FLAG_FIN:
-            self._seen_eof = True
-            self._set_read_error(EOFError())
-        return self
+    def new_incoming(cls, conn, stream_id):
+        return cls(conn, stream_id)
 
     @classmethod
     def new_outgoing(cls, conn, stream_id):
@@ -564,12 +557,16 @@ class RawStream(object):
         return ''
 
     def _outgoing_flags(self):
+        flags = 0
+        if self._need_open:
+            self._need_open = False
+            flags |= FLAG_DATA_OPEN
         if self._active_eof():
             self._need_eof = False
             self._sent_eof = True
             self._cleanup()
-            return FLAG_FIN
-        return 0
+            flags |= FLAG_DATA_EOF
+        return flags
 
     def _active_eof(self):
         if not self._writebuf and self._need_eof:
@@ -609,9 +606,8 @@ class RawStream(object):
             self._cleanup()
             return
         if self._need_open:
-            self._need_open = False
             data = self._prepare_data()
-            writer.write_frame(OpenFrame(
+            writer.write_frame(DataFrame(
                 self._stream_id,
                 self._outgoing_flags(),
                 data,
@@ -624,14 +620,15 @@ class RawStream(object):
                 error = self._read_error
             if isinstance(error, ConnectionClosedError):
                 error = ConnectionShutdownError()
+            flags = 0
+            if not self._sent_reset:
+                flags |= FLAG_RESET_READ
             if not self._writebuf and self._need_eof:
                 self._need_reset = False
                 self._need_eof = False
                 self._sent_eof = True
                 self._cleanup()
-                flags = FLAG_FIN
-            else:
-                flags = 0
+                flags |= FLAG_RESET_WRITE
             self._sent_reset = True
             writer.write_frame(ResetFrame(
                 self._stream_id,
@@ -639,11 +636,9 @@ class RawStream(object):
                 error,
             ))
         if not self._writebuf and self._need_eof:
-            self._need_eof = False
-            self._cleanup()
             writer.write_frame(DataFrame(
                 self._stream_id,
-                FLAG_FIN,
+                self._outgoing_flags(),
                 '',
             ))
 
@@ -672,15 +667,16 @@ class RawStream(object):
                 self._readbuf += frame.data
                 self._read_cond.broadcast()
             self._readleft -= len(frame.data)
-        if frame.flags & FLAG_FIN:
+        if frame.flags & FLAG_DATA_EOF:
             self._seen_eof = True
             self._set_read_error(EOFError())
             self._cleanup()
 
     def _process_reset_frame(self, frame):
-        self._clear_write_buffer()
-        self._set_write_error(frame.error)
-        if frame.flags & FLAG_FIN:
+        if frame.flags & FLAG_RESET_READ:
+            self._clear_write_buffer()
+            self._set_write_error(frame.error)
+        if frame.flags & FLAG_RESET_WRITE:
             error = frame.error
             if isinstance(error, StreamClosedError):
                 error = EOFError()

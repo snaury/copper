@@ -15,8 +15,12 @@ __all__ = [
 FRAME_HEADER_FMT = struct.Struct('>IIB')
 assert FRAME_HEADER_FMT.size == 9
 
-FLAG_FIN = 1 # OPEN, DATA, RESET
-FLAG_ACK = 1 # PING, SETTINGS
+FLAG_PING_ACK = 1
+FLAG_DATA_EOF = 1
+FLAG_DATA_OPEN = 2
+FLAG_RESET_READ = 1
+FLAG_RESET_WRITE = 2
+FLAG_SETTINGS_ACK = 1
 
 class Header(object):
     __slots__ = ('stream_id', 'payload_size', 'flags', 'kind')
@@ -102,44 +106,10 @@ class PingFrame(Frame):
         Header(0, 8, self.flags, self.ID).dump(writer)
         writer.write(self.FMT.pack(self.value))
 
-class OpenFrame(Frame):
-    __slots__ = ('stream_id', 'flags', 'data')
-
-    ID = 1
-    FMT = struct.Struct('>Q')
-
-    def __init__(self, stream_id, flags, data):
-        self.stream_id = stream_id
-        self.flags = flags
-        self.data = data
-
-    def __cmp__(self, other):
-        if other is self:
-            return 0
-        if isinstance(other, OpenFrame):
-            return cmp(
-                (self.stream_id, self.flags, self.data),
-                (other.stream_id, other.flags, other.data),
-            )
-        return cmp(id(self), id(other))
-
-    @classmethod
-    def load_frame_data(cls, header, reader):
-        if header.payload_size > 0:
-            data = reader.read(header.payload_size)
-        else:
-            data = ''
-        return cls(header.stream_id, header.flags, data)
-
-    def dump(self, writer):
-        Header(self.stream_id, len(self.data), self.flags, self.ID).dump(writer)
-        if self.data:
-            writer.write(self.data)
-
 class DataFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'data')
 
-    ID = 2
+    ID = 1
 
     def __init__(self, stream_id, flags, data):
         self.stream_id = stream_id
@@ -172,7 +142,7 @@ class DataFrame(Frame):
 class ResetFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'error')
 
-    ID = 3
+    ID = 2
     FMT = struct.Struct('>I')
 
     def __init__(self, stream_id, flags, error):
@@ -222,7 +192,7 @@ class ResetFrame(Frame):
 class WindowFrame(Frame):
     __slots__ = ('stream_id', 'flags', 'increment')
 
-    ID = 4
+    ID = 3
     FMT = struct.Struct('>I')
 
     def __init__(self, stream_id, flags, increment):
@@ -254,7 +224,7 @@ class WindowFrame(Frame):
 class SettingsFrame(Frame):
     __slots__ = ('flags', 'values')
 
-    ID = 5
+    ID = 4
     FMT = struct.Struct('>II')
 
     def __init__(self, flags, values):
@@ -275,7 +245,7 @@ class SettingsFrame(Frame):
     def load_frame_data(cls, header, reader):
         if header.stream_id != 0:
             raise InvalidFrameError()
-        if header.flags & FLAG_ACK:
+        if header.flags & FLAG_SETTINGS_ACK:
             if header.payload_size != 0:
                 raise InvalidFrameError()
             values = {}

@@ -653,57 +653,10 @@ func (c *rawConn) handleStream(handler Handler, stream Stream) {
 }
 
 func (c *rawConn) processPingFrame(frame *pingFrame) error {
-	if (frame.flags & flagAck) != 0 {
+	if (frame.flags & flagPingAck) != 0 {
 		c.pings.handleAck(frame.value)
 	} else {
 		c.pings.handlePing(frame.value)
-	}
-	return nil
-}
-
-func (c *rawConn) processOpenFrame(frame *openFrame) error {
-	if frame.streamID <= 0 || c.streams.ownedID(frame.streamID) {
-		return copperError{
-			error: fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.streamID),
-			code:  EINVALIDSTREAM,
-		}
-	}
-	old := c.streams.find(frame.streamID)
-	if old != nil {
-		return copperError{
-			error: fmt.Errorf("stream 0x%08x cannot be reopened until fully closed", frame.streamID),
-			code:  EINVALIDSTREAM,
-		}
-	}
-	c.mu.Lock()
-	window := c.settings.localStreamWindowSize
-	if len(frame.data) > window {
-		return copperError{
-			error: fmt.Errorf("stream 0x%08x initial %d bytes, which is more than %d bytes window", frame.streamID, len(frame.data), window),
-			code:  EWINDOWOVERFLOW,
-		}
-	}
-	stream := newIncomingStreamWithUnlock(c, frame)
-	c.mu.Lock()
-	if c.failure != nil {
-		// we are closed and ignore valid OPEN frames
-		err := c.failure
-		c.mu.Unlock()
-		stream.closeWithError(err, true)
-		return nil
-	}
-	if c.shutdownchan != nil {
-		// we are shutting down and should close incoming streams
-		c.mu.Unlock()
-		stream.closeWithError(ECONNSHUTDOWN, true)
-		return nil
-	}
-	c.finishgroup.Add(1)
-	c.shutdowngroup.Add(1)
-	go c.handleStream(c.handler, stream)
-	c.mu.Unlock()
-	if len(frame.data) > 0 {
-		c.outgoing.incrementRemote(len(frame.data))
 	}
 	return nil
 }
@@ -712,26 +665,70 @@ func (c *rawConn) processDataFrame(frame *dataFrame) error {
 	if frame.streamID == 0 {
 		if frame.flags != 0 || len(frame.data) != 0 {
 			return copperError{
-				error: fmt.Errorf("stream 0 cannot be used to send data"),
+				error: fmt.Errorf("stream 0 cannot be used for data"),
 				code:  EINVALIDSTREAM,
 			}
 		}
 		return nil
 	}
 	stream := c.streams.find(frame.streamID)
-	if stream == nil {
-		return copperError{
-			error: fmt.Errorf("stream 0x%08x cannot be found", frame.streamID),
-			code:  EINVALIDSTREAM,
+	if frame.flags&flagDataOpen != 0 {
+		// This frame is starting a new stream
+		if c.streams.ownedID(frame.streamID) {
+			return copperError{
+				error: fmt.Errorf("stream 0x%08x cannot be used for opening streams", frame.streamID),
+				code:  EINVALIDSTREAM,
+			}
 		}
-	}
-	c.mu.RLock()
-	if c.failure != nil {
-		// we are closed and ignore valid DATA frames
+		if stream != nil {
+			return copperError{
+				error: fmt.Errorf("stream 0x%08x cannot be reopened until fully closed", frame.streamID),
+				code:  EINVALIDSTREAM,
+			}
+		}
+		c.mu.Lock()
+		window := c.settings.localStreamWindowSize
+		if len(frame.data) > window {
+			c.mu.Unlock()
+			return copperError{
+				error: fmt.Errorf("stream 0x%08x initial %d bytes, which is more than %d bytes window", frame.streamID, len(frame.data), window),
+				code:  EWINDOWOVERFLOW,
+			}
+		}
+		stream = newIncomingStreamWithUnlock(c, frame.streamID)
+		c.mu.Lock()
+		if c.failure != nil {
+			// we are closed and ignore valid DATA frames
+			err := c.failure
+			c.mu.Unlock()
+			stream.closeWithError(err, true)
+			return nil
+		}
+		if c.shutdownchan != nil {
+			// we are shutting down and should close incoming streams
+			c.mu.Unlock()
+			stream.closeWithError(ECONNSHUTDOWN, true)
+			return nil
+		}
+		c.finishgroup.Add(1)
+		c.shutdowngroup.Add(1)
+		go c.handleStream(c.handler, stream)
+		c.mu.Unlock()
+	} else {
+		if stream == nil {
+			return copperError{
+				error: fmt.Errorf("stream 0x%08x cannot be found", frame.streamID),
+				code:  EINVALIDSTREAM,
+			}
+		}
+		c.mu.RLock()
+		if c.failure != nil {
+			// we are closed and ignore valid DATA frames
+			c.mu.RUnlock()
+			return nil
+		}
 		c.mu.RUnlock()
-		return nil
 	}
-	c.mu.RUnlock()
 	err := stream.processDataFrame(frame)
 	if err != nil {
 		return err
@@ -781,7 +778,7 @@ func (c *rawConn) processWindowFrame(frame *windowFrame) error {
 }
 
 func (c *rawConn) processSettingsFrame(frame *settingsFrame) error {
-	if frame.flags&flagAck != 0 {
+	if frame.flags&flagSettingsAck != 0 {
 		c.settings.handleAck()
 		return nil
 	}
@@ -793,11 +790,6 @@ func (c *rawConn) processFrame(rawFrame frame, scratch *[]byte) bool {
 	switch frame := rawFrame.(type) {
 	case *pingFrame:
 		err = c.processPingFrame(frame)
-	case *openFrame:
-		err = c.processOpenFrame(frame)
-		if len(frame.data) > len(*scratch) {
-			*scratch = frame.data
-		}
 	case *dataFrame:
 		err = c.processDataFrame(frame)
 		if len(frame.data) > len(*scratch) {
@@ -865,7 +857,7 @@ writeloop:
 			c.outgoing.mu.Unlock()
 			for _, value := range pingAcks {
 				err := c.writeFrame(&pingFrame{
-					flags: flagAck,
+					flags: flagPingAck,
 					value: value,
 				})
 				if err != nil {
@@ -896,7 +888,7 @@ writeloop:
 			c.outgoing.settingsAcks--
 			c.outgoing.mu.Unlock()
 			err := c.writeFrame(&settingsFrame{
-				flags: flagAck,
+				flags: flagSettingsAck,
 			})
 			if err != nil {
 				c.closeWithError(err, false)
@@ -939,7 +931,7 @@ writeloop:
 			// when we close the connection.
 			c.writeFrame(&resetFrame{
 				streamID: 0,
-				flags:    flagFin,
+				flags:    0,
 				err:      failure,
 			})
 			return false

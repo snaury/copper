@@ -11,11 +11,10 @@ type frameID uint8
 
 const (
 	pingFrameID     frameID = 0
-	openFrameID     frameID = 1
-	dataFrameID     frameID = 2
-	resetFrameID    frameID = 3
-	windowFrameID   frameID = 4
-	settingsFrameID frameID = 5
+	dataFrameID     frameID = 1
+	resetFrameID    frameID = 2
+	windowFrameID   frameID = 3
+	settingsFrameID frameID = 4
 )
 
 type settingID uint32
@@ -30,17 +29,21 @@ const (
 	minWindowSize               = 1024
 	maxWindowSize               = 1<<31 - 1
 	maxFramePayloadSize         = 0xffffff
-	maxOpenFramePayloadSize     = maxFramePayloadSize
 	maxDataFramePayloadSize     = maxFramePayloadSize
 	maxResetFrameMessageSize    = maxFramePayloadSize - 4
 	maxSettingsFramePayloadSize = 8 * 256
 )
 
 const (
-	// Used for OPEN, DATA and RESET
-	flagFin uint8 = 1
-	// Used for PING and SETTINGS
-	flagAck uint8 = 1
+	flagPingAck uint8 = 1
+
+	flagDataEOF  uint8 = 1
+	flagDataOpen uint8 = 2
+
+	flagResetRead  uint8 = 1
+	flagResetWrite uint8 = 2
+
+	flagSettingsAck uint8 = 1
 )
 
 type frame interface {
@@ -54,7 +57,7 @@ type pingFrame struct {
 
 func (p *pingFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
-	if p.flags&flagAck != 0 {
+	if p.flags&flagPingAck != 0 {
 		flagstring += "(ACK)"
 	}
 	return fmt.Sprintf("PING[flags:%s value:%d]", flagstring, p.value)
@@ -74,36 +77,6 @@ func (p *pingFrame) writeFrameTo(w io.Writer) (err error) {
 	return
 }
 
-type openFrame struct {
-	streamID uint32
-	flags    uint8
-	data     []byte
-}
-
-func (p *openFrame) String() string {
-	flagstring := fmt.Sprintf("0x%02x", p.flags)
-	if p.flags&flagFin != 0 {
-		flagstring += "(FIN)"
-	}
-	return fmt.Sprintf("OPEN[stream:%d flags:%s data:% x]", p.streamID, flagstring, p.data)
-}
-
-func (p *openFrame) writeFrameTo(w io.Writer) (err error) {
-	if len(p.data) > maxOpenFramePayloadSize {
-		return EINVALIDFRAME
-	}
-	err = writeFrameHeader(w, frameHeader{
-		streamID: p.streamID,
-		length:   uint32(len(p.data)),
-		flags:    p.flags,
-		id:       openFrameID,
-	})
-	if err == nil && len(p.data) > 0 {
-		_, err = w.Write(p.data)
-	}
-	return
-}
-
 type dataFrame struct {
 	streamID uint32
 	flags    uint8
@@ -112,8 +85,11 @@ type dataFrame struct {
 
 func (p *dataFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
-	if p.flags&flagFin != 0 {
-		flagstring += "(FIN)"
+	if p.flags&flagDataEOF != 0 {
+		flagstring += "(EOF)"
+	}
+	if p.flags&flagDataOpen != 0 {
+		flagstring += "(OPEN)"
 	}
 	return fmt.Sprintf("DATA[stream:%d flags:%s data:% x]", p.streamID, flagstring, p.data)
 }
@@ -144,8 +120,11 @@ type resetFrame struct {
 
 func (p *resetFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
-	if p.flags&flagFin != 0 {
-		flagstring += "(FIN)"
+	if p.flags&flagResetRead != 0 {
+		flagstring += "(READ)"
+	}
+	if p.flags&flagResetWrite != 0 {
+		flagstring += "(WRITE)"
 	}
 	return fmt.Sprintf("RESET[stream:%d flags:%s error:%s]", p.streamID, flagstring, p.err)
 }
@@ -218,7 +197,7 @@ type settingsFrame struct {
 
 func (p *settingsFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
-	if p.flags&flagAck != 0 {
+	if p.flags&flagSettingsAck != 0 {
 		flagstring += "(ACK)"
 	}
 	return fmt.Sprintf("SETTINGS[flags:%s values:%v]", flagstring, p.values)
@@ -268,27 +247,6 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 		return &pingFrame{
 			flags: hdr.Flags(),
 			value: int64(binary.BigEndian.Uint64(buf[0:8])),
-		}, nil
-	case openFrameID:
-		if hdr.streamID&0x80000000 != 0 {
-			return nil, EINVALIDFRAME
-		}
-		var data []byte
-		if size > 0 {
-			if size > len(scratch) {
-				data = make([]byte, size)
-			} else {
-				data = scratch[:size]
-			}
-			_, err = io.ReadFull(r, data)
-			if err != nil {
-				return
-			}
-		}
-		return &openFrame{
-			flags:    hdr.Flags(),
-			streamID: hdr.streamID,
-			data:     data,
 		}, nil
 	case dataFrameID:
 		if hdr.streamID&0x80000000 != 0 {
@@ -367,7 +325,7 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 			return nil, EINVALIDFRAME
 		}
 		var values map[settingID]uint32
-		if hdr.Flags()&flagAck != 0 {
+		if hdr.Flags()&flagSettingsAck != 0 {
 			if size != 0 {
 				return nil, EINVALIDFRAME
 			}
