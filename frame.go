@@ -26,6 +26,7 @@ const (
 )
 
 const (
+	maxStreamID                 = 1<<31 - 1
 	minWindowSize               = 1024
 	maxWindowSize               = 1<<31 - 1
 	maxFramePayloadSize         = 0xffffff
