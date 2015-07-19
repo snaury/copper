@@ -672,10 +672,6 @@ func TestClientServerCloseRead(t *testing.T) {
 			}
 			mayReadResponse <- 1
 
-			n, err = stream.WaitAck()
-			if n != 0 || err != nil {
-				t.Fatalf("client: WaitAck: %d, %v", n, err)
-			}
 			<-mayCloseClient
 			mayCloseServer <- 1
 		},
@@ -730,9 +726,9 @@ func TestClientServerCloseReadBig(t *testing.T) {
 
 			serverMayCloseRead <- 1
 
-			n, err = client.WaitAck()
-			if n < 16 || n > 16+128 || err != EINTERNAL {
-				t.Fatalf("client: Write: %d, %v", n, err)
+			<-client.WriteClosed()
+			if client.WriteErr() != EINTERNAL {
+				t.Fatalf("client: WriteErr: %v", client.WriteErr())
 			}
 
 			serverMayClose <- 1

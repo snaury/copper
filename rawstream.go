@@ -176,19 +176,6 @@ func (s *rawStream) waitWriteReadyLocked() error {
 	return s.write.err
 }
 
-func (s *rawStream) waitAckLocked(n int) error {
-	for s.write.nack+s.write.buf.size-s.write.wired > n {
-		if s.reset != nil {
-			break
-		}
-		err := s.write.acked.Wait()
-		if err != nil {
-			return err
-		}
-	}
-	return s.write.err
-}
-
 func (s *rawStream) waitFlushLocked() error {
 	for s.write.buf.size > 0 {
 		if s.reset != nil {
@@ -684,27 +671,6 @@ func (s *rawStream) Flush() error {
 	return err
 }
 
-func (s *rawStream) WaitAck() (int, error) {
-	s.mu.Lock()
-	err := s.waitAckLocked(0)
-	n := s.write.failed + s.write.nack + s.write.buf.size - s.write.wired
-	s.mu.Unlock()
-	return n, err
-}
-
-func (s *rawStream) WaitAckAny(n int) (int, error) {
-	s.mu.Lock()
-	var err error
-	if n > 0 {
-		err = s.waitAckLocked(n - 1)
-	} else {
-		err = s.write.err
-	}
-	n = s.write.failed + s.write.nack + s.write.buf.size - s.write.wired
-	s.mu.Unlock()
-	return n, err
-}
-
 func (s *rawStream) ReadErr() error {
 	s.mu.RLock()
 	err := s.read.err
@@ -799,15 +765,9 @@ func (s *rawStream) StreamID() uint32 {
 }
 
 func (s *rawStream) LocalAddr() net.Addr {
-	return &StreamAddr{
-		NetAddr:  s.owner.conn.LocalAddr(),
-		StreamID: s.streamID,
-	}
+	return s.owner.conn.LocalAddr()
 }
 
 func (s *rawStream) RemoteAddr() net.Addr {
-	return &StreamAddr{
-		NetAddr:  s.owner.conn.RemoteAddr(),
-		StreamID: s.streamID,
-	}
+	return s.owner.conn.RemoteAddr()
 }

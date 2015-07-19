@@ -321,116 +321,12 @@ func TestRawStreamWriteDeadline(t *testing.T) {
 		if deadline.After(time.Now()) {
 			t.Fatalf("client: Write: expected to timeout after the deadline, not before")
 		}
-
-		deadline = time.Now().Add(5 * time.Millisecond)
-		stream.SetWriteDeadline(deadline)
-		n, err = stream.WaitAck()
-		if n != 65536 || !isTimeout(err) {
-			t.Fatalf("client: WaitAck: expected timeout, got: %d, %v", n, err)
-		}
-		if deadline.After(time.Now()) {
-			t.Fatalf("client: WaitAck: expected to timeout after the deadline, not before")
-		}
-	})
-}
-
-func TestRawStreamWaitAck(t *testing.T) {
-	var lock sync.Mutex
-	var dataseen bool
-	var waitdone sync.Cond
-	waitdone.L = &lock
-	var wg sync.WaitGroup
-	counter := int64(0)
-	runRawClientServer(HandlerFunc(func(stream Stream) {
-		defer wg.Done()
-		targetID := atomic.AddInt64(&counter, 1)
-		switch targetID {
-		case 1:
-			// 1st case: close the connection
-			stream.Peek()
-			lock.Lock()
-			defer lock.Unlock()
-			dataseen = true
-			err := stream.Close()
-			if err != nil {
-				t.Fatalf("server: Close: %s", err)
-			}
-		case 2:
-			// 2nd case: close with ENOROUTE
-			stream.Peek()
-			lock.Lock()
-			defer lock.Unlock()
-			dataseen = true
-			err := stream.CloseWithError(ENOROUTE)
-			if err != nil {
-				t.Fatalf("server: CloseWithError: %s", err)
-			}
-		case 3:
-			// 3rd case: read data and sleep a little
-			stream.Peek()
-			lock.Lock()
-			defer lock.Unlock()
-			_, err := stream.Read(make([]byte, 16))
-			if err != nil {
-				t.Fatalf("server: Read: %s", err)
-			}
-			dataseen = true
-			waitdone.Wait()
-			err = stream.Close()
-			if err != nil {
-				t.Fatalf("server: Close: %s", err)
-			}
-		default:
-			err := stream.CloseWithError(ENOTARGET)
-			if err != nil {
-				t.Fatalf("server: CloseWithError: %s", err)
-			}
-		}
-	}), func(client RawConn) {
-		for target := int64(1); target <= 3; target++ {
-			wg.Add(1)
-			stream, err := client.NewStream()
-			if err != nil {
-				t.Fatalf("client: NewStream: %s", err)
-			}
-			defer stream.Close()
-			_, err = stream.Write([]byte("Hello, world!"))
-			if err != nil {
-				t.Fatalf("client: Write: %s", err)
-			}
-			n, err := stream.WaitAck()
-			lock.Lock()
-			seen := dataseen
-			dataseen = false
-			waitdone.Broadcast()
-			lock.Unlock()
-			switch target {
-			case 1:
-				if n != 13 || err != ECLOSED {
-					t.Fatalf("client: WaitAck(%d): %d, %v (expected 13, ECLOSED)", target, n, err)
-				}
-			case 2:
-				if n != 13 || err != ENOROUTE {
-					t.Fatalf("client: WaitAck(%d): %d, %v (expected 13, ETARGET)", target, n, err)
-				}
-			default:
-				if n != 0 || err != nil {
-					t.Fatalf("client: WaitAck(%d): %d, %v (expected <nil>)", target, n, err)
-				}
-			}
-			if !seen {
-				t.Fatalf("client: WaitAck(%d): data was not confirmed before the call returned", target)
-			}
-		}
-		wg.Wait() // wait until server finishes
 	})
 }
 
 func TestRawStreamCloseRead(t *testing.T) {
-	var goahead1 sync.Mutex
-	var goahead2 sync.Mutex
-	goahead1.Lock()
-	goahead2.Lock()
+	serverMayWrite := make(chan int, 1)
+	serverMayClose := make(chan int, 1)
 	runRawClientServer(HandlerFunc(func(stream Stream) {
 		_, err := stream.Peek()
 		if err != nil {
@@ -440,17 +336,18 @@ func TestRawStreamCloseRead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("server: CloseRead: %v", err)
 		}
-		goahead1.Lock()
+		if 1 != <-serverMayWrite {
+			return
+		}
 		n, err := stream.Write([]byte("hello"))
 		if n != 5 || err != nil {
 			t.Fatalf("server: Write: %d, %v", n, err)
 		}
-		n, err = stream.WaitAck()
-		if n != 0 || err != nil {
-			t.Fatalf("server: WaitAck: %d, %v", n, err)
-		}
-		goahead2.Unlock()
+		<-serverMayClose
 	}), func(client RawConn) {
+		defer close(serverMayClose)
+		defer close(serverMayWrite)
+
 		stream, err := client.NewStream()
 		if err != nil {
 			t.Fatalf("client: NewStream: %v", err)
@@ -458,16 +355,16 @@ func TestRawStreamCloseRead(t *testing.T) {
 		defer stream.Close()
 
 		stream.Write([]byte("foobar"))
-		n, err := stream.WaitAck()
-		goahead1.Unlock()
-		if n != 6 || err != ECLOSED {
-			t.Fatalf("client: WaitAck: %d, %v", n, err)
+		<-stream.WriteClosed()
+		if stream.WriteErr() != ECLOSED {
+			t.Fatalf("client: WriteErr: %v", stream.WriteErr())
 		}
-		n, err = stream.Read(make([]byte, 16))
+		serverMayWrite <- 1
+		n, err := stream.Read(make([]byte, 16))
 		if n != 5 || err != nil {
 			t.Fatalf("client: Read: %d, %v", n, err)
 		}
-		goahead2.Lock()
+		serverMayClose <- 1
 	})
 }
 
@@ -553,9 +450,9 @@ func TestRawStreamConnClose(t *testing.T) {
 		if n != 13 || err != nil {
 			t.Fatalf("server: Write: %d, %v", n, err)
 		}
-		n, err = stream.WaitAck()
-		if n != 5 || err != ECONNSHUTDOWN {
-			t.Fatalf("server: WaitAck: %d, %v", n, err)
+		<-stream.WriteClosed()
+		if stream.WriteErr() != ECONNSHUTDOWN {
+			t.Fatalf("server: WriteErr: %v", stream.WriteErr())
 		}
 	}), func(client RawConn) {
 		stream, err := client.NewStream()
@@ -607,12 +504,12 @@ func TestRawStreamCloseReadError(t *testing.T) {
 			defer close(startWritingBack)
 			server.Write([]byte("foobar"))
 			startClosingRead <- 1
-			n, err := server.WaitAck()
-			if n != 6 || err != EINTERNAL {
-				t.Fatalf("server: WaitAck: %d, %v", n, err)
+			<-server.WriteClosed()
+			if server.WriteErr() != EINTERNAL {
+				t.Fatalf("server: WriteErr: %v", server.WriteErr())
 			}
 			startWritingBack <- 1
-			n, err = server.Read(make([]byte, 16))
+			n, err := server.Read(make([]byte, 16))
 			if err == nil {
 				_, err = server.Peek()
 			}
@@ -646,12 +543,12 @@ func TestRawStreamCloseReadErrorWithError(t *testing.T) {
 			defer close(startWritingBack)
 			server.Write([]byte("foobar"))
 			startClosingRead <- 1
-			n, err := server.WaitAck()
-			if n != 6 || err != EINTERNAL {
-				t.Fatalf("server: WaitAck: %d, %v", n, err)
+			<-server.WriteClosed()
+			if server.WriteErr() != EINTERNAL {
+				t.Fatalf("server: WriteErr: %v", server.WriteErr())
 			}
 			startWritingBack <- 1
-			n, err = server.Read(make([]byte, 16))
+			n, err := server.Read(make([]byte, 16))
 			if err == nil {
 				_, err = server.Peek()
 			}
@@ -691,53 +588,6 @@ func TestRawStreamFlush(t *testing.T) {
 			}
 			clientMayClose <- 1
 			<-serverMayClose
-		},
-	)
-}
-
-func TestRawStreamWaitAckAny(t *testing.T) {
-	serverMayRead := make(chan int, 1)
-	clientMayClose := make(chan int, 1)
-	clientFinished := make(chan int, 1)
-	runRawClientServerStream(
-		func(client Stream) {
-			defer close(serverMayRead)
-			defer close(clientFinished)
-			n, err := client.Write([]byte("Hello, world!"))
-			if n != 13 || err != nil {
-				t.Fatalf("client: Write: %d, %v", n, err)
-			}
-			err = client.Flush()
-			if err != nil {
-				t.Fatalf("client: Flush: %v", err)
-			}
-			n, err = client.WaitAckAny(0)
-			if n != 13 || err != nil {
-				t.Fatalf("client: WaitAckAny(0): %d, %v", n, err)
-			}
-			serverMayRead <- 1
-			n, err = client.WaitAckAny(13)
-			if n != 13-8 || err != nil {
-				t.Fatalf("client: WaitAckAny: %d, %v", n, err)
-			}
-			clientFinished <- 1
-			if 1 != <-clientMayClose {
-				return
-			}
-		},
-		func(server Stream) {
-			defer close(clientMayClose)
-			if 1 != <-serverMayRead {
-				return
-			}
-			n, err := server.Read(make([]byte, 8))
-			if n != 8 || err != nil {
-				t.Fatalf("server: Read: %d, %v", n, err)
-			}
-			if 1 != <-clientFinished {
-				return
-			}
-			clientMayClose <- 1
 		},
 	)
 }

@@ -1,7 +1,6 @@
 package copper
 
 import (
-	"fmt"
 	"io"
 	"net"
 	"time"
@@ -34,19 +33,6 @@ type Stream interface {
 
 	// Flush returns when all data has been flushed
 	Flush() error
-
-	// WaitAck returns when all data has been read by the remote side or there
-	// is an error. In case of an error it also returns the number of bytes
-	// that have not been acknowledged by the remote side.
-	WaitAck() (int, error)
-
-	// WaitAckAny returns when any of the last n bytes have been read by the
-	// remote side or there is an error. Returns the number of bytes that have
-	// not been acknowledged by the remote side and an error if any.
-	// The intended use case is remote sensing, e.g. by calling it with the
-	// number of bytes returned from Write it would return when any bytes from
-	// that write have been read by the remote side.
-	WaitAckAny(n int) (int, error)
 
 	// ReadErr returns an error that caused the read side to be closed.
 	ReadErr() error
@@ -102,21 +88,3 @@ type Stream interface {
 var _ net.Conn = Stream(nil)
 var _ io.ByteReader = Stream(nil)
 var _ io.ByteWriter = Stream(nil)
-
-// StreamAddr describes endpoint addresses for streams
-type StreamAddr struct {
-	NetAddr  net.Addr
-	StreamID uint32
-}
-
-// Network returns "copper" as the name of the network
-func (addr *StreamAddr) Network() string {
-	return "copper"
-}
-
-func (addr *StreamAddr) String() string {
-	if addr == nil {
-		return "<nil>"
-	}
-	return fmt.Sprintf("[%s:%s;stream=%d]", addr.NetAddr.Network(), addr.NetAddr.String(), addr.StreamID)
-}

@@ -869,23 +869,6 @@ class RawStream(object):
         if self._write_error is not None:
             raise self._write_error
 
-    def wait_ack(self):
-        while self._writenack + len(self._writebuf) > 0:
-            if self._reset_error is not None:
-                break
-            self._ack_cond.wait()
-        if self._write_error is not None:
-            raise self._write_error
-
-    def wait_ack_any(self, n):
-        if n > 0:
-            while self._writenack + len(self._writebuf) >= n:
-                if self._reset_error is not None:
-                    break
-                self._ack_cond.wait()
-        if self._write_error is not None:
-            raise self._write_error
-
     @property
     def read_error(self):
         return self._read_error
