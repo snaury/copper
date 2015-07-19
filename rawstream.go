@@ -39,10 +39,7 @@ type rawStreamWrite struct {
 	buf     buffer
 	left    int
 	wired   int
-	nack    int
-	failed  int
 	ready   condWithDeadline
-	acked   condWithDeadline
 	flushed condWithDeadline
 	closed  chan struct{}
 }
@@ -50,7 +47,6 @@ type rawStreamWrite struct {
 func (w *rawStreamWrite) init(l sync.Locker, window int) {
 	w.left = window
 	w.ready.init(l)
-	w.acked.init(l)
 	w.flushed.init(l)
 	w.closed = make(chan struct{})
 }
@@ -114,7 +110,7 @@ func (s *rawStream) scheduleData() {
 }
 
 func (s *rawStream) cleanupLocked() {
-	if s.flags&flagStreamBothEOF == flagStreamBothEOF && s.read.buf.size == 0 && s.read.acks == 0 && s.write.nack <= 0 {
+	if s.flags&flagStreamBothEOF == flagStreamBothEOF {
 		s.owner.streams.remove(s)
 	}
 }
@@ -122,19 +118,13 @@ func (s *rawStream) cleanupLocked() {
 func (s *rawStream) clearReadBufferLocked() {
 	if s.read.buf.size > 0 {
 		s.read.buf.clear()
-		s.cleanupLocked()
 	}
 }
 
 func (s *rawStream) clearWriteBufferLocked() {
-	// Any unacknowledged data will not be acknowledged
-	s.write.failed += s.write.buf.size - s.write.wired
 	s.write.buf.clear()
 	s.write.wired = 0
-	s.write.failed += s.write.nack
-	s.write.nack = 0
 	s.write.flushed.Broadcast()
-	s.write.acked.Broadcast()
 	if s.flags&flagStreamNeedEOF != 0 {
 		// If we had data pending, then it's no longer the case (it will now
 		// become a no-op), however we still need to send EOF, so switch over
@@ -149,7 +139,6 @@ func (s *rawStream) setReadDeadlineLocked(t time.Time) {
 
 func (s *rawStream) setWriteDeadlineLocked(t time.Time) {
 	s.write.ready.setDeadline(t)
-	s.write.acked.setDeadline(t)
 	s.write.flushed.setDeadline(t)
 }
 
@@ -269,14 +258,7 @@ func (s *rawStream) processWindowFrame(frame *windowFrame) error {
 		}
 	}
 	s.mu.Lock()
-	if frame.flags&flagAck != 0 {
-		s.write.nack -= int(frame.increment)
-		s.write.acked.Broadcast() // TODO: split into acked full and acked partial
-		s.cleanupLocked()
-	}
-	if frame.flags&flagInc != 0 {
-		s.changeWindowLocked(int(frame.increment))
-	}
+	s.changeWindowLocked(int(frame.increment))
 	s.mu.Unlock()
 	return nil
 }
@@ -298,7 +280,6 @@ func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 		if len(data) > n {
 			data = data[:n]
 		}
-		s.write.nack += n
 		s.write.wired = n
 		return data
 	}
@@ -342,13 +323,8 @@ func (s *rawStream) writeCtrl() error {
 		return nil
 	}
 	if s.read.acks > 0 {
-		flags := flagAck
-		if s.read.err == nil {
-			flags |= flagInc
-		}
 		frame := &windowFrame{
 			streamID:  s.streamID,
-			flags:     flags,
 			increment: uint32(s.read.acks),
 		}
 		s.read.acks = 0
@@ -379,8 +355,8 @@ func (s *rawStream) writeCtrl() error {
 			s.flags &^= flagStreamNeedReset
 			s.flags &^= flagStreamNeedEOF
 			s.flags |= flagStreamSentEOF
-			flags |= flagFin
 			s.cleanupLocked()
+			flags |= flagFin
 		}
 		// N.B.: we may send RESET twice. First without EOF, to stop the other
 		// side from sending us more data. Second with EOF, after sending all
@@ -397,11 +373,11 @@ func (s *rawStream) writeCtrl() error {
 	if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
 		s.flags &^= flagStreamNeedEOF
 		s.flags |= flagStreamSentEOF
+		s.cleanupLocked()
 		frame := &dataFrame{
 			streamID: s.streamID,
 			flags:    flagFin,
 		}
-		s.cleanupLocked()
 		s.mu.Unlock()
 		return s.owner.writeFrame(frame)
 	}
@@ -490,8 +466,8 @@ func (s *rawStream) outgoingFlags() uint8 {
 	if s.activeEOF() {
 		s.flags &^= flagStreamNeedEOF
 		s.flags |= flagStreamSentEOF
-		flags |= flagFin
 		s.cleanupLocked()
+		flags |= flagFin
 	}
 	return flags
 }
@@ -526,6 +502,7 @@ func (s *rawStream) setReadErrorLocked(err error) {
 	if s.read.err == nil {
 		s.read.err = err
 		close(s.read.closed)
+		s.read.acks = 0
 		s.read.ready.Broadcast()
 	}
 }
@@ -561,7 +538,6 @@ func (s *rawStream) closeWithErrorLocked(err error, closed bool) error {
 		s.reset = err
 		s.setReadErrorLocked(err)
 		s.setWriteErrorLocked(err)
-		s.write.acked.Broadcast()
 		s.write.flushed.Broadcast()
 	}
 	if closed {
@@ -587,8 +563,10 @@ func (s *rawStream) Discard(n int) int {
 	n = s.read.buf.discard(n)
 	if n > 0 {
 		s.read.left += n
-		s.read.acks += n
-		s.scheduleCtrl()
+		if s.read.err == nil {
+			s.read.acks += n
+			s.scheduleCtrl()
+		}
 	}
 	s.mu.Unlock()
 	return n
@@ -604,8 +582,10 @@ func (s *rawStream) Read(b []byte) (n int, err error) {
 		}
 		n = s.read.buf.read(b)
 		s.read.left += n
-		s.read.acks += n
-		s.scheduleCtrl()
+		if s.read.err == nil {
+			s.read.acks += n
+			s.scheduleCtrl()
+		}
 	}
 	if s.read.err != nil && s.read.buf.size == 0 {
 		// there will be no more data, return the error too
@@ -624,8 +604,10 @@ func (s *rawStream) ReadByte() (byte, error) {
 	}
 	b := s.read.buf.readbyte()
 	s.read.left++
-	s.read.acks++
-	s.scheduleCtrl()
+	if s.read.err == nil {
+		s.read.acks++
+		s.scheduleCtrl()
+	}
 	s.mu.Unlock()
 	return b, nil
 }

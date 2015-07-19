@@ -39,10 +39,8 @@ const (
 const (
 	// Used for OPEN, DATA and RESET
 	flagFin uint8 = 1
-	// Used for PING, WINDOW and SETTINGS
+	// Used for PING and SETTINGS
 	flagAck uint8 = 1
-	// Used for WINDOW
-	flagInc uint8 = 2
 )
 
 type frame interface {
@@ -195,15 +193,6 @@ type windowFrame struct {
 
 func (p *windowFrame) String() string {
 	flagstring := fmt.Sprintf("0x%02x", p.flags)
-	if p.flags&flagAck != 0 {
-		if p.flags&flagInc != 0 {
-			flagstring += "(ACK|INC)"
-		} else {
-			flagstring += "(ACK)"
-		}
-	} else if p.flags&flagInc != 0 {
-		flagstring += "(INC)"
-	}
 	return fmt.Sprintf("WINDOW[stream:%d flags:%s increment:%d]", p.streamID, flagstring, p.increment)
 }
 

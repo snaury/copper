@@ -16,8 +16,7 @@ FRAME_HEADER_FMT = struct.Struct('>IIB')
 assert FRAME_HEADER_FMT.size == 9
 
 FLAG_FIN = 1 # OPEN, DATA, RESET
-FLAG_ACK = 1 # PING, WINDOW, SETTINGS
-FLAG_INC = 2 # WINDOW
+FLAG_ACK = 1 # PING, SETTINGS
 
 class Header(object):
     __slots__ = ('stream_id', 'payload_size', 'flags', 'kind')

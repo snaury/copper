@@ -225,42 +225,6 @@ func TestRawConnPing(t *testing.T) {
 	})
 }
 
-func TestRawConnSync(t *testing.T) {
-	runRawClientServer(HandlerFunc(func(stream Stream) {
-		stream.Read(make([]byte, 16))
-		stream.CloseWithError(ENOROUTE)
-	}), func(client RawConn) {
-		stream, err := client.NewStream()
-		if err != nil {
-			t.Fatalf("client: NewStream: %s", err)
-		}
-		defer stream.Close()
-		if stream.StreamID() != 1 {
-			t.Fatalf("client: unexpected stream id: %d (expected 1)", stream.StreamID())
-		}
-		stream.CloseWrite()
-		_, err = stream.Read(make([]byte, 256))
-		if err != ENOROUTE {
-			t.Fatalf("client: Read: %s (expected ENOROUTE)", err)
-		}
-		stream.Close()
-
-		err = <-client.Sync()
-		if err != nil {
-			t.Fatalf("client: Sync: %s", err)
-		}
-
-		stream, err = client.NewStream()
-		if err != nil {
-			t.Fatalf("client: NewStream: %s", err)
-		}
-		defer stream.Close()
-		if stream.StreamID() != 1 {
-			t.Fatalf("client: unexpected stream id: %d (expected to reuse 1)", stream.StreamID())
-		}
-	})
-}
-
 func TestRawStreamBigWrite(t *testing.T) {
 	runRawClientServer(HandlerFunc(func(stream Stream) {
 		stream.Peek()

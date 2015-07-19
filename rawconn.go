@@ -15,7 +15,6 @@ const (
 )
 
 const (
-	maxDeadStreams           = 4096
 	defaultConnWindowSize    = 65536
 	defaultStreamWindowSize  = 65536
 	defaultInactivityTimeout = 60 * time.Second
@@ -31,7 +30,6 @@ type RawConn interface {
 	Shutdown() <-chan struct{}
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
-	Sync() <-chan error
 	Ping(value int64) <-chan error
 	NewStream() (stream Stream, err error)
 }
@@ -106,8 +104,6 @@ type rawConnStreams struct {
 	closed bool
 
 	live map[uint32]*rawStream
-	dead map[uint32]struct{}
-	free map[uint32]struct{}
 }
 
 func (s *rawConnStreams) init(owner *rawConn, server bool) {
@@ -120,8 +116,6 @@ func (s *rawConnStreams) init(owner *rawConn, server bool) {
 		s.next = 1
 	}
 	s.live = make(map[uint32]*rawStream)
-	s.dead = make(map[uint32]struct{})
-	s.free = make(map[uint32]struct{})
 }
 
 func (s *rawConnStreams) isClient() bool {
@@ -150,15 +144,25 @@ func (s *rawConnStreams) allocateLocked() (uint32, error) {
 	if s.err != nil {
 		return 0, s.err
 	}
-	for streamID := range s.free {
-		return streamID, nil
+	wrapped := false
+	for {
+		streamID := s.next
+		s.next += 2
+		if s.next >= 0x80000000 {
+			if wrapped {
+				return 0, ErrNoFreeStreamID
+			}
+			s.next -= 0x80000000
+			if s.next == 0 {
+				s.next = 2
+			}
+			wrapped = true
+		}
+		stream := s.live[streamID]
+		if stream == nil {
+			return streamID, nil
+		}
 	}
-	if s.next > 0x7ffffffe|s.flag {
-		return 0, ErrNoFreeStreamID
-	}
-	streamID := s.next
-	s.next += 2
-	return streamID, nil
 }
 
 func (s *rawConnStreams) addLockedWithUnlock(stream *rawStream) {
@@ -183,13 +187,6 @@ func (s *rawConnStreams) remove(stream *rawStream) {
 	if s.live[stream.streamID] == stream {
 		delete(s.live, stream.streamID)
 		s.owner.outgoing.removeStream(stream)
-		if s.ownedID(stream.streamID) {
-			s.dead[stream.streamID] = struct{}{}
-			if len(s.dead) >= maxDeadStreams {
-				streams := s.takeDeadLocked()
-				s.owner.sync(streams, nil)
-			}
-		}
 	}
 	s.owner.mu.Unlock()
 }
@@ -200,30 +197,6 @@ func (s *rawConnStreams) changeWindow(diff int) {
 		stream.changeWindow(diff)
 	}
 	s.owner.mu.RUnlock()
-}
-
-func (s *rawConnStreams) takeDeadLocked() []uint32 {
-	var ids []uint32
-	for id := range s.dead {
-		delete(s.dead, id)
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-func (s *rawConnStreams) takeDead() []uint32 {
-	s.owner.mu.Lock()
-	ids := s.takeDeadLocked()
-	s.owner.mu.Unlock()
-	return ids
-}
-
-func (s *rawConnStreams) addFree(ids []uint32) {
-	s.owner.mu.Lock()
-	for _, id := range ids {
-		s.free[id] = struct{}{}
-	}
-	s.owner.mu.Unlock()
 }
 
 type rawConnSettings struct {
@@ -641,36 +614,6 @@ func (c *rawConn) RemoteAddr() net.Addr {
 	return c.conn.RemoteAddr()
 }
 
-func (c *rawConn) Sync() <-chan error {
-	result := make(chan error, 1)
-	streams := c.streams.takeDead()
-	if len(streams) > 0 {
-		c.sync(streams, result)
-	} else {
-		c.mu.Lock()
-		err := c.failure
-		c.mu.Unlock()
-		result <- err
-		close(result)
-	}
-	return result
-}
-
-func (c *rawConn) sync(streams []uint32, result chan<- error) {
-	c.ping(time.Now().UnixNano(), func(err error) {
-		if err == nil {
-			// Receiving a successful response to ping proves thar all frames
-			// before our outgoing ping have been processed by the other side,
-			// which means we have a proof dead streams are free for reuse.
-			c.streams.addFree(streams)
-		}
-		if result != nil {
-			result <- err
-			close(result)
-		}
-	})
-}
-
 func (c *rawConn) Ping(value int64) <-chan error {
 	result := make(chan error, 1)
 	c.ping(value, func(err error) {
@@ -826,16 +769,15 @@ func (c *rawConn) processResetFrame(frame *resetFrame) error {
 
 func (c *rawConn) processWindowFrame(frame *windowFrame) error {
 	if frame.streamID == 0 {
-		if frame.flags&flagInc != 0 {
-			c.outgoing.changeWindow(int(frame.increment))
-		}
+		c.outgoing.changeWindow(int(frame.increment))
 		return nil
 	}
 	stream := c.streams.find(frame.streamID)
-	if stream != nil {
-		return stream.processWindowFrame(frame)
+	if stream == nil {
+		// it's ok to receive WINDOW for a dead stream
+		return nil
 	}
-	return nil
+	return stream.processWindowFrame(frame)
 }
 
 func (c *rawConn) processSettingsFrame(frame *settingsFrame) error {
@@ -969,7 +911,6 @@ writeloop:
 			c.outgoing.mu.Unlock()
 			err := c.writeFrame(&windowFrame{
 				streamID:  0,
-				flags:     flagInc,
 				increment: uint32(increment),
 			})
 			if err != nil {

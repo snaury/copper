@@ -10,7 +10,6 @@ from gevent.socket import EBADF, error as socket_error
 from .frames import (
     FLAG_FIN,
     FLAG_ACK,
-    FLAG_INC,
     Frame,
     PingFrame,
     OpenFrame,
@@ -30,7 +29,6 @@ from .errors import (
     WindowOverflowError,
 )
 
-MAX_DEAD_STREAMS = 1024
 INACTIVITY_TIMEOUT = 60
 DEFAULT_CONN_WINDOW = 65536
 DEFAULT_STREAM_WINDOW = 65536
@@ -126,8 +124,6 @@ class RawConn(object):
         self._ctrl_streams = set()
         self._data_streams = set()
         self._streams = {}
-        self._deadstreams = set()
-        self._freestreams = set()
         self._is_server = is_server
         if self._is_server:
             self._next_stream_id = 2
@@ -212,18 +208,6 @@ class RawConn(object):
         while not self._closed:
             self._close_ready.wait()
 
-    def sync(self):
-        if self._closed:
-            raise self._failure
-        if self._deadstreams:
-            deadstreams, self._deadstreams = self._deadstreams, set()
-            g = self._spawn(self._sync_dead_streams, deadstreams)
-            return g.get()
-
-    def _sync_dead_streams(self, deadstreams):
-        self.ping(long(time.time() * 1000000000))
-        self._freestreams.update(deadstreams)
-
     def ping(self, value):
         if self._closed:
             raise self._failure
@@ -240,12 +224,15 @@ class RawConn(object):
     def new_stream(self):
         if self._closed:
             raise self._failure
-        if self._freestreams:
-            stream_id = self._freestreams.pop()
-        else:
+        while True:
             stream_id = self._next_stream_id
             self._next_stream_id += 2
-        return RawStream.new_outgoing(self, stream_id)
+            if self._next_stream_id >= 0x80000000:
+                self._next_stream_id -= 0x80000000
+                if not self._next_stream_id:
+                    self._next_stream_id = 2
+            if stream_id not in self._streams:
+                return RawStream.new_outgoing(self, stream_id)
 
     def _handle_stream(self, stream):
         if self._handler is None:
@@ -264,12 +251,6 @@ class RawConn(object):
             del self._streams[stream_id]
             self._ctrl_streams.discard(stream)
             self._data_streams.discard(stream)
-            if (stream_id & 1) == (0 if self._is_server else 1):
-                # This is our stream id, move it to dead streams
-                self._deadstreams.add(stream_id)
-                if len(self._deadstreams) >= MAX_DEAD_STREAMS:
-                    deadstreams, self._deadstreams = self._deadstreams, set()
-                    self._spawn(self._sync_dead_streams, deadstreams)
 
     def _process_ping_frame(self, frame):
         if frame.flags & FLAG_ACK:
@@ -333,19 +314,20 @@ class RawConn(object):
             # It's ok to receive RESET for a dead stream
             return
         if self._closed:
-            # We ar eclosed and ignore valid RESET frames
+            # We are closed and ignore valid RESET frames
             return
         stream._process_reset_frame(frame)
 
     def _process_window_frame(self, frame):
         if frame.stream_id == 0:
-            if frame.flags & FLAG_INC:
-                self._writeleft += frame.increment
-                self._write_ready.set()
+            self._writeleft += frame.increment
+            self._write_ready.set()
             return
         stream = self._streams.get(frame.stream_id)
-        if stream is not None:
-            stream._process_window_frame(frame)
+        if stream is None:
+            # It's ok to receive WINDOW for a dead stream
+            return
+        stream._process_window_frame(frame)
 
     def _process_settings_frame(self, frame):
         raise InvalidFrameError("settings frames are not supported yet")
@@ -429,10 +411,7 @@ class RawConn(object):
             # TODO: settings frames
             while self._window_acks:
                 stream_id, increment = self._window_acks.popitem()
-                flags = FLAG_ACK
-                if self._stream_can_receive(stream_id):
-                    flags |= FLAG_INC
-                self._writer.write_frame(WindowFrame(stream_id, flags, increment))
+                self._writer.write_frame(WindowFrame(stream_id, 0, increment))
                 if sent_marker is not self._writer.sent_marker:
                     send_detected = True
                     break
@@ -505,8 +484,6 @@ class RawStream(object):
         self._read_error = None
         self._writebuf = ''
         self._writeleft = conn._remote_stream_window
-        self._writenack = 0
-        self._writefail = 0
         self._write_error = None
         self._sent_eof = False
         self._seen_eof = False
@@ -517,7 +494,6 @@ class RawStream(object):
         self._read_cond = Condition()
         self._write_cond = Condition()
         self._flush_cond = Condition()
-        self._ack_cond = Condition()
         self._read_closed_event = Event()
         self._write_closed_event = Event()
         conn._streams[stream_id] = self
@@ -547,7 +523,7 @@ class RawStream(object):
         self.close()
 
     def _cleanup(self):
-        if self._seen_eof and self._sent_eof and not self._readbuf and self._writenack <= 0:
+        if self._seen_eof and self._sent_eof:
             self._conn._remove_stream(self)
 
     def _can_receive(self):
@@ -568,12 +544,8 @@ class RawStream(object):
             self._cleanup()
 
     def _clear_write_buffer(self):
-        self._writefail += len(self._writebuf)
         self._writebuf = ''
-        self._writefail += self._writenack
-        self._writenack = 0
         self._flush_cond.broadcast()
-        self._ack_cond.broadcast()
         if self._need_eof:
             self._schedule_ctrl()
 
@@ -588,7 +560,6 @@ class RawStream(object):
         if n > 0:
             data, self._writebuf = self._writebuf[:n], self._writebuf[n:]
             self._conn._writeleft -= len(data)
-            self._writenack += len(data)
             return data
         return ''
 
@@ -720,17 +691,12 @@ class RawStream(object):
     def _process_window_frame(self, frame):
         if frame.increment <= 0:
             raise InvalidFrameError('stream 0x%08x received invalid increment %d' % (self._stream_id, frame.increment))
-        if frame.flags & FLAG_ACK:
-            self._writenack -= frame.increment
-            self._ack_cond.broadcast()
-            self._cleanup()
-        if frame.flags & FLAG_INC:
-            if self._write_error is None:
-                self._writeleft += frame.increment
-                if self._active_data():
-                    self._schedule_data()
-                if self._writeleft > 0:
-                    self._write_cond.broadcast()
+        if self._write_error is None:
+            self._writeleft += frame.increment
+            if self._active_data():
+                self._schedule_data()
+            if self._writeleft > 0:
+                self._write_cond.broadcast()
 
     def _set_read_error(self, error):
         if self._read_error is None:
@@ -770,7 +736,6 @@ class RawStream(object):
             self._set_read_error(error)
             self._set_write_error(error)
             self._flush_cond.broadcast()
-            self._ack_cond.broadcast()
         if closed:
             self._clear_read_buffer()
             self._reset_both_sides()
@@ -812,9 +777,8 @@ class RawStream(object):
             return 0
         self._readbuf = self._readbuf[n:]
         self._readleft += n
-        self._schedule_ack(n)
-        if not self._readbuf:
-            self._cleanup()
+        if self._read_error is None:
+            self._schedule_ack(n)
         return n
 
     def read_some(self, n=None):
@@ -830,9 +794,8 @@ class RawStream(object):
             data, self._readbuf = self._readbuf[:n], self._readbuf[n:]
         else:
             data = ''
-        if len(data) > 0:
+        if len(data) > 0 and self._read_error is None:
             self._schedule_ack(len(data))
-            self._cleanup()
         return data
 
     def read(self, n=None):
