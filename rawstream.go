@@ -66,6 +66,10 @@ type rawStream struct {
 	read     rawStreamRead
 	write    rawStreamWrite
 	reset    error
+
+	// these are protected by the outgoing lock
+	inctrl bool
+	indata bool
 }
 
 var _ Stream = &rawStream{}
@@ -91,9 +95,7 @@ func newOutgoingStreamWithUnlock(owner *rawConn, streamID uint32) *rawStream {
 	s.outgoing = true
 	s.flags |= flagStreamNeedOpen
 	owner.streams.addLockedWithUnlock(s)
-	s.mu.Lock()
 	s.scheduleCtrl()
-	s.mu.Unlock()
 	return s
 }
 
@@ -245,7 +247,8 @@ func (s *rawStream) processResetFrame(frame *resetFrame) error {
 	return nil
 }
 
-func (s *rawStream) changeWindowLocked(diff int) {
+func (s *rawStream) changeWindow(diff int) {
+	s.mu.Lock()
 	if s.write.err == nil {
 		wasactive := s.activeData()
 		s.write.left += diff
@@ -256,11 +259,6 @@ func (s *rawStream) changeWindowLocked(diff int) {
 			s.write.ready.Broadcast()
 		}
 	}
-}
-
-func (s *rawStream) changeWindow(diff int) {
-	s.mu.Lock()
-	s.changeWindowLocked(diff)
 	s.mu.Unlock()
 }
 
@@ -271,9 +269,7 @@ func (s *rawStream) processWindowFrame(frame *windowFrame) error {
 			code:  EINVALIDFRAME,
 		}
 	}
-	s.mu.Lock()
-	s.changeWindowLocked(int(frame.increment))
-	s.mu.Unlock()
+	s.changeWindow(int(frame.increment))
 	return nil
 }
 
@@ -311,90 +307,102 @@ func (s *rawStream) writeCtrl() error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.flags&flagStreamDataCtrl != 0 {
-		data := s.prepareDataLocked(maxDataFramePayloadSize)
-		frame := &dataFrame{
-			streamID: s.streamID,
-			flags:    s.outgoingFlags(),
-			data:     data,
+	// keep going as long as this stream needs to send control frames
+	for {
+		if s.flags&flagStreamDataCtrl != 0 && s.flags&flagStreamSentEOF == 0 {
+			data := s.prepareDataLocked(maxDataFramePayloadSize)
+			frame := &dataFrame{
+				streamID: s.streamID,
+				flags:    s.outgoingFlags(),
+				data:     data,
+			}
+			s.mu.Unlock()
+			err := s.owner.writeFrame(frame)
+			if err != nil {
+				return err
+			}
+			s.mu.Lock()
+			s.write.buf.discard(s.write.wired)
+			s.write.wired = 0
+			if s.write.buf.size == 0 {
+				s.write.flushed.Broadcast()
+			}
+			continue
+		}
+		if s.read.increment > 0 {
+			frame := &windowFrame{
+				streamID:  s.streamID,
+				increment: uint32(s.read.increment),
+			}
+			s.read.increment = 0
+			s.mu.Unlock()
+			err := s.owner.writeFrame(frame)
+			if err != nil {
+				return err
+			}
+			s.mu.Lock()
+			continue
 		}
 		if s.activeReset() {
-			s.scheduleCtrl()
-		}
-		s.mu.Unlock()
-		err := s.owner.writeFrame(frame)
-		if err != nil {
-			return err
-		}
-		s.mu.Lock()
-		s.write.buf.discard(s.write.wired)
-		s.write.wired = 0
-		if s.write.buf.size == 0 {
-			s.write.flushed.Broadcast()
-		}
-		s.mu.Unlock()
-		return nil
-	}
-	if s.read.increment > 0 {
-		frame := &windowFrame{
-			streamID:  s.streamID,
-			increment: uint32(s.read.increment),
-		}
-		s.read.increment = 0
-		if s.activeReset() {
-			s.scheduleCtrl()
-		}
-		s.mu.Unlock()
-		return s.owner.writeFrame(frame)
-	}
-	if s.activeReset() {
-		reset := s.reset
-		if reset == nil {
-			// The only way we may end up with reset being nil, but with an
-			// outgoing RESET pending, is when we haven't seen a EOF yet, but
-			// either CloseRead() or CloseReadError() was called. In both of
-			// those cases the error is in read.
-			reset = s.read.err
-		}
-		if reset == ECONNCLOSED {
-			// Instead of ECONNCLOSED remote should receive ECONNSHUTDOWN
-			reset = ECONNSHUTDOWN
-		}
-		flags := uint8(0)
-		if s.flags&flagStreamSentReset == 0 {
-			flags |= flagResetRead
+			reset := s.reset
+			if reset == nil {
+				// The only way we may end up with reset being nil, but with an
+				// outgoing RESET pending, is when we haven't seen a EOF yet, but
+				// either CloseRead() or CloseReadError() was called. In both of
+				// those cases the error is in read.
+				reset = s.read.err
+			}
+			if reset == ECONNCLOSED {
+				// Instead of ECONNCLOSED remote should receive ECONNSHUTDOWN
+				reset = ECONNSHUTDOWN
+			}
+			flags := uint8(0)
+			if s.flags&(flagStreamSeenEOF|flagStreamSentReset) == 0 {
+				flags |= flagResetRead
+			}
+			if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
+				// This RESET closes both sides of the stream, otherwise it only
+				// closes the read side and write side is delayed until we need to
+				// send EOF.
+				s.flags &^= flagStreamNeedReset
+				s.flags &^= flagStreamNeedEOF
+				s.flags |= flagStreamSentEOF
+				s.cleanupLocked()
+				flags |= flagResetWrite
+			}
+			// N.B.: we may send RESET twice. First without EOF, to stop the other
+			// side from sending us more data. Second with EOF, after sending all
+			// our pending data, to convey the error message to the other side.
+			s.flags |= flagStreamSentReset
+			frame := &resetFrame{
+				streamID: s.streamID,
+				flags:    flags,
+				err:      reset,
+			}
+			s.mu.Unlock()
+			err := s.owner.writeFrame(frame)
+			if err != nil {
+				return err
+			}
+			s.mu.Lock()
+			continue
 		}
 		if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
-			// This RESET closes both sides of the stream, otherwise it only
-			// closes the read side and write side is delayed until we need to
-			// send EOF.
-			s.flags &^= flagStreamNeedReset
-			s.flags &^= flagStreamNeedEOF
-			s.flags |= flagStreamSentEOF
-			s.cleanupLocked()
-			flags |= flagResetWrite
+			frame := &dataFrame{
+				streamID: s.streamID,
+				flags:    s.outgoingFlags(),
+			}
+			s.mu.Unlock()
+			err := s.owner.writeFrame(frame)
+			if err != nil {
+				return err
+			}
+			s.mu.Lock()
+			continue
 		}
-		// N.B.: we may send RESET twice. First without EOF, to stop the other
-		// side from sending us more data. Second with EOF, after sending all
-		// our pending data, to convey the error message to the other side.
-		s.flags |= flagStreamSentReset
-		frame := &resetFrame{
-			streamID: s.streamID,
-			flags:    flags,
-			err:      reset,
-		}
-		s.mu.Unlock()
-		return s.owner.writeFrame(frame)
+		// we've sent everything we could
+		break
 	}
-	if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
-		frame := &dataFrame{
-			streamID: s.streamID,
-			flags:    s.outgoingFlags(),
-		}
-		s.mu.Unlock()
-		return s.owner.writeFrame(frame)
-	}
-	// after we return we no longer need to send control frames
 	s.mu.Unlock()
 	return nil
 }
@@ -439,7 +447,7 @@ func (s *rawStream) activeReset() bool {
 			s.flags &^= flagStreamNeedReset
 			return false
 		}
-		if s.flags&flagStreamSeenEOF == 0 && s.flags&flagStreamSentReset == 0 {
+		if s.flags&(flagStreamSeenEOF|flagStreamSentReset) == 0 {
 			// haven't seen EOF yet, so send RESET as soon as possible
 			return true
 		}
@@ -794,4 +802,49 @@ func (s *rawStream) LocalAddr() net.Addr {
 
 func (s *rawStream) RemoteAddr() net.Addr {
 	return s.owner.conn.RemoteAddr()
+}
+
+// rawStreamQueue is a ring-buffer queue of rawStream pointers
+type rawStreamQueue struct {
+	buf  []*rawStream
+	off  int
+	size int
+}
+
+// push adds a pointer to the end of the queue, expanding it when necessary
+func (q *rawStreamQueue) push(s *rawStream) {
+	pos := q.off + q.size
+	if q.size == len(q.buf) {
+		dst := make([]*rawStream, minpow2(len(q.buf)+1))
+		if pos == len(q.buf) {
+			// queue doesn't wrap, simple copy
+			copy(dst, q.buf)
+		} else {
+			// queue wraps, copy with two steps
+			z := copy(dst, q.buf[q.off:])
+			copy(dst[z:], q.buf[:q.size-z])
+			pos = q.size
+		}
+		q.buf = dst
+		q.off = 0
+	} else if pos >= len(q.buf) {
+		pos -= len(q.buf)
+	}
+	q.buf[pos] = s
+	q.size++
+}
+
+// take removes a pointer from the front of the queue
+func (q *rawStreamQueue) take() *rawStream {
+	if q.size == 0 {
+		return nil
+	}
+	stream := q.buf[q.off]
+	q.buf[q.off] = nil
+	q.off++
+	q.size--
+	if q.off == len(q.buf) || q.size == 0 {
+		q.off = 0
+	}
+	return stream
 }

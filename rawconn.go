@@ -186,7 +186,6 @@ func (s *rawConnStreams) remove(stream *rawStream) {
 	s.owner.mu.Lock()
 	if s.live[stream.streamID] == stream {
 		delete(s.live, stream.streamID)
-		s.owner.outgoing.removeStream(stream)
 	}
 	s.owner.mu.Unlock()
 }
@@ -327,7 +326,8 @@ type rawConnOutgoing struct {
 	owner      *rawConn
 	failure    error
 	writeleft  int
-	writeready chan struct{}
+	writecond  sync.Cond
+	writeready bool
 
 	blocked   int
 	unblocked sync.Cond
@@ -337,19 +337,21 @@ type rawConnOutgoing struct {
 
 	settingsAcks int
 
-	remoteInc int
+	remoteIncrement int
 
-	ctrl map[*rawStream]struct{}
-	data map[*rawStream]struct{}
+	ctrl rawStreamQueue
+	data rawStreamQueue
+
+	wakeupMu     sync.Mutex
+	wakeupCond   sync.Cond
+	wakeupNeeded bool
 }
 
 func (o *rawConnOutgoing) init(owner *rawConn) {
 	o.owner = owner
 	o.writeleft = defaultConnWindowSize
-	o.writeready = make(chan struct{}, 1)
+	o.writecond.L = &o.mu
 	o.unblocked.L = &o.mu
-	o.ctrl = make(map[*rawStream]struct{})
-	o.data = make(map[*rawStream]struct{})
 }
 
 func (o *rawConnOutgoing) fail(err error) {
@@ -362,7 +364,7 @@ func (o *rawConnOutgoing) fail(err error) {
 		}
 		// don't send pings that haven't been sent already
 		o.pingQueue = nil
-		o.wakeup()
+		o.wakeupLocked()
 	}
 	o.mu.Unlock()
 }
@@ -383,8 +385,8 @@ func (o *rawConnOutgoing) takeSpace(n int) int {
 func (o *rawConnOutgoing) changeWindow(increment int) {
 	o.mu.Lock()
 	o.writeleft += increment
-	if o.writeleft > 0 && len(o.data) > 0 {
-		o.wakeup()
+	if o.writeleft > 0 && o.data.size > 0 {
+		o.wakeupLocked()
 	}
 	o.mu.Unlock()
 }
@@ -392,7 +394,7 @@ func (o *rawConnOutgoing) changeWindow(increment int) {
 func (o *rawConnOutgoing) addPingAck(value int64) {
 	o.mu.Lock()
 	o.pingAcks = append(o.pingAcks, value)
-	o.wakeup()
+	o.wakeupLocked()
 	o.mu.Unlock()
 }
 
@@ -400,7 +402,7 @@ func (o *rawConnOutgoing) addPingQueue(value int64) {
 	o.mu.Lock()
 	if o.failure == nil {
 		o.pingQueue = append(o.pingQueue, value)
-		o.wakeup()
+		o.wakeupLocked()
 	}
 	o.mu.Unlock()
 }
@@ -408,56 +410,49 @@ func (o *rawConnOutgoing) addPingQueue(value int64) {
 func (o *rawConnOutgoing) addSettingsAck() {
 	o.mu.Lock()
 	o.settingsAcks++
-	o.wakeup()
+	o.wakeupLocked()
 	o.mu.Unlock()
 }
 
 func (o *rawConnOutgoing) incrementRemote(increment int) {
 	o.mu.Lock()
-	o.remoteInc += increment
-	o.wakeup()
+	o.remoteIncrement += increment
+	o.wakeupLocked()
 	o.mu.Unlock()
 }
 
 func (o *rawConnOutgoing) addCtrl(stream *rawStream) {
 	o.mu.Lock()
-	o.ctrl[stream] = struct{}{}
-	o.wakeup()
+	if !stream.inctrl {
+		o.ctrl.push(stream)
+		stream.inctrl = true
+		o.wakeupLocked()
+	}
 	o.mu.Unlock()
 }
 
 func (o *rawConnOutgoing) addData(stream *rawStream) {
 	o.mu.Lock()
-	o.data[stream] = struct{}{}
-	o.wakeup()
+	if !stream.indata {
+		o.data.push(stream)
+		stream.indata = true
+		o.wakeupLocked()
+	}
 	o.mu.Unlock()
 }
 
-func (o *rawConnOutgoing) removeStream(stream *rawStream) {
-	o.mu.Lock()
-	delete(o.ctrl, stream)
-	delete(o.data, stream)
-	o.mu.Unlock()
-}
-
-func (o *rawConnOutgoing) active() bool {
-	select {
-	case <-o.writeready:
-		return true
-	default:
-		return false
-	}
-}
-
-func (o *rawConnOutgoing) wakeup() {
-	select {
-	case o.writeready <- struct{}{}:
-	default:
-	}
+func (o *rawConnOutgoing) wakeupLocked() {
+	o.writeready = true
+	o.writecond.Broadcast()
 }
 
 func (o *rawConnOutgoing) wait() {
-	<-o.writeready
+	o.mu.Lock()
+	for !o.writeready {
+		o.writecond.Wait()
+	}
+	o.writeready = false
+	o.mu.Unlock()
 }
 
 type rawConn struct {
@@ -897,9 +892,9 @@ writeloop:
 			c.outgoing.mu.Lock()
 			continue writeloop
 		}
-		if c.outgoing.remoteInc > 0 {
-			increment := c.outgoing.remoteInc
-			c.outgoing.remoteInc = 0
+		if c.outgoing.remoteIncrement > 0 {
+			increment := c.outgoing.remoteIncrement
+			c.outgoing.remoteIncrement = 0
 			c.outgoing.mu.Unlock()
 			err := c.writeFrame(&windowFrame{
 				streamID:  0,
@@ -912,8 +907,9 @@ writeloop:
 			c.outgoing.mu.Lock()
 			continue writeloop
 		}
-		for stream := range c.outgoing.ctrl {
-			delete(c.outgoing.ctrl, stream)
+		if c.outgoing.ctrl.size > 0 {
+			stream := c.outgoing.ctrl.take()
+			stream.inctrl = false
 			c.outgoing.mu.Unlock()
 			err := stream.writeCtrl()
 			if err != nil {
@@ -936,11 +932,9 @@ writeloop:
 			})
 			return false
 		}
-		if c.outgoing.writeleft <= 0 {
-			break
-		}
-		for stream := range c.outgoing.data {
-			delete(c.outgoing.data, stream)
+		if c.outgoing.data.size > 0 && c.outgoing.writeleft > 0 {
+			stream := c.outgoing.data.take()
+			stream.indata = false
 			c.outgoing.mu.Unlock()
 			err := stream.writeData()
 			if err != nil {
@@ -953,6 +947,7 @@ writeloop:
 		break
 	}
 	// if we reach here there's nothing to write
+	c.outgoing.writeready = false
 	c.outgoing.mu.Unlock()
 	return true
 }
@@ -964,7 +959,9 @@ func (c *rawConn) writeloop() {
 	lastwrite := c.lastwrite
 	deadline := lastwrite.Add(c.settings.getRemoteInactivityTimeout() * 2 / 3)
 	t := time.AfterFunc(deadline.Sub(time.Now()), func() {
-		c.outgoing.wakeup()
+		c.outgoing.mu.Lock()
+		c.outgoing.wakeupLocked()
+		c.outgoing.mu.Unlock()
 	})
 	defer t.Stop()
 	for {
