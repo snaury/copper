@@ -51,6 +51,19 @@ type Stream interface {
 	// still be delivered to the remote side.
 	WriteClosed() <-chan struct{}
 
+	// Acknowledge sends a signal to the remote that sending data on this
+	// stream is desired. This is used in cases when the remote is not willing
+	// to send too much data unless it's sure the other side is willing to
+	// process it.
+	Acknowledge() error
+
+	// Acknowledged returns a channel that's closed when stream has been either
+	// acknowledged or closed by the remote.
+	Acknowledged() <-chan struct{}
+
+	// IsAcknowledged returns true if the stream has been acknowledged.
+	IsAcknowledged() bool
+
 	// Closes closes the stream, discarding any data
 	Close() error
 

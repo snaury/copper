@@ -17,6 +17,7 @@ from .frames import (
     FLAG_PING_ACK,
     FLAG_DATA_EOF,
     FLAG_DATA_OPEN,
+    FLAG_DATA_ACK,
     FLAG_RESET_READ,
     FLAG_RESET_WRITE,
     FLAG_SETTINGS_ACK,
@@ -487,14 +488,17 @@ class RawStream(object):
         self._sent_eof = False
         self._seen_eof = False
         self._sent_reset = False
+        self._seen_ack = False
         self._need_open = False
         self._need_eof = False
         self._need_reset = False
+        self._need_ack = False
         self._read_cond = Condition()
         self._write_cond = Condition()
         self._flush_cond = Condition()
         self._read_closed_event = Event()
         self._write_closed_event = Event()
+        self._acknowledged_event = Event()
         conn._streams[stream_id] = self
 
     @classmethod
@@ -561,6 +565,9 @@ class RawStream(object):
         if self._need_open:
             self._need_open = False
             flags |= FLAG_DATA_OPEN
+        if self._need_ack:
+            self._need_ack = False
+            flags |= FLAG_DATA_ACK
         if self._active_eof():
             self._need_eof = False
             self._sent_eof = True
@@ -605,7 +612,7 @@ class RawStream(object):
             self._sent_eof = True
             self._cleanup()
             return
-        if self._need_open:
+        if self._need_open or self._need_ack:
             data = self._prepare_data()
             writer.write_frame(DataFrame(
                 self._stream_id,
@@ -660,6 +667,9 @@ class RawStream(object):
     def _process_data_frame(self, frame):
         if self._seen_eof:
             raise InvalidStreamError('stream 0x%08x cannot have DATA after EOF' % (self._stream_id))
+        if frame.flags & FLAG_DATA_ACK:
+            self._seen_ack = True
+            self._acknowledged_event.set()
         if len(frame.data) > self._readleft:
             raise WindowOverflowError('stream 0x%08x received %d+%d bytes, which is more than %d bytes window' % (self._stream_id, len(self._readbuf), len(frame.data), self._readleft))
         if frame.data:
@@ -698,6 +708,7 @@ class RawStream(object):
         if self._read_error is None:
             self._read_error = error
             self._read_closed_event.set()
+            self._acknowledged_event.set()
             self._read_cond.broadcast()
 
     def _set_write_error(self, error):
@@ -843,6 +854,20 @@ class RawStream(object):
     def wait_write_closed(self):
         self._write_closed_event.wait()
         return self._write_error
+
+    def acknowledge(self):
+        if self._write_error is not None:
+            raise self._write_error
+        self._need_ack = True
+        self._schedule_ctrl()
+
+    @property
+    def acknowledged(self):
+        return self._seen_ack
+
+    def wait_acknowledged(self):
+        self._acknowledged_event.wait()
+        return self._seen_ack
 
     @property
     def stream_id(self):

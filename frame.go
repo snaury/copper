@@ -39,6 +39,7 @@ const (
 
 	flagDataEOF  uint8 = 1
 	flagDataOpen uint8 = 2
+	flagDataAck  uint8 = 4
 
 	flagResetRead  uint8 = 1
 	flagResetWrite uint8 = 2
@@ -90,6 +91,9 @@ func (p *dataFrame) String() string {
 	}
 	if p.flags&flagDataOpen != 0 {
 		flagstring += "(OPEN)"
+	}
+	if p.flags&flagDataAck != 0 {
+		flagstring += "(ACK)"
 	}
 	return fmt.Sprintf("DATA[stream:%d flags:%s data:% x]", p.streamID, flagstring, p.data)
 }

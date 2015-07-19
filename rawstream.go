@@ -13,24 +13,30 @@ const (
 	flagStreamSeenEOF   = 0x02
 	flagStreamBothEOF   = flagStreamSentEOF | flagStreamSeenEOF
 	flagStreamSentReset = 0x04
+	flagStreamSeenAck   = 0x08
 	flagStreamNeedOpen  = 0x10
 	flagStreamNeedEOF   = 0x20
 	flagStreamNeedReset = 0x40
+	flagStreamNeedAck   = 0x80
 	flagStreamDiscard   = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
+	flagStreamDataCtrl  = flagStreamNeedOpen | flagStreamNeedAck
 )
 
 type rawStreamRead struct {
 	err    error
 	buf    buffer
 	left   int
-	acks   int
 	ready  condWithDeadline
+	acked  chan struct{}
 	closed chan struct{}
+
+	increment int
 }
 
 func (r *rawStreamRead) init(l sync.Locker, window int) {
 	r.left = window
 	r.ready.init(l)
+	r.acked = make(chan struct{})
 	r.closed = make(chan struct{})
 }
 
@@ -175,11 +181,19 @@ func (s *rawStream) waitFlushLocked() error {
 	return s.write.err
 }
 
-func (s *rawStream) processDataLocked(data []byte, eof bool) error {
+func (s *rawStream) processDataLocked(data []byte, flags uint8) error {
 	if s.flags&flagStreamSeenEOF != 0 {
 		return copperError{
 			error: fmt.Errorf("stream 0x%08x cannot have DATA after EOF", s.streamID),
 			code:  EINVALIDSTREAM,
+		}
+	}
+	if flags&flagDataAck != 0 {
+		if s.read.err == nil && s.flags&flagStreamSeenAck == 0 {
+			s.flags |= flagStreamSeenAck
+			close(s.read.acked)
+		} else {
+			s.flags |= flagStreamSeenAck
 		}
 	}
 	if len(data) > 0 {
@@ -195,7 +209,7 @@ func (s *rawStream) processDataLocked(data []byte, eof bool) error {
 		}
 		s.read.left -= len(data)
 	}
-	if eof {
+	if flags&flagDataEOF != 0 {
 		s.flags |= flagStreamSeenEOF
 		s.setReadErrorLocked(io.EOF)
 		s.cleanupLocked()
@@ -205,7 +219,7 @@ func (s *rawStream) processDataLocked(data []byte, eof bool) error {
 
 func (s *rawStream) processDataFrame(frame *dataFrame) error {
 	s.mu.Lock()
-	err := s.processDataLocked(frame.data, frame.flags&flagDataEOF != 0)
+	err := s.processDataLocked(frame.data, frame.flags)
 	s.mu.Unlock()
 	return err
 }
@@ -297,7 +311,7 @@ func (s *rawStream) writeCtrl() error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.activeOpen() {
+	if s.flags&flagStreamDataCtrl != 0 {
 		data := s.prepareDataLocked(maxDataFramePayloadSize)
 		frame := &dataFrame{
 			streamID: s.streamID,
@@ -321,12 +335,12 @@ func (s *rawStream) writeCtrl() error {
 		s.mu.Unlock()
 		return nil
 	}
-	if s.read.acks > 0 {
+	if s.read.increment > 0 {
 		frame := &windowFrame{
 			streamID:  s.streamID,
-			increment: uint32(s.read.acks),
+			increment: uint32(s.read.increment),
 		}
-		s.read.acks = 0
+		s.read.increment = 0
 		if s.activeReset() {
 			s.scheduleCtrl()
 		}
@@ -417,10 +431,6 @@ func (s *rawStream) writeData() error {
 	return nil
 }
 
-func (s *rawStream) activeOpen() bool {
-	return s.flags&flagStreamNeedOpen != 0
-}
-
 func (s *rawStream) activeReset() bool {
 	if s.flags&flagStreamNeedReset != 0 {
 		// there's a RESET frame pending
@@ -462,9 +472,13 @@ func (s *rawStream) activeEOF() bool {
 
 func (s *rawStream) outgoingFlags() uint8 {
 	var flags uint8
-	if s.activeOpen() {
+	if s.flags&flagStreamNeedOpen != 0 {
 		s.flags &^= flagStreamNeedOpen
 		flags |= flagDataOpen
+	}
+	if s.flags&flagStreamNeedAck != 0 {
+		s.flags &^= flagStreamNeedAck
+		flags |= flagDataAck
 	}
 	if s.activeEOF() {
 		s.flags &^= flagStreamNeedEOF
@@ -505,7 +519,10 @@ func (s *rawStream) setReadErrorLocked(err error) {
 	if s.read.err == nil {
 		s.read.err = err
 		close(s.read.closed)
-		s.read.acks = 0
+		if s.flags&flagStreamSeenAck == 0 {
+			close(s.read.acked)
+		}
+		s.read.increment = 0
 		s.read.ready.Broadcast()
 	}
 }
@@ -567,7 +584,7 @@ func (s *rawStream) Discard(n int) int {
 	if n > 0 {
 		s.read.left += n
 		if s.read.err == nil {
-			s.read.acks += n
+			s.read.increment += n
 			s.scheduleCtrl()
 		}
 	}
@@ -586,7 +603,7 @@ func (s *rawStream) Read(b []byte) (n int, err error) {
 		n = s.read.buf.read(b)
 		s.read.left += n
 		if s.read.err == nil {
-			s.read.acks += n
+			s.read.increment += n
 			s.scheduleCtrl()
 		}
 	}
@@ -608,7 +625,7 @@ func (s *rawStream) ReadByte() (byte, error) {
 	b := s.read.buf.readbyte()
 	s.read.left++
 	if s.read.err == nil {
-		s.read.acks++
+		s.read.increment++
 		s.scheduleCtrl()
 	}
 	s.mu.Unlock()
@@ -676,6 +693,28 @@ func (s *rawStream) WriteErr() error {
 
 func (s *rawStream) WriteClosed() <-chan struct{} {
 	return s.write.closed
+}
+
+func (s *rawStream) Acknowledge() error {
+	s.mu.Lock()
+	err := s.write.err
+	if err == nil {
+		s.flags |= flagStreamNeedAck
+		s.scheduleCtrl()
+	}
+	s.mu.Unlock()
+	return err
+}
+
+func (s *rawStream) Acknowledged() <-chan struct{} {
+	return s.read.acked
+}
+
+func (s *rawStream) IsAcknowledged() bool {
+	s.mu.RLock()
+	acked := s.flags&flagStreamSeenAck != 0
+	s.mu.RUnlock()
+	return acked
 }
 
 func (s *rawStream) Close() error {

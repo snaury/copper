@@ -555,3 +555,27 @@ func TestRawStreamFlush(t *testing.T) {
 		},
 	)
 }
+
+func TestRawStreamAcknowledge(t *testing.T) {
+	runRawClientServerStream(
+		func(client Stream) {
+			<-client.Acknowledged()
+			if client.IsAcknowledged() {
+				t.Fatal("client: remote unexpectedly acknowledged")
+			}
+		},
+		func(server Stream) {
+		},
+	)
+	runRawClientServerStream(
+		func(client Stream) {
+			<-client.Acknowledged()
+			if !client.IsAcknowledged() {
+				t.Fatal("client: remote did not acknowledge")
+			}
+		},
+		func(server Stream) {
+			server.Acknowledge()
+		},
+	)
+}
