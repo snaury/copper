@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-func passthru(dst, src Stream) {
+func passthru(dst, src Stream, waitack bool) {
 	var write sync.Mutex
 	go func() {
 		<-dst.WriteClosed()
@@ -35,6 +35,13 @@ func passthru(dst, src Stream) {
 				}
 				return
 			}
+			if waitack {
+				<-dst.Acknowledged()
+				if dst.IsAcknowledged() {
+					src.Acknowledge()
+				}
+				waitack = false
+			}
 		}
 		if err != nil {
 			if dst.WriteErr() == nil {
@@ -54,8 +61,8 @@ func passthruBoth(local, remote Stream) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		passthru(remote, local)
+		passthru(remote, local, true)
 	}()
-	passthru(local, remote)
+	passthru(local, remote, false)
 	wg.Wait()
 }

@@ -282,6 +282,7 @@ class CopperClient(object):
         handler = self._handlers.get(target_id)
         if handler is None:
             raise NoTargetError()
+        stream.acknowledge()
         handler(stream)
 
     def wait_connected(self):

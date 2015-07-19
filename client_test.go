@@ -1,6 +1,7 @@
 package copper
 
 import (
+	"io"
 	"log"
 	"net"
 	"reflect"
@@ -639,6 +640,40 @@ func TestClientServerStream(t *testing.T) {
 			}
 			stream.Write(buf[:n])
 			stream.CloseWithError(EINTERNAL)
+		},
+	)
+}
+
+func TestClientServerBigRequest(t *testing.T) {
+	runClientServerStream(
+		func(client Stream) {
+			buf := make([]byte, 65536)
+			for i := 0; i < 3; i++ {
+				_, err := client.Write(buf)
+				if err != nil {
+					t.Fatalf("client: Write: %s", err)
+				}
+			}
+			if !client.IsAcknowledged() {
+				t.Fatalf("client: not acknowledged!")
+			}
+		},
+		func(server Stream) {
+			buf := make([]byte, 4096)
+			total := 0
+			for {
+				n, err := server.Read(buf)
+				total += n
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					t.Fatalf("server: Read: %s", err)
+				}
+			}
+			if total != 65536*3 {
+				t.Fatalf("server: total request data: %d", total)
+			}
 		},
 	)
 }

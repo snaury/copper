@@ -26,6 +26,7 @@ func rpcWrapClient(stream Stream, hmap *HandlerMap) error {
 		if handler == nil {
 			return ENOTARGET
 		}
+		stream.Acknowledge()
 		handler.ServeCopper(stream)
 		return nil
 	}
