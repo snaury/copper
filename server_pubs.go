@@ -39,7 +39,7 @@ func (endpoint *localEndpoint) handleRequestLocked(callback handleRequestCallbac
 		}()
 		endpoint.owner.lock.Unlock()
 		defer endpoint.owner.lock.Lock()
-		remote, err := endpoint.key.client.conn.Open(endpoint.key.targetID)
+		remote, err := rpcNewStream(endpoint.key.client.conn, endpoint.key.targetID)
 		if err != nil {
 			// this client has already disconnected
 			return handleRequestStatusImpossible

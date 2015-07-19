@@ -11,7 +11,7 @@ def test_rawconn():
         stream.write(data)
     with RawConn(a, server_handler, True) as server:
         with RawConn(b) as client:
-            with client.open(0) as c:
+            with client.new_stream() as c:
                 c.write('foobar')
                 data = c.read_some(16)
                 assert data == 'foobar'
@@ -22,6 +22,6 @@ def test_rawconn_error():
         stream.close_with_error(NoRouteError())
     with RawConn(a, server_handler, True) as server:
         with RawConn(b) as client:
-            with client.open(0) as c:
+            with client.new_stream() as c:
                 with pytest.raises(NoRouteError):
                     c.peek()

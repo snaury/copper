@@ -118,6 +118,7 @@ message StreamServicesResponse {
 }
 
 enum RequestType {
+    NewStream = 0;
     Subscribe = 1;
     GetEndpoints = 2;
     StreamEndpoints = 3;

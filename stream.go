@@ -92,9 +92,6 @@ type Stream interface {
 	// StreamID returns the stream id
 	StreamID() uint32
 
-	// TargetID returns the target id
-	TargetID() int64
-
 	// LocalAddr returns the local network address
 	LocalAddr() net.Addr
 
@@ -110,8 +107,6 @@ var _ io.ByteWriter = Stream(nil)
 type StreamAddr struct {
 	NetAddr  net.Addr
 	StreamID uint32
-	TargetID int64
-	Outgoing bool
 }
 
 // Network returns "copper" as the name of the network
@@ -122,9 +117,6 @@ func (addr *StreamAddr) Network() string {
 func (addr *StreamAddr) String() string {
 	if addr == nil {
 		return "<nil>"
-	}
-	if addr.Outgoing {
-		return fmt.Sprintf("[%s:%s;target=%d]", addr.NetAddr.Network(), addr.NetAddr.String(), addr.TargetID)
 	}
 	return fmt.Sprintf("[%s:%s;stream=%d]", addr.NetAddr.Network(), addr.NetAddr.String(), addr.StreamID)
 }

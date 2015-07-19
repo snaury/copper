@@ -1,6 +1,7 @@
 package copper
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 
@@ -14,6 +15,14 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		return EINVALID
 	}
 	switch rtype {
+	case protocol.RequestType_NewStream:
+		var buf [8]byte
+		_, err = stream.Read(buf[0:8])
+		if err != nil {
+			return EINVALID
+		}
+		targetID := binary.BigEndian.Uint64(buf[0:8])
+		return server.handleNewStream(int64(targetID), stream)
 	case protocol.RequestType_Subscribe:
 		var request protocol.SubscribeRequest
 		err = rpcReadMessage(stream, &request)

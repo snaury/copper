@@ -70,8 +70,28 @@ func rpcWriteMessage(w io.Writer, pb proto.Message) error {
 	return nil
 }
 
-func rpcSimpleRequest(conn RawConn, targetID int64, rtype protocol.RequestType, request proto.Message, response proto.Message) error {
-	stream, err := conn.Open(targetID)
+func rpcNewStream(conn RawConn, targetID int64) (Stream, error) {
+	stream, err := conn.NewStream()
+	if err != nil {
+		return nil, err
+	}
+	err = rpcWriteRequestType(stream, protocol.RequestType_NewStream)
+	if err != nil {
+		stream.Close()
+		return nil, err
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[0:8], uint64(targetID))
+	_, err = stream.Write(buf[0:8])
+	if err != nil {
+		stream.Close()
+		return nil, err
+	}
+	return stream, nil
+}
+
+func rpcSimpleRequest(conn RawConn, rtype protocol.RequestType, request proto.Message, response proto.Message) error {
+	stream, err := conn.NewStream()
 	if err != nil {
 		return err
 	}
@@ -92,8 +112,8 @@ func rpcSimpleRequest(conn RawConn, targetID int64, rtype protocol.RequestType, 
 	return nil
 }
 
-func rpcStreamingRequest(conn RawConn, targetID int64, rtype protocol.RequestType, request proto.Message) (Stream, error) {
-	stream, err := conn.Open(targetID)
+func rpcStreamingRequest(conn RawConn, rtype protocol.RequestType, request proto.Message) (Stream, error) {
+	stream, err := conn.NewStream()
 	if err != nil {
 		return nil, err
 	}

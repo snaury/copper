@@ -31,7 +31,7 @@ type httpHandler struct {
 	handler http.Handler
 }
 
-func (h httpHandler) Handle(stream Stream) {
+func (h httpHandler) ServeCopper(stream Stream) {
 	s := &http.Server{
 		Handler: h.handler,
 	}

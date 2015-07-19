@@ -37,20 +37,6 @@ func newServerClient(s *server, conn net.Conn, allowChanges bool) *serverClient 
 	return c
 }
 
-func (c *serverClient) handleControl(client Stream) error {
-	err := rpcWrapServer(client, c)
-	if err != nil {
-		_, ok := err.(Error)
-		if !ok {
-			err = copperError{
-				error: err,
-				code:  EINTERNAL,
-			}
-		}
-	}
-	return err
-}
-
 func (c *serverClient) handleRequestWith(client Stream, endpoint endpointReference) error {
 	status := endpoint.handleRequestLocked(func(remote Stream) handleRequestStatus {
 		passthruBoth(client, remote)
@@ -70,29 +56,16 @@ func (c *serverClient) handleRequestWith(client Stream, endpoint endpointReferen
 	}
 }
 
-func (c *serverClient) handleRequest(client Stream) error {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
-	if c.failure != nil {
-		return c.failure
-	}
-	if sub := c.subscriptions[client.TargetID()]; sub != nil {
-		// This is a subscription
-		return c.handleRequestWith(client, sub)
-	}
-	if pub := c.owner.pubByTarget[client.TargetID()]; pub != nil {
-		// This is a direct connection
-		return c.handleRequestWith(client, pub)
-	}
-	return ENOTARGET
-}
-
-func (c *serverClient) Handle(stream Stream) {
-	var err error
-	if stream.TargetID() == 0 {
-		err = c.handleControl(stream)
-	} else {
-		err = c.handleRequest(stream)
+func (c *serverClient) ServeCopper(stream Stream) {
+	err := rpcWrapServer(stream, c)
+	if err != nil {
+		_, ok := err.(Error)
+		if !ok {
+			err = copperError{
+				error: err,
+				code:  EINTERNAL,
+			}
+		}
 	}
 	if err != nil {
 		stream.CloseWithError(err)
@@ -125,6 +98,23 @@ func (c *serverClient) serve() {
 	defer c.owner.lock.Unlock()
 	delete(c.owner.clients, c)
 	c.closeWithErrorLocked(err)
+}
+
+func (c *serverClient) handleNewStream(targetID int64, stream Stream) error {
+	c.owner.lock.Lock()
+	defer c.owner.lock.Unlock()
+	if c.failure != nil {
+		return c.failure
+	}
+	if sub := c.subscriptions[targetID]; sub != nil {
+		// This is a subscription
+		return c.handleRequestWith(stream, sub)
+	}
+	if pub := c.owner.pubByTarget[targetID]; pub != nil {
+		// This is a direct connection
+		return c.handleRequestWith(stream, pub)
+	}
+	return ENOTARGET
 }
 
 func (c *serverClient) subscribe(settings SubscribeSettings) (int64, error) {

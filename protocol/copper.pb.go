@@ -47,6 +47,7 @@ var _ = math.Inf
 type RequestType int32
 
 const (
+	RequestType_NewStream       RequestType = 0
 	RequestType_Subscribe       RequestType = 1
 	RequestType_GetEndpoints    RequestType = 2
 	RequestType_StreamEndpoints RequestType = 3
@@ -60,6 +61,7 @@ const (
 )
 
 var RequestType_name = map[int32]string{
+	0:  "NewStream",
 	1:  "Subscribe",
 	2:  "GetEndpoints",
 	3:  "StreamEndpoints",
@@ -72,6 +74,7 @@ var RequestType_name = map[int32]string{
 	10: "StreamServices",
 }
 var RequestType_value = map[string]int32{
+	"NewStream":       0,
 	"Subscribe":       1,
 	"GetEndpoints":    2,
 	"StreamEndpoints": 3,

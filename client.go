@@ -12,14 +12,11 @@ type clientConn struct {
 var _ Client = &clientConn{}
 
 func newClient(conn net.Conn) *clientConn {
-	hmap := NewHandlerMap(nil)
-	return &clientConn{
-		rpcClient: rpcClient{
-			RawConn:  NewRawConn(conn, hmap, false),
-			targetID: 0,
-		},
-		hmap: hmap,
+	c := &clientConn{
+		hmap: NewHandlerMap(nil),
 	}
+	c.rpcClient.RawConn = NewRawConn(conn, c, false)
+	return c
 }
 
 // NewClient wraps an existing connection and returns a copper client
@@ -41,7 +38,7 @@ func (sub *clientSubscription) EndpointChanges() (EndpointChangesStream, error) 
 }
 
 func (sub *clientSubscription) Open() (Stream, error) {
-	return sub.owner.Open(sub.targetID)
+	return sub.owner.openNewStream(sub.targetID)
 }
 
 func (sub *clientSubscription) Stop() error {
@@ -93,4 +90,11 @@ func (c *clientConn) LookupRoute(name string) ([]Route, error) {
 
 func (c *clientConn) ServiceChanges() (ServiceChangesStream, error) {
 	return c.streamServices()
+}
+
+func (c *clientConn) ServeCopper(stream Stream) {
+	err := rpcWrapClient(stream, c.hmap)
+	if err != nil {
+		stream.CloseWithError(err)
+	}
 }

@@ -731,7 +731,7 @@ func TestClientServerCloseReadBig(t *testing.T) {
 			serverMayCloseRead <- 1
 
 			n, err = client.WaitAck()
-			if n != 16 || err != EINTERNAL {
+			if n < 16 || n > 16+128 || err != EINTERNAL {
 				t.Fatalf("client: Write: %d, %v", n, err)
 			}
 
@@ -739,7 +739,7 @@ func TestClientServerCloseReadBig(t *testing.T) {
 		},
 		func(server Stream) {
 			buf, err := server.Peek()
-			if len(buf) != 65536 || err != nil {
+			if len(buf) < 65536-128 || err != nil {
 				t.Fatalf("server: Peek: %d, %v", len(buf), err)
 			}
 

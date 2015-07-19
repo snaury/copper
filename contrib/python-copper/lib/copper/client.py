@@ -12,6 +12,7 @@ from gevent.socket import (
 )
 from .errors import (
     NoTargetError,
+    InvalidDataError,
     ConnectionClosedError,
 )
 from .rawconn import (
@@ -19,6 +20,7 @@ from .rawconn import (
     RawConn,
 )
 from .copper_pb2 import (
+    NewStream,
     SubscribeOption,
     Subscribe, SubscribeRequest, SubscribeResponse,
     GetEndpoints, GetEndpointsRequest, GetEndpointsResponse,
@@ -117,7 +119,7 @@ class CopperClient(object):
             self._owner.wait_connected()
             if self._target_id is None:
                 raise RuntimeError('client cannot open streams at this time')
-            return self._owner._conn.open(self._target_id)
+            return self._owner._open_stream(self._target_id)
 
         def stop(self):
             self._owner._subscriptions.pop(self, None)
@@ -220,12 +222,25 @@ class CopperClient(object):
 
     FMT_REQTYPE = struct.Struct('>B')
     FMT_MSGSIZE = struct.Struct('>I')
+    FMT_TARGETID = struct.Struct('>q')
+
+    def _open_stream(self, target_id, conn=None):
+        if conn is None:
+            conn = self._conn
+        stream = conn.new_stream()
+        try:
+            stream.write(self.FMT_REQTYPE.pack(NewStream))
+            stream.write(self.FMT_TARGETID.pack(target_id))
+        except:
+            stream.close()
+            raise
+        return stream
 
     def _make_simple_request(self, request_type, request, response_class, conn=None):
         if conn is None:
             conn = self._conn
         request_data = request.SerializeToString()
-        with conn.open(0) as stream:
+        with conn.new_stream() as stream:
             stream.write(self.FMT_REQTYPE.pack(request_type))
             stream.write(self.FMT_MSGSIZE.pack(len(request_data)))
             if request_data:
@@ -242,7 +257,7 @@ class CopperClient(object):
         if conn is None:
             conn = self._conn
         request_data = request.SerializeToString()
-        with conn.open(0) as stream:
+        with conn.new_stream() as stream:
             stream.write(self.FMT_REQTYPE.pack(request_type))
             stream.write(self.FMT_MSGSIZE.pack(len(request_data)))
             if request_data:
@@ -260,7 +275,11 @@ class CopperClient(object):
                 yield response_class.FromString(response_data)
 
     def _handle_stream(self, stream):
-        handler = self._handlers.get(stream.target_id)
+        reqtype, = self.FMT_REQTYPE.unpack(stream.read(1))
+        if reqtype != NewStream:
+            raise InvalidDataError()
+        target_id, = self.FMT_TARGETID.unpack(stream.read(8))
+        handler = self._handlers.get(target_id)
         if handler is None:
             raise NoTargetError()
         handler(stream)

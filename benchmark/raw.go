@@ -15,6 +15,7 @@ type rawServer struct {
 	lock     sync.Mutex
 	listener net.Listener
 	clients  map[copper.RawConn]struct{}
+	kind     int
 }
 
 func (s *rawServer) handle(rawConn net.Conn) error {
@@ -61,9 +62,9 @@ func (s *rawServer) Stop() {
 	}
 }
 
-func (s *rawServer) Handle(stream copper.Stream) {
-	switch stream.TargetID() {
-	case 1:
+func (s *rawServer) ServeCopper(stream copper.Stream) {
+	switch s.kind {
+	case 0:
 		var buf [8]byte
 		_, err := io.ReadFull(stream, buf[:])
 		if err != nil && err != io.EOF {
@@ -71,7 +72,7 @@ func (s *rawServer) Handle(stream copper.Stream) {
 			return
 		}
 		stream.Write(buf[:])
-	case 2:
+	case 1:
 		var buf [65536]byte
 		for {
 			_, err := stream.Write(buf[:])
@@ -84,13 +85,15 @@ func (s *rawServer) Handle(stream copper.Stream) {
 	}
 }
 
-func startRawServer(addr string) (string, func()) {
+func startRawServer(addr string, kind int) (string, func()) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("Failed to listen: %s", err)
 	}
-	s := &rawServer{}
-	s.clients = make(map[copper.RawConn]struct{})
+	s := &rawServer{
+		clients: make(map[copper.RawConn]struct{}),
+		kind:    kind,
+	}
 	go s.Serve(listener)
 	return listener.Addr().String(), func() {
 		s.Stop()
@@ -106,7 +109,7 @@ func dialRawServer(addr string) copper.RawConn {
 }
 
 func callRawServer(conn copper.RawConn) {
-	stream, err := conn.Open(1)
+	stream, err := conn.NewStream()
 	if err != nil {
 		log.Fatalf("Failed to Open: %s", err)
 	}
@@ -125,7 +128,7 @@ func callRawServer(conn copper.RawConn) {
 }
 
 func benchreadRawServer(conn copper.RawConn, totalBytes int64) {
-	stream, err := conn.Open(2)
+	stream, err := conn.NewStream()
 	if err != nil {
 		log.Fatalf("Failed to Open: %s", err)
 	}

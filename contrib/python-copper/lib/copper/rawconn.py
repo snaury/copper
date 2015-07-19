@@ -237,7 +237,7 @@ class RawConn(object):
         self._write_ready.set()
         return waiter.get()
 
-    def open(self, target_id):
+    def new_stream(self):
         if self._closed:
             raise self._failure
         if self._freestreams:
@@ -245,7 +245,7 @@ class RawConn(object):
         else:
             stream_id = self._next_stream_id
             self._next_stream_id += 2
-        return RawStream.new_outgoing(self, stream_id, target_id)
+        return RawStream.new_outgoing(self, stream_id)
 
     def _handle_stream(self, stream):
         if self._handler is None:
@@ -495,10 +495,9 @@ class RawConn(object):
         self._sock.close()
 
 class RawStream(object):
-    def __init__(self, conn, stream_id, target_id):
+    def __init__(self, conn, stream_id):
         self._conn = conn
         self._stream_id = stream_id
-        self._target_id = target_id
         self._is_outgoing = False
         self._reset_error = None
         self._readbuf = ''
@@ -525,7 +524,7 @@ class RawStream(object):
 
     @classmethod
     def new_incoming(cls, conn, frame):
-        self = cls(conn, frame.stream_id, frame.target_id)
+        self = cls(conn, frame.stream_id)
         self._readbuf = frame.data
         self._readleft -= len(frame.data)
         if frame.flags & FLAG_FIN:
@@ -534,8 +533,8 @@ class RawStream(object):
         return self
 
     @classmethod
-    def new_outgoing(cls, conn, stream_id, target_id):
-        self = cls(conn, stream_id, target_id)
+    def new_outgoing(cls, conn, stream_id):
+        self = cls(conn, stream_id)
         self._is_outgoing = True
         self._need_open = True
         self._schedule_ctrl()
@@ -578,7 +577,7 @@ class RawStream(object):
         if self._need_eof:
             self._schedule_ctrl()
 
-    def _prepare_data(self, maxsize):
+    def _prepare_data(self, maxsize=0xffffff):
         n = len(self._writebuf)
         if self._writeleft < 0:
             n += self._writeleft
@@ -640,11 +639,10 @@ class RawStream(object):
             return
         if self._need_open:
             self._need_open = False
-            data = self._prepare_data(0xffffff - 8)
+            data = self._prepare_data()
             writer.write_frame(OpenFrame(
                 self._stream_id,
                 self._outgoing_flags(),
-                self._target_id,
                 data,
             ))
             if not self._writebuf:
@@ -679,7 +677,7 @@ class RawStream(object):
             ))
 
     def _send_data(self, writer):
-        data = self._prepare_data(0xffffff)
+        data = self._prepare_data()
         if len(data) > 0:
             writer.write_frame(DataFrame(
                 self._stream_id,
@@ -732,7 +730,7 @@ class RawStream(object):
                 if self._active_data():
                     self._schedule_data()
                 if self._writeleft > 0:
-                    self._write_cond.set()
+                    self._write_cond.broadcast()
 
     def _set_read_error(self, error):
         if self._read_error is None:
@@ -907,7 +905,3 @@ class RawStream(object):
     @property
     def stream_id(self):
         return self._stream_id
-
-    @property
-    def target_id(self):
-        return self._target_id

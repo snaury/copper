@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-type lowLevelServer interface {
+type lowLevelCommon interface {
 	subscribe(settings SubscribeSettings) (int64, error)
 	getEndpoints(targetID int64) ([]Endpoint, error)
 	streamEndpoints(targetID int64) (EndpointChangesStream, error)
@@ -24,6 +24,16 @@ type lowLevelServer interface {
 	listRoutes() ([]string, error)
 	lookupRoute(name string) ([]Route, error)
 	streamServices() (ServiceChangesStream, error)
+}
+
+type lowLevelServer interface {
+	lowLevelCommon
+	handleNewStream(targetID int64, stream Stream) error
+}
+
+type lowLevelClient interface {
+	lowLevelCommon
+	openNewStream(targetID int64) (Stream, error)
 }
 
 type handleRequestStatus int

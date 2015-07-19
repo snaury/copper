@@ -33,7 +33,7 @@ type RawConn interface {
 	RemoteAddr() net.Addr
 	Sync() <-chan error
 	Ping(value int64) <-chan error
-	Open(target int64) (stream Stream, err error)
+	NewStream() (stream Stream, err error)
 }
 
 type rawConnPings struct {
@@ -687,14 +687,14 @@ func (c *rawConn) ping(value int64, callback func(err error)) {
 	}
 }
 
-func (c *rawConn) Open(target int64) (Stream, error) {
+func (c *rawConn) NewStream() (Stream, error) {
 	c.mu.Lock()
 	streamID, err := c.streams.allocateLocked()
 	if err != nil {
 		c.mu.Unlock()
 		return nil, err
 	}
-	return newOutgoingStreamWithUnlock(c, streamID, target), nil
+	return newOutgoingStreamWithUnlock(c, streamID), nil
 }
 
 func (c *rawConn) handleStream(handler Handler, stream Stream) {
@@ -706,7 +706,7 @@ func (c *rawConn) handleStream(handler Handler, stream Stream) {
 		return
 	}
 	defer stream.Close()
-	handler.Handle(stream)
+	handler.ServeCopper(stream)
 }
 
 func (c *rawConn) processPingFrame(frame *pingFrame) error {

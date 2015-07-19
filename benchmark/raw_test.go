@@ -11,7 +11,7 @@ import (
 func runRawCalls(b *testing.B, maxConcurrentCalls int) {
 	s := stats.AddStats(b, 38)
 	b.StopTimer()
-	target, stopper := startRawServer("localhost:0")
+	target, stopper := startRawServer("localhost:0", 0)
 	defer stopper()
 
 	conn := dialRawServer(target)
@@ -69,7 +69,7 @@ func BenchmarkRawRead(b *testing.B) {
 	b.StopTimer()
 	totalBytes := 65536 * int64(b.N)
 	b.SetBytes(65536)
-	target, stopper := startRawServer("localhost:0")
+	target, stopper := startRawServer("localhost:0", 1)
 	defer stopper()
 	conn := dialRawServer(target)
 	defer conn.Close()

@@ -6,7 +6,7 @@ import (
 
 // Handler is used to handle incoming streams
 type Handler interface {
-	Handle(stream Stream)
+	ServeCopper(stream Stream)
 }
 
 // HandlerFunc wraps a function to conform with Handler interface
@@ -14,8 +14,8 @@ type HandlerFunc func(stream Stream)
 
 var _ Handler = HandlerFunc(nil)
 
-// Handle calls the underlying function
-func (f HandlerFunc) Handle(stream Stream) {
+// ServeCopper calls the underlying function
+func (f HandlerFunc) ServeCopper(stream Stream) {
 	f(stream)
 }
 
@@ -25,8 +25,6 @@ type HandlerMap struct {
 	targets    map[int64]Handler
 	nexttarget int64
 }
-
-var _ Handler = &HandlerMap{}
 
 // NewHandlerMap creates a new stream handler map
 func NewHandlerMap(mainhandler Handler) *HandlerMap {
@@ -38,21 +36,11 @@ func NewHandlerMap(mainhandler Handler) *HandlerMap {
 	}
 }
 
-func (h *HandlerMap) find(target int64) Handler {
+// Find returns a previously registered handler for a targetID
+func (h *HandlerMap) Find(target int64) Handler {
 	h.lock.RLock()
 	defer h.lock.RUnlock()
 	return h.targets[target]
-}
-
-// Handle dispatches to a registered handler
-func (h *HandlerMap) Handle(stream Stream) {
-	target := stream.TargetID()
-	handler := h.find(target)
-	if handler != nil {
-		handler.Handle(stream)
-	} else {
-		stream.CloseWithError(ENOTARGET)
-	}
 }
 
 // Add registers a handler and returns its target id

@@ -1,24 +1,54 @@
 package copper
 
 import (
+	"encoding/binary"
+	"fmt"
 	"io"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/snaury/copper/protocol"
 )
 
-type rpcClient struct {
-	RawConn
-	targetID int64
+func rpcWrapClient(stream Stream, hmap *HandlerMap) error {
+	rtype, err := rpcReadRequestType(stream)
+	if err != nil {
+		return EINVALID
+	}
+	switch rtype {
+	case protocol.RequestType_NewStream:
+		var buf [8]byte
+		_, err = stream.Read(buf[0:8])
+		if err != nil {
+			return EINVALID
+		}
+		targetID := int64(binary.BigEndian.Uint64(buf[0:8]))
+		handler := hmap.Find(targetID)
+		if handler == nil {
+			return ENOTARGET
+		}
+		handler.ServeCopper(stream)
+		return nil
+	}
+	return copperError{
+		error: fmt.Errorf("unsupported request type %d", rtype),
+		code:  EUNSUPPORTED,
+	}
 }
 
-var _ lowLevelServer = &rpcClient{}
+type rpcClient struct {
+	RawConn
+}
+
+var _ lowLevelClient = &rpcClient{}
+
+func (c *rpcClient) openNewStream(targetID int64) (Stream, error) {
+	return rpcNewStream(c.RawConn, targetID)
+}
 
 func (c *rpcClient) subscribe(settings SubscribeSettings) (int64, error) {
 	var response protocol.SubscribeResponse
 	err := rpcSimpleRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_Subscribe,
 		&protocol.SubscribeRequest{
 			Options:       rpcSubscribeOptionsToProto(settings.Options),
@@ -37,7 +67,6 @@ func (c *rpcClient) getEndpoints(targetID int64) ([]Endpoint, error) {
 	var response protocol.GetEndpointsResponse
 	err := rpcSimpleRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_GetEndpoints,
 		&protocol.GetEndpointsRequest{
 			TargetId: proto.Int64(targetID),
@@ -87,7 +116,6 @@ func (s *rpcEndpointChangesStream) Stop() error {
 func (c *rpcClient) streamEndpoints(targetID int64) (EndpointChangesStream, error) {
 	stream, err := rpcStreamingRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_StreamEndpoints,
 		&protocol.StreamEndpointsRequest{
 			TargetId: proto.Int64(targetID),
@@ -109,7 +137,6 @@ func (c *rpcClient) unsubscribe(targetID int64) error {
 	var response protocol.UnsubscribeResponse
 	err := rpcSimpleRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_Unsubscribe,
 		&protocol.UnsubscribeRequest{
 			TargetId: proto.Int64(targetID),
@@ -126,7 +153,6 @@ func (c *rpcClient) publish(targetID int64, name string, settings PublishSetting
 	var response protocol.PublishResponse
 	err := rpcSimpleRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_Publish,
 		&protocol.PublishRequest{
 			TargetId: proto.Int64(targetID),
@@ -145,7 +171,6 @@ func (c *rpcClient) unpublish(targetID int64) error {
 	var response protocol.UnpublishResponse
 	err := rpcSimpleRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_Unpublish,
 		&protocol.UnpublishRequest{
 			TargetId: proto.Int64(targetID),
@@ -162,7 +187,6 @@ func (c *rpcClient) setRoute(name string, routes ...Route) error {
 	var response protocol.SetRouteResponse
 	err := rpcSimpleRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_SetRoute,
 		&protocol.SetRouteRequest{
 			Name:   proto.String(name),
@@ -180,7 +204,6 @@ func (c *rpcClient) listRoutes() ([]string, error) {
 	var response protocol.ListRoutesResponse
 	err := rpcSimpleRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_ListRoutes,
 		&protocol.ListRoutesRequest{},
 		&response,
@@ -195,7 +218,6 @@ func (c *rpcClient) lookupRoute(name string) ([]Route, error) {
 	var response protocol.LookupRouteResponse
 	err := rpcSimpleRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_LookupRoute,
 		&protocol.LookupRouteRequest{
 			Name: proto.String(name),
@@ -245,7 +267,6 @@ func (s *rpcServiceChangesStream) Stop() error {
 func (c *rpcClient) streamServices() (ServiceChangesStream, error) {
 	stream, err := rpcStreamingRequest(
 		c.RawConn,
-		c.targetID,
 		protocol.RequestType_StreamServices,
 		&protocol.StreamServicesRequest{},
 	)

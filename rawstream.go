@@ -59,7 +59,6 @@ type rawStream struct {
 	mu       sync.RWMutex
 	owner    *rawConn
 	streamID uint32
-	targetID int64
 	outgoing bool
 	flags    int
 	read     rawStreamRead
@@ -69,11 +68,10 @@ type rawStream struct {
 
 var _ Stream = &rawStream{}
 
-func newStream(owner *rawConn, streamID uint32, targetID int64) *rawStream {
+func newStream(owner *rawConn, streamID uint32) *rawStream {
 	s := &rawStream{
 		owner:    owner,
 		streamID: streamID,
-		targetID: targetID,
 	}
 	s.read.init(&s.mu, owner.settings.localStreamWindowSize)
 	s.write.init(&s.mu, owner.settings.remoteStreamWindowSize)
@@ -81,7 +79,7 @@ func newStream(owner *rawConn, streamID uint32, targetID int64) *rawStream {
 }
 
 func newIncomingStreamWithUnlock(owner *rawConn, frame *openFrame) *rawStream {
-	s := newStream(owner, frame.streamID, frame.targetID)
+	s := newStream(owner, frame.streamID)
 	owner.streams.addLockedWithUnlock(s)
 	s.mu.Lock()
 	s.processDataLocked(frame.data, frame.flags&flagFin != 0)
@@ -89,8 +87,8 @@ func newIncomingStreamWithUnlock(owner *rawConn, frame *openFrame) *rawStream {
 	return s
 }
 
-func newOutgoingStreamWithUnlock(owner *rawConn, streamID uint32, targetID int64) *rawStream {
-	s := newStream(owner, streamID, targetID)
+func newOutgoingStreamWithUnlock(owner *rawConn, streamID uint32) *rawStream {
+	s := newStream(owner, streamID)
 	s.outgoing = true
 	s.flags |= flagStreamNeedOpen
 	owner.streams.addLockedWithUnlock(s)
@@ -337,7 +335,6 @@ func (s *rawStream) writeCtrl() error {
 		frame := &openFrame{
 			streamID: s.streamID,
 			flags:    s.outgoingFlags(),
-			targetID: s.targetID,
 			data:     data,
 		}
 		if s.activeReset() {
@@ -801,16 +798,10 @@ func (s *rawStream) StreamID() uint32 {
 	return s.streamID
 }
 
-func (s *rawStream) TargetID() int64 {
-	return s.targetID
-}
-
 func (s *rawStream) LocalAddr() net.Addr {
 	return &StreamAddr{
 		NetAddr:  s.owner.conn.LocalAddr(),
 		StreamID: s.streamID,
-		TargetID: s.targetID,
-		Outgoing: !s.outgoing,
 	}
 }
 
@@ -818,7 +809,5 @@ func (s *rawStream) RemoteAddr() net.Addr {
 	return &StreamAddr{
 		NetAddr:  s.owner.conn.RemoteAddr(),
 		StreamID: s.streamID,
-		TargetID: s.targetID,
-		Outgoing: s.outgoing,
 	}
 }

@@ -19,7 +19,7 @@ _sym_db = _symbol_database.Default()
 DESCRIPTOR = _descriptor.FileDescriptor(
   name='copper.proto',
   package='protocol',
-  serialized_pb=_b('\n\x0c\x63opper.proto\x12\x08protocol\"?\n\x08\x45ndpoint\x12\x0f\n\x07network\x18\x01 \x02(\t\x12\x0f\n\x07\x61\x64\x64ress\x18\x02 \x02(\t\x12\x11\n\ttarget_id\x18\x03 \x01(\x12\"N\n\x0fSubscribeOption\x12\x0f\n\x07service\x18\x01 \x02(\t\x12\x14\n\x0cmin_distance\x18\x02 \x01(\r\x12\x14\n\x0cmax_distance\x18\x03 \x01(\r\"^\n\x0fPublishSettings\x12\x10\n\x08priority\x18\x01 \x01(\r\x12\x10\n\x08\x64istance\x18\x02 \x01(\r\x12\x13\n\x0b\x63oncurrency\x18\x03 \x01(\r\x12\x12\n\nqueue_size\x18\x04 \x01(\r\"C\n\x05Route\x12*\n\x07options\x18\x01 \x03(\x0b\x32\x19.protocol.SubscribeOption\x12\x0e\n\x06weight\x18\x02 \x02(\r\"]\n\rServiceChange\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\x12\x0c\n\x04name\x18\x02 \x02(\t\x12+\n\x08settings\x18\x03 \x02(\x0b\x32\x19.protocol.PublishSettings\"k\n\x10SubscribeRequest\x12*\n\x07options\x18\x01 \x03(\x0b\x32\x19.protocol.SubscribeOption\x12\x13\n\x0bmax_retries\x18\x02 \x01(\r\x12\x16\n\x0e\x64isable_routes\x18\x03 \x01(\x08\"&\n\x11SubscribeResponse\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"(\n\x13GetEndpointsRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"=\n\x14GetEndpointsResponse\x12%\n\tendpoints\x18\x01 \x03(\x0b\x32\x12.protocol.Endpoint\"+\n\x16StreamEndpointsRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"a\n\x17StreamEndpointsResponse\x12!\n\x05\x61\x64\x64\x65\x64\x18\x01 \x03(\x0b\x32\x12.protocol.Endpoint\x12#\n\x07removed\x18\x02 \x03(\x0b\x32\x12.protocol.Endpoint\"\'\n\x12UnsubscribeRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"\x15\n\x13UnsubscribeResponse\"^\n\x0ePublishRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\x12\x0c\n\x04name\x18\x02 \x02(\t\x12+\n\x08settings\x18\x03 \x02(\x0b\x32\x19.protocol.PublishSettings\"\x11\n\x0fPublishResponse\"%\n\x10UnpublishRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"\x13\n\x11UnpublishResponse\"@\n\x0fSetRouteRequest\x12\x0c\n\x04name\x18\x01 \x02(\t\x12\x1f\n\x06routes\x18\x02 \x03(\x0b\x32\x0f.protocol.Route\"\x12\n\x10SetRouteResponse\"\x13\n\x11ListRoutesRequest\"#\n\x12ListRoutesResponse\x12\r\n\x05names\x18\x01 \x03(\t\"\"\n\x12LookupRouteRequest\x12\x0c\n\x04name\x18\x01 \x02(\t\"6\n\x13LookupRouteResponse\x12\x1f\n\x06routes\x18\x01 \x03(\x0b\x32\x0f.protocol.Route\"\x17\n\x15StreamServicesRequest\"W\n\x16StreamServicesResponse\x12\x13\n\x07removed\x18\x01 \x03(\x12\x42\x02\x10\x01\x12(\n\x07\x63hanged\x18\x02 \x03(\x0b\x32\x17.protocol.ServiceChange*\xb3\x01\n\x0bRequestType\x12\r\n\tSubscribe\x10\x01\x12\x10\n\x0cGetEndpoints\x10\x02\x12\x13\n\x0fStreamEndpoints\x10\x03\x12\x0f\n\x0bUnsubscribe\x10\x04\x12\x0b\n\x07Publish\x10\x05\x12\r\n\tUnpublish\x10\x06\x12\x0c\n\x08SetRoute\x10\x07\x12\x0e\n\nListRoutes\x10\x08\x12\x0f\n\x0bLookupRoute\x10\t\x12\x12\n\x0eStreamServices\x10\n')
+  serialized_pb=_b('\n\x0c\x63opper.proto\x12\x08protocol\"?\n\x08\x45ndpoint\x12\x0f\n\x07network\x18\x01 \x02(\t\x12\x0f\n\x07\x61\x64\x64ress\x18\x02 \x02(\t\x12\x11\n\ttarget_id\x18\x03 \x01(\x12\"N\n\x0fSubscribeOption\x12\x0f\n\x07service\x18\x01 \x02(\t\x12\x14\n\x0cmin_distance\x18\x02 \x01(\r\x12\x14\n\x0cmax_distance\x18\x03 \x01(\r\"^\n\x0fPublishSettings\x12\x10\n\x08priority\x18\x01 \x01(\r\x12\x10\n\x08\x64istance\x18\x02 \x01(\r\x12\x13\n\x0b\x63oncurrency\x18\x03 \x01(\r\x12\x12\n\nqueue_size\x18\x04 \x01(\r\"C\n\x05Route\x12*\n\x07options\x18\x01 \x03(\x0b\x32\x19.protocol.SubscribeOption\x12\x0e\n\x06weight\x18\x02 \x02(\r\"]\n\rServiceChange\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\x12\x0c\n\x04name\x18\x02 \x02(\t\x12+\n\x08settings\x18\x03 \x02(\x0b\x32\x19.protocol.PublishSettings\"k\n\x10SubscribeRequest\x12*\n\x07options\x18\x01 \x03(\x0b\x32\x19.protocol.SubscribeOption\x12\x13\n\x0bmax_retries\x18\x02 \x01(\r\x12\x16\n\x0e\x64isable_routes\x18\x03 \x01(\x08\"&\n\x11SubscribeResponse\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"(\n\x13GetEndpointsRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"=\n\x14GetEndpointsResponse\x12%\n\tendpoints\x18\x01 \x03(\x0b\x32\x12.protocol.Endpoint\"+\n\x16StreamEndpointsRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"a\n\x17StreamEndpointsResponse\x12!\n\x05\x61\x64\x64\x65\x64\x18\x01 \x03(\x0b\x32\x12.protocol.Endpoint\x12#\n\x07removed\x18\x02 \x03(\x0b\x32\x12.protocol.Endpoint\"\'\n\x12UnsubscribeRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"\x15\n\x13UnsubscribeResponse\"^\n\x0ePublishRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\x12\x0c\n\x04name\x18\x02 \x02(\t\x12+\n\x08settings\x18\x03 \x02(\x0b\x32\x19.protocol.PublishSettings\"\x11\n\x0fPublishResponse\"%\n\x10UnpublishRequest\x12\x11\n\ttarget_id\x18\x01 \x02(\x12\"\x13\n\x11UnpublishResponse\"@\n\x0fSetRouteRequest\x12\x0c\n\x04name\x18\x01 \x02(\t\x12\x1f\n\x06routes\x18\x02 \x03(\x0b\x32\x0f.protocol.Route\"\x12\n\x10SetRouteResponse\"\x13\n\x11ListRoutesRequest\"#\n\x12ListRoutesResponse\x12\r\n\x05names\x18\x01 \x03(\t\"\"\n\x12LookupRouteRequest\x12\x0c\n\x04name\x18\x01 \x02(\t\"6\n\x13LookupRouteResponse\x12\x1f\n\x06routes\x18\x01 \x03(\x0b\x32\x0f.protocol.Route\"\x17\n\x15StreamServicesRequest\"W\n\x16StreamServicesResponse\x12\x13\n\x07removed\x18\x01 \x03(\x12\x42\x02\x10\x01\x12(\n\x07\x63hanged\x18\x02 \x03(\x0b\x32\x17.protocol.ServiceChange*\xc2\x01\n\x0bRequestType\x12\r\n\tNewStream\x10\x00\x12\r\n\tSubscribe\x10\x01\x12\x10\n\x0cGetEndpoints\x10\x02\x12\x13\n\x0fStreamEndpoints\x10\x03\x12\x0f\n\x0bUnsubscribe\x10\x04\x12\x0b\n\x07Publish\x10\x05\x12\r\n\tUnpublish\x10\x06\x12\x0c\n\x08SetRoute\x10\x07\x12\x0e\n\nListRoutes\x10\x08\x12\x0f\n\x0bLookupRoute\x10\t\x12\x12\n\x0eStreamServices\x10\n')
 )
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
@@ -30,54 +30,59 @@ _REQUESTTYPE = _descriptor.EnumDescriptor(
   file=DESCRIPTOR,
   values=[
     _descriptor.EnumValueDescriptor(
-      name='Subscribe', index=0, number=1,
+      name='NewStream', index=0, number=0,
       options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
-      name='GetEndpoints', index=1, number=2,
+      name='Subscribe', index=1, number=1,
       options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
-      name='StreamEndpoints', index=2, number=3,
+      name='GetEndpoints', index=2, number=2,
       options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
-      name='Unsubscribe', index=3, number=4,
+      name='StreamEndpoints', index=3, number=3,
       options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
-      name='Publish', index=4, number=5,
+      name='Unsubscribe', index=4, number=4,
       options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
-      name='Unpublish', index=5, number=6,
+      name='Publish', index=5, number=5,
       options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
-      name='SetRoute', index=6, number=7,
+      name='Unpublish', index=6, number=6,
       options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
-      name='ListRoutes', index=7, number=8,
+      name='SetRoute', index=7, number=7,
       options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
-      name='LookupRoute', index=8, number=9,
+      name='ListRoutes', index=8, number=8,
       options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
-      name='StreamServices', index=9, number=10,
+      name='LookupRoute', index=9, number=9,
+      options=None,
+      type=None),
+    _descriptor.EnumValueDescriptor(
+      name='StreamServices', index=10, number=10,
       options=None,
       type=None),
   ],
   containing_type=None,
   options=None,
   serialized_start=1419,
-  serialized_end=1598,
+  serialized_end=1613,
 )
 _sym_db.RegisterEnumDescriptor(_REQUESTTYPE)
 
 RequestType = enum_type_wrapper.EnumTypeWrapper(_REQUESTTYPE)
+NewStream = 0
 Subscribe = 1
 GetEndpoints = 2
 StreamEndpoints = 3

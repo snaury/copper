@@ -30,7 +30,7 @@ const (
 	minWindowSize               = 1024
 	maxWindowSize               = 1<<31 - 1
 	maxFramePayloadSize         = 0xffffff
-	maxOpenFramePayloadSize     = maxFramePayloadSize - 8
+	maxOpenFramePayloadSize     = maxFramePayloadSize
 	maxDataFramePayloadSize     = maxFramePayloadSize
 	maxResetFrameMessageSize    = maxFramePayloadSize - 4
 	maxSettingsFramePayloadSize = 8 * 256
@@ -79,7 +79,6 @@ func (p *pingFrame) writeFrameTo(w io.Writer) (err error) {
 type openFrame struct {
 	streamID uint32
 	flags    uint8
-	targetID int64
 	data     []byte
 }
 
@@ -88,7 +87,7 @@ func (p *openFrame) String() string {
 	if p.flags&flagFin != 0 {
 		flagstring += "(FIN)"
 	}
-	return fmt.Sprintf("OPEN[stream:%d flags:%s target:%d data:% x]", p.streamID, flagstring, p.targetID, p.data)
+	return fmt.Sprintf("OPEN[stream:%d flags:%s data:% x]", p.streamID, flagstring, p.data)
 }
 
 func (p *openFrame) writeFrameTo(w io.Writer) (err error) {
@@ -97,19 +96,12 @@ func (p *openFrame) writeFrameTo(w io.Writer) (err error) {
 	}
 	err = writeFrameHeader(w, frameHeader{
 		streamID: p.streamID,
-		length:   uint32(len(p.data) + 8),
+		length:   uint32(len(p.data)),
 		flags:    p.flags,
 		id:       openFrameID,
 	})
-	if err == nil {
-		var buf [8]byte
-		binary.BigEndian.PutUint64(buf[0:8], uint64(p.targetID))
-		_, err = w.Write(buf[0:8])
-		if err == nil {
-			if len(p.data) > 0 {
-				_, err = w.Write(p.data)
-			}
-		}
+	if err == nil && len(p.data) > 0 {
+		_, err = w.Write(p.data)
 	}
 	return
 }
@@ -289,15 +281,9 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 			value: int64(binary.BigEndian.Uint64(buf[0:8])),
 		}, nil
 	case openFrameID:
-		if hdr.streamID&0x80000000 != 0 || size < 8 {
+		if hdr.streamID&0x80000000 != 0 {
 			return nil, EINVALIDFRAME
 		}
-		var buf [8]byte
-		_, err = io.ReadFull(r, buf[0:8])
-		if err != nil {
-			return
-		}
-		size -= 8
 		var data []byte
 		if size > 0 {
 			if size > len(scratch) {
@@ -313,7 +299,6 @@ func readFrame(r io.Reader, scratch []byte) (p frame, err error) {
 		return &openFrame{
 			flags:    hdr.Flags(),
 			streamID: hdr.streamID,
-			targetID: int64(binary.BigEndian.Uint64(buf[0:8])),
 			data:     data,
 		}, nil
 	case dataFrameID:

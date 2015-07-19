@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -20,9 +21,9 @@ func runRawClientServerStream(clientfunc func(client Stream), serverfunc func(st
 		client := NewRawConn(rawclient, nil, false)
 		defer client.Close()
 		func() {
-			stream, err := client.Open(0)
+			stream, err := client.NewStream()
 			if err != nil {
-				panic(fmt.Sprintf("client.Open: %s", err))
+				panic(fmt.Sprintf("client: NewStream: %s", err))
 			}
 			defer stream.Close()
 			clientfunc(stream)
@@ -76,7 +77,9 @@ func TestRawConnStreams(t *testing.T) {
 			2: ENOROUTE,
 			3: ENOTARGET,
 		}
+		var counter int64
 		handler := HandlerFunc(func(stream Stream) {
+			targetID := atomic.AddInt64(&counter, 1)
 			r := bufio.NewReader(stream)
 			line, err := r.ReadString('\n')
 			if err != io.EOF {
@@ -85,24 +88,20 @@ func TestRawConnStreams(t *testing.T) {
 			if stream.(*rawStream).flags&flagStreamSeenEOF == 0 {
 				t.Fatalf("handler: stream did not see EOF yet")
 			}
-			_, err = fmt.Fprintf(stream, "%d: '%s'", stream.TargetID(), line)
+			_, err = fmt.Fprintf(stream, "%d: '%s'", targetID, line)
 			if err != nil {
 				t.Fatalf("handler: Fprintf: unexpected error: %v", err)
 			}
 			// Common sense dictates, that data from Fprintf should reach
 			// the other side when we close the stream!
-			stream.CloseWithError(closeErrors[stream.TargetID()])
+			stream.CloseWithError(closeErrors[targetID])
 		})
-		hmap := NewHandlerMap(nil)
-		hmap.Add(handler)
-		hmap.Add(handler)
-		hmap.Add(handler)
-		server := NewRawConn(serverconn, hmap, true)
+		server := NewRawConn(serverconn, handler, true)
 		defer server.Close()
 
-		stream, err := server.Open(51)
+		stream, err := server.NewStream()
 		if err != nil {
-			t.Fatalf("server: Open: unexpected error: %v", err)
+			t.Fatalf("server: NewStream: unexpected error: %v", err)
 		}
 		_, err = stream.Read(make([]byte, 256))
 		if err != ENOTARGET {
@@ -124,60 +123,49 @@ func TestRawConnStreams(t *testing.T) {
 			return
 		}
 
-		messages := map[int64]string{
-			0: "foo",
-			1: "hello",
-			2: "world stuff",
-			3: "some unexpected message",
-			4: "not registered yet",
+		messages := []string{
+			"hello",
+			"world stuff",
+			"some unexpected message",
 		}
-		expectedError := map[int64]error{
-			0: ENOTARGET,
-			1: io.EOF,
-			2: ENOROUTE,
-			3: ENOTARGET,
-			4: ENOTARGET,
+		expectedError := []error{
+			io.EOF,
+			ENOROUTE,
+			ENOTARGET,
 		}
-		expectedResponse := map[int64]string{
-			0: "",
-			1: "1: 'hello'",
-			2: "2: 'world stuff'",
-			3: "3: 'some unexpected message'",
-			4: "",
+		expectedResponse := []string{
+			"1: 'hello'",
+			"2: 'world stuff'",
+			"3: 'some unexpected message'",
 		}
-		var wgnested sync.WaitGroup
-		for target := range messages {
-			wgnested.Add(1)
-			go func(target int64) {
-				defer wgnested.Done()
-
+		for index, message := range messages {
+			func() {
 				client.(*rawConn).blockWrite()
-				stream, err := client.Open(target)
+				stream, err := client.NewStream()
 				if err != nil {
-					t.Fatalf("client: Open(%d): unexpected error: %v", target, err)
+					t.Fatalf("client: NewStream(): unexpected error: %v", err)
 				}
 				defer stream.Close()
-				_, err = stream.Write([]byte(messages[target]))
+				_, err = stream.Write([]byte(message))
 				if err != nil {
-					t.Fatalf("client: Write(%d): unexpected error: %v", target, err)
+					t.Fatalf("client: Write(%d): unexpected error: %v", index+1, err)
 				}
 				err = stream.CloseWrite()
 				if err != nil {
-					t.Fatalf("client: CloseWrite(%d): unexpected error: %v", target, err)
+					t.Fatalf("client: CloseWrite(%d): unexpected error: %v", index+1, err)
 				}
 				client.(*rawConn).unblockWrite()
 
 				r := bufio.NewReader(stream)
 				line, err := r.ReadString('\n')
-				if err != expectedError[target] {
-					t.Fatalf("client: ReadString(%d): expected %v, got: %v", target, expectedError[target], err)
+				if line != expectedResponse[index] || err != expectedError[index] {
+					t.Fatalf("client: ReadString(%d): expected %q, %v, got: %q, %v",
+						index+1,
+						expectedResponse[index], expectedError[index],
+						line, err)
 				}
-				if line != expectedResponse[target] {
-					t.Fatalf("client: ReadString(%d): unexpected response: %q", target, line)
-				}
-			}(target)
+			}()
 		}
-		wgnested.Wait()
 	}()
 	wg.Wait()
 }
@@ -242,9 +230,9 @@ func TestRawConnSync(t *testing.T) {
 		stream.Read(make([]byte, 16))
 		stream.CloseWithError(ENOROUTE)
 	}), func(client RawConn) {
-		stream, err := client.Open(42)
+		stream, err := client.NewStream()
 		if err != nil {
-			t.Fatalf("client: Open: %s", err)
+			t.Fatalf("client: NewStream: %s", err)
 		}
 		defer stream.Close()
 		if stream.StreamID() != 1 {
@@ -262,9 +250,9 @@ func TestRawConnSync(t *testing.T) {
 			t.Fatalf("client: Sync: %s", err)
 		}
 
-		stream, err = client.Open(43)
+		stream, err = client.NewStream()
 		if err != nil {
-			t.Fatalf("client: Open: %s", err)
+			t.Fatalf("client: NewStream: %s", err)
 		}
 		defer stream.Close()
 		if stream.StreamID() != 1 {
@@ -278,9 +266,9 @@ func TestRawStreamBigWrite(t *testing.T) {
 		stream.Peek()
 		stream.CloseWithError(ENOROUTE)
 	}), func(client RawConn) {
-		stream, err := client.Open(0)
+		stream, err := client.NewStream()
 		if err != nil {
-			t.Fatalf("client: Open: %s", err)
+			t.Fatalf("client: NewStream: %s", err)
 		}
 		defer stream.Close()
 		n, err := stream.Write(make([]byte, 65536+16))
@@ -295,9 +283,9 @@ func TestRawStreamReadDeadline(t *testing.T) {
 		stream.Read(make([]byte, 256))
 	}), func(client RawConn) {
 		var deadline time.Time
-		stream, err := client.Open(0)
+		stream, err := client.NewStream()
 		if err != nil {
-			t.Fatalf("client: Open: %s", err)
+			t.Fatalf("client: NewStream: %s", err)
 		}
 		defer stream.Close()
 
@@ -318,9 +306,9 @@ func TestRawStreamWriteDeadline(t *testing.T) {
 		stream.Write(make([]byte, 65536+16))
 	}), func(client RawConn) {
 		var deadline time.Time
-		stream, err := client.Open(0)
+		stream, err := client.NewStream()
 		if err != nil {
-			t.Fatalf("client: Open: %s", err)
+			t.Fatalf("client: NewStream: %s", err)
 		}
 		defer stream.Close()
 
@@ -352,9 +340,11 @@ func TestRawStreamWaitAck(t *testing.T) {
 	var waitdone sync.Cond
 	waitdone.L = &lock
 	var wg sync.WaitGroup
+	counter := int64(0)
 	runRawClientServer(HandlerFunc(func(stream Stream) {
 		defer wg.Done()
-		switch stream.TargetID() {
+		targetID := atomic.AddInt64(&counter, 1)
+		switch targetID {
 		case 1:
 			// 1st case: close the connection
 			stream.Peek()
@@ -399,9 +389,9 @@ func TestRawStreamWaitAck(t *testing.T) {
 	}), func(client RawConn) {
 		for target := int64(1); target <= 3; target++ {
 			wg.Add(1)
-			stream, err := client.Open(target)
+			stream, err := client.NewStream()
 			if err != nil {
-				t.Fatalf("client: Open: %s", err)
+				t.Fatalf("client: NewStream: %s", err)
 			}
 			defer stream.Close()
 			_, err = stream.Write([]byte("Hello, world!"))
@@ -461,9 +451,9 @@ func TestRawStreamCloseRead(t *testing.T) {
 		}
 		goahead2.Unlock()
 	}), func(client RawConn) {
-		stream, err := client.Open(0)
+		stream, err := client.NewStream()
 		if err != nil {
-			t.Fatalf("client: Open: %v", err)
+			t.Fatalf("client: NewStream: %v", err)
 		}
 		defer stream.Close()
 
@@ -499,9 +489,9 @@ func TestRawStreamCloseWithData(t *testing.T) {
 			t.Fatalf("server: Read: %d, %v", n, err)
 		}
 	}), func(client RawConn) {
-		stream, err := client.Open(0)
+		stream, err := client.NewStream()
 		if err != nil {
-			t.Fatalf("server: Open: %v", err)
+			t.Fatalf("server: NewStream: %v", err)
 		}
 		defer stream.Close()
 
@@ -537,9 +527,9 @@ func TestRawStreamCloseAfterData(t *testing.T) {
 			t.Fatalf("server Peek: %v", err)
 		}
 	}), func(client RawConn) {
-		stream, err := client.Open(0)
+		stream, err := client.NewStream()
 		if err != nil {
-			t.Fatalf("server: Open: %v", err)
+			t.Fatalf("server: NewStream: %v", err)
 		}
 		defer stream.Close()
 
@@ -568,9 +558,9 @@ func TestRawStreamConnClose(t *testing.T) {
 			t.Fatalf("server: WaitAck: %d, %v", n, err)
 		}
 	}), func(client RawConn) {
-		stream, err := client.Open(0)
+		stream, err := client.NewStream()
 		if err != nil {
-			t.Fatalf("client: Open: %v", err)
+			t.Fatalf("client: NewStream: %v", err)
 		}
 		defer stream.Close()
 

@@ -40,7 +40,7 @@ func (remote *serverPeerRemote) handleRequestLocked(callback handleRequestCallba
 	if peer := remote.peer; peer != nil {
 		peer.owner.lock.Unlock()
 		defer peer.owner.lock.Lock()
-		stream, err := remote.client.Open(remote.targetID)
+		stream, err := rpcNewStream(remote.client, remote.targetID)
 		if err != nil {
 			return handleRequestStatusImpossible
 		}

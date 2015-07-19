@@ -104,15 +104,14 @@ class PingFrame(Frame):
         writer.write(self.FMT.pack(self.value))
 
 class OpenFrame(Frame):
-    __slots__ = ('stream_id', 'flags', 'target_id', 'data')
+    __slots__ = ('stream_id', 'flags', 'data')
 
     ID = 1
     FMT = struct.Struct('>Q')
 
-    def __init__(self, stream_id, flags, target_id, data):
+    def __init__(self, stream_id, flags, data):
         self.stream_id = stream_id
         self.flags = flags
-        self.target_id = target_id
         self.data = data
 
     def __cmp__(self, other):
@@ -120,25 +119,21 @@ class OpenFrame(Frame):
             return 0
         if isinstance(other, OpenFrame):
             return cmp(
-                (self.stream_id, self.flags, self.target_id, self.data),
-                (other.stream_id, other.flags, other.target_id, other.data),
+                (self.stream_id, self.flags, self.data),
+                (other.stream_id, other.flags, other.data),
             )
         return cmp(id(self), id(other))
 
     @classmethod
     def load_frame_data(cls, header, reader):
-        if header.payload_size < 8:
-            raise InvalidFrameError()
-        target_id, = cls.FMT.unpack(reader.read(8))
-        if header.payload_size > 8:
-            data = reader.read(header.payload_size - 8)
+        if header.payload_size > 0:
+            data = reader.read(header.payload_size)
         else:
             data = ''
-        return cls(header.stream_id, header.flags, target_id, data)
+        return cls(header.stream_id, header.flags, data)
 
     def dump(self, writer):
-        Header(self.stream_id, 8 + len(self.data), self.flags, self.ID).dump(writer)
-        writer.write(self.FMT.pack(self.target_id))
+        Header(self.stream_id, len(self.data), self.flags, self.ID).dump(writer)
         if self.data:
             writer.write(self.data)
 
