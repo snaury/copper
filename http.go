@@ -31,13 +31,14 @@ type httpHandler struct {
 	handler http.Handler
 }
 
-func (h httpHandler) ServeCopper(stream Stream) {
+func (h httpHandler) ServeCopper(stream Stream) error {
 	s := &http.Server{
 		Handler: h.handler,
 	}
 	s.Serve(&fakeListener{
 		stream: stream,
 	})
+	return nil
 }
 
 // HTTPHandler returns a handler that servers http requests with an http.Handler

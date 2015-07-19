@@ -41,14 +41,14 @@ func publishCopperService(addr string, concurrency int) func() {
 			Concurrency: uint32(concurrency),
 			QueueSize:   uint32(concurrency * 2),
 		},
-		copper.HandlerFunc(func(stream copper.Stream) {
+		copper.HandlerFunc(func(stream copper.Stream) error {
 			var buf [8]byte
 			_, err := io.ReadFull(stream, buf[:])
 			if err != nil && err != io.EOF {
-				stream.CloseWithError(err)
-				return
+				return err
 			}
 			stream.Write(buf[:])
+			return nil
 		}),
 	)
 	if err != nil {
@@ -68,12 +68,12 @@ func publishCopperWriter(addr string) func() {
 			Concurrency: 1,
 			QueueSize:   1,
 		},
-		copper.HandlerFunc(func(stream copper.Stream) {
+		copper.HandlerFunc(func(stream copper.Stream) error {
 			var buf [65536]byte
 			for {
 				_, err := stream.Write(buf[:])
 				if err != nil {
-					break
+					return err
 				}
 			}
 		}),

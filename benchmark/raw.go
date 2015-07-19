@@ -62,26 +62,26 @@ func (s *rawServer) Stop() {
 	}
 }
 
-func (s *rawServer) ServeCopper(stream copper.Stream) {
+func (s *rawServer) ServeCopper(stream copper.Stream) error {
 	switch s.kind {
 	case 0:
 		var buf [8]byte
 		_, err := io.ReadFull(stream, buf[:])
 		if err != nil && err != io.EOF {
-			stream.CloseWithError(err)
-			return
+			return err
 		}
 		stream.Write(buf[:])
+		return nil
 	case 1:
 		var buf [65536]byte
 		for {
 			_, err := stream.Write(buf[:])
 			if err != nil {
-				break
+				return err
 			}
 		}
 	default:
-		stream.CloseWithError(copper.ENOTARGET)
+		return copper.ENOTARGET
 	}
 }
 

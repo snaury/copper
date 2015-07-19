@@ -27,8 +27,7 @@ func rpcWrapClient(stream Stream, hmap *HandlerMap) error {
 			return ENOTARGET
 		}
 		stream.Acknowledge()
-		handler.ServeCopper(stream)
-		return nil
+		return handler.ServeCopper(stream)
 	}
 	return copperError{
 		error: fmt.Errorf("unsupported request type %d", rtype),

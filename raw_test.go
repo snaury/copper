@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func runRawClientServerStream(clientfunc func(client Stream), serverfunc func(stream Stream)) {
+func runRawClientServerStream(clientfunc func(client Stream) error, serverfunc func(stream Stream) error) {
 	closeClient := make(chan int, 1)
 	rawserver, rawclient := net.Pipe()
 	var wg sync.WaitGroup
@@ -26,15 +26,18 @@ func runRawClientServerStream(clientfunc func(client Stream), serverfunc func(st
 				panic(fmt.Sprintf("client: NewStream: %s", err))
 			}
 			defer stream.Close()
-			clientfunc(stream)
+			err = clientfunc(stream)
+			if err != nil {
+				stream.CloseWithError(err)
+			}
 		}()
 		<-closeClient
 	}()
 	go func() {
 		defer wg.Done()
-		handler := HandlerFunc(func(stream Stream) {
+		handler := HandlerFunc(func(stream Stream) error {
 			defer close(closeClient)
-			serverfunc(stream)
+			return serverfunc(stream)
 		})
 		server := NewRawConn(rawserver, toHandlerFunc(handler), true)
 		defer server.Close()
@@ -43,7 +46,7 @@ func runRawClientServerStream(clientfunc func(client Stream), serverfunc func(st
 	wg.Wait()
 }
 
-func runRawClientServerHandler(clientfunc func(client RawConn), handler func(stream Stream)) {
+func runRawClientServerHandler(clientfunc func(client RawConn), handler func(stream Stream) error) {
 	rawserver, rawclient := net.Pipe()
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -78,7 +81,7 @@ func TestRawConnStreams(t *testing.T) {
 			3: ENOTARGET,
 		}
 		var counter int64
-		handler := HandlerFunc(func(stream Stream) {
+		handler := HandlerFunc(func(stream Stream) error {
 			targetID := atomic.AddInt64(&counter, 1)
 			r := bufio.NewReader(stream)
 			line, err := r.ReadString('\n')
@@ -94,7 +97,7 @@ func TestRawConnStreams(t *testing.T) {
 			}
 			// Common sense dictates, that data from Fprintf should reach
 			// the other side when we close the stream!
-			stream.CloseWithError(closeErrors[targetID])
+			return closeErrors[targetID]
 		})
 		server := NewRawConn(serverconn, handler, true)
 		defer server.Close()
@@ -226,9 +229,9 @@ func TestRawConnPing(t *testing.T) {
 }
 
 func TestRawStreamBigWrite(t *testing.T) {
-	runRawClientServer(HandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) error {
 		stream.Peek()
-		stream.CloseWithError(ENOROUTE)
+		return ENOROUTE
 	}), func(client RawConn) {
 		stream, err := client.NewStream()
 		if err != nil {
@@ -243,8 +246,9 @@ func TestRawStreamBigWrite(t *testing.T) {
 }
 
 func TestRawStreamReadDeadline(t *testing.T) {
-	runRawClientServer(HandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) error {
 		stream.Read(make([]byte, 256))
+		return nil
 	}), func(client RawConn) {
 		var deadline time.Time
 		stream, err := client.NewStream()
@@ -266,8 +270,9 @@ func TestRawStreamReadDeadline(t *testing.T) {
 }
 
 func TestRawStreamWriteDeadline(t *testing.T) {
-	runRawClientServer(HandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) error {
 		stream.Write(make([]byte, 65536+16))
+		return nil
 	}), func(client RawConn) {
 		var deadline time.Time
 		stream, err := client.NewStream()
@@ -291,7 +296,7 @@ func TestRawStreamWriteDeadline(t *testing.T) {
 func TestRawStreamCloseRead(t *testing.T) {
 	serverMayWrite := make(chan int, 1)
 	serverMayClose := make(chan int, 1)
-	runRawClientServer(HandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) error {
 		_, err := stream.Peek()
 		if err != nil {
 			t.Fatalf("server: Peek: %v", err)
@@ -301,13 +306,14 @@ func TestRawStreamCloseRead(t *testing.T) {
 			t.Fatalf("server: CloseRead: %v", err)
 		}
 		if 1 != <-serverMayWrite {
-			return
+			return nil
 		}
 		n, err := stream.Write([]byte("hello"))
 		if n != 5 || err != nil {
 			t.Fatalf("server: Write: %d, %v", n, err)
 		}
 		<-serverMayClose
+		return nil
 	}), func(client RawConn) {
 		defer close(serverMayClose)
 		defer close(serverMayWrite)
@@ -337,7 +343,7 @@ func TestRawStreamCloseWithData(t *testing.T) {
 	var goahead2 sync.Mutex
 	goahead1.Lock()
 	goahead2.Lock()
-	runRawClientServer(HandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) error {
 		goahead1.Unlock()
 		defer goahead2.Unlock()
 		n, err := stream.Read(make([]byte, 16))
@@ -349,6 +355,7 @@ func TestRawStreamCloseWithData(t *testing.T) {
 		if n != 5 || err != ENOROUTE {
 			t.Fatalf("server: Read: %d, %v", n, err)
 		}
+		return nil
 	}), func(client RawConn) {
 		stream, err := client.NewStream()
 		if err != nil {
@@ -375,7 +382,7 @@ func TestRawStreamCloseAfterData(t *testing.T) {
 	goahead1.Lock()
 	goahead2.Lock()
 	goahead3.Lock()
-	runRawClientServer(HandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) error {
 		goahead1.Unlock()
 		n, err := stream.Read(make([]byte, 16))
 		goahead2.Unlock()
@@ -387,6 +394,7 @@ func TestRawStreamCloseAfterData(t *testing.T) {
 		if err != ENOROUTE {
 			t.Fatalf("server Peek: %v", err)
 		}
+		return nil
 	}), func(client RawConn) {
 		stream, err := client.NewStream()
 		if err != nil {
@@ -409,7 +417,7 @@ func TestRawStreamCloseAfterData(t *testing.T) {
 }
 
 func TestRawStreamConnClose(t *testing.T) {
-	runRawClientServer(HandlerFunc(func(stream Stream) {
+	runRawClientServer(HandlerFunc(func(stream Stream) error {
 		n, err := stream.Write([]byte("Hello, world!"))
 		if n != 13 || err != nil {
 			t.Fatalf("server: Write: %d, %v", n, err)
@@ -418,6 +426,7 @@ func TestRawStreamConnClose(t *testing.T) {
 		if stream.WriteErr() != ECONNSHUTDOWN {
 			t.Fatalf("server: WriteErr: %v", stream.WriteErr())
 		}
+		return nil
 	}), func(client RawConn) {
 		stream, err := client.NewStream()
 		if err != nil {
@@ -450,20 +459,21 @@ func TestRawStreamCloseReadError(t *testing.T) {
 	startClosingRead := make(chan int, 1)
 	startWritingBack := make(chan int, 1)
 	runRawClientServerStream(
-		func(client Stream) {
+		func(client Stream) error {
 			if 1 != <-startClosingRead {
-				return
+				return nil
 			}
 			client.CloseReadError(EINTERNAL)
 			if 1 != <-startWritingBack {
-				return
+				return nil
 			}
 			n, err := client.Write([]byte("Hello, world!"))
 			if n != 13 || err != nil {
 				t.Fatalf("client: buffered: %d, %v", n, err)
 			}
+			return nil
 		},
-		func(server Stream) {
+		func(server Stream) error {
 			defer close(startClosingRead)
 			defer close(startWritingBack)
 			server.Write([]byte("foobar"))
@@ -480,6 +490,7 @@ func TestRawStreamCloseReadError(t *testing.T) {
 			if n != 13 || err != io.EOF {
 				t.Fatalf("server: Read: %d, %v", n, err)
 			}
+			return nil
 		},
 	)
 }
@@ -488,21 +499,21 @@ func TestRawStreamCloseReadErrorWithError(t *testing.T) {
 	startClosingRead := make(chan int, 1)
 	startWritingBack := make(chan int, 1)
 	runRawClientServerStream(
-		func(client Stream) {
+		func(client Stream) error {
 			if 1 != <-startClosingRead {
-				return
+				return nil
 			}
 			client.CloseReadError(EINTERNAL)
 			if 1 != <-startWritingBack {
-				return
+				return nil
 			}
 			n, err := client.Write([]byte("Hello, world!"))
 			if n != 13 || err != nil {
 				t.Fatalf("client: buffered: %d, %v", n, err)
 			}
-			client.CloseWithError(ENOROUTE)
+			return ENOROUTE
 		},
-		func(server Stream) {
+		func(server Stream) error {
 			defer close(startClosingRead)
 			defer close(startWritingBack)
 			server.Write([]byte("foobar"))
@@ -519,6 +530,7 @@ func TestRawStreamCloseReadErrorWithError(t *testing.T) {
 			if n != 13 || err != ENOROUTE {
 				t.Fatalf("server: Read: %d, %v", n, err)
 			}
+			return nil
 		},
 	)
 }
@@ -527,7 +539,7 @@ func TestRawStreamFlush(t *testing.T) {
 	clientMayClose := make(chan int, 1)
 	serverMayClose := make(chan int, 1)
 	runRawClientServerStream(
-		func(client Stream) {
+		func(client Stream) error {
 			defer close(serverMayClose)
 			n, err := client.Write([]byte("Hello, world!"))
 			if n != 13 || err != nil {
@@ -539,8 +551,9 @@ func TestRawStreamFlush(t *testing.T) {
 			}
 			serverMayClose <- 1
 			<-clientMayClose
+			return nil
 		},
-		func(server Stream) {
+		func(server Stream) error {
 			defer close(clientMayClose)
 			n, err := server.Write([]byte("foo bar baz"))
 			if n != 11 || err != nil {
@@ -552,30 +565,35 @@ func TestRawStreamFlush(t *testing.T) {
 			}
 			clientMayClose <- 1
 			<-serverMayClose
+			return nil
 		},
 	)
 }
 
 func TestRawStreamAcknowledge(t *testing.T) {
 	runRawClientServerStream(
-		func(client Stream) {
+		func(client Stream) error {
 			<-client.Acknowledged()
 			if client.IsAcknowledged() {
 				t.Fatal("client: remote unexpectedly acknowledged")
 			}
+			return nil
 		},
-		func(server Stream) {
+		func(server Stream) error {
+			return nil
 		},
 	)
 	runRawClientServerStream(
-		func(client Stream) {
+		func(client Stream) error {
 			<-client.Acknowledged()
 			if !client.IsAcknowledged() {
 				t.Fatal("client: remote did not acknowledge")
 			}
+			return nil
 		},
-		func(server Stream) {
+		func(server Stream) error {
 			server.Acknowledge()
+			return nil
 		},
 	)
 }

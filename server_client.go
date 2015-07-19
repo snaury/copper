@@ -56,20 +56,8 @@ func (c *serverClient) handleRequestWith(client Stream, endpoint endpointReferen
 	}
 }
 
-func (c *serverClient) ServeCopper(stream Stream) {
-	err := rpcWrapServer(stream, c)
-	if err != nil {
-		_, ok := err.(Error)
-		if !ok {
-			err = copperError{
-				error: err,
-				code:  EINTERNAL,
-			}
-		}
-	}
-	if err != nil {
-		stream.CloseWithError(err)
-	}
+func (c *serverClient) ServeCopper(stream Stream) error {
+	return rpcWrapServer(stream, c)
 }
 
 func (c *serverClient) closeWithErrorLocked(err error) {

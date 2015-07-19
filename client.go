@@ -92,9 +92,6 @@ func (c *clientConn) ServiceChanges() (ServiceChangesStream, error) {
 	return c.streamServices()
 }
 
-func (c *clientConn) ServeCopper(stream Stream) {
-	err := rpcWrapClient(stream, c.hmap)
-	if err != nil {
-		stream.CloseWithError(err)
-	}
+func (c *clientConn) ServeCopper(stream Stream) error {
+	return rpcWrapClient(stream, c.hmap)
 }

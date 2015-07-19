@@ -6,17 +6,17 @@ import (
 
 // Handler is used to handle incoming streams
 type Handler interface {
-	ServeCopper(stream Stream)
+	ServeCopper(stream Stream) error
 }
 
 // HandlerFunc wraps a function to conform with Handler interface
-type HandlerFunc func(stream Stream)
+type HandlerFunc func(stream Stream) error
 
 var _ Handler = HandlerFunc(nil)
 
 // ServeCopper calls the underlying function
-func (f HandlerFunc) ServeCopper(stream Stream) {
-	f(stream)
+func (f HandlerFunc) ServeCopper(stream Stream) error {
+	return f(stream)
 }
 
 // HandlerMap allows dynamic dispatching and allocation of targets

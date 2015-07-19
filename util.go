@@ -28,7 +28,7 @@ func isOverCapacity(err error) bool {
 	return false
 }
 
-func toHandlerFunc(handler func(stream Stream)) Handler {
+func toHandlerFunc(handler func(stream Stream) error) Handler {
 	if handler != nil {
 		return HandlerFunc(handler)
 	}

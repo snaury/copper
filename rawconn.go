@@ -194,7 +194,10 @@ func (c *rawConn) handleStream(handler Handler, stream Stream) {
 		return
 	}
 	defer stream.Close()
-	handler.ServeCopper(stream)
+	err := handler.ServeCopper(stream)
+	if err != nil {
+		stream.CloseWithError(err)
+	}
 }
 
 func (c *rawConn) processPingFrame(frame *PingFrame) error {
