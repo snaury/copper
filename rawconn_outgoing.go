@@ -35,8 +35,8 @@ type rawConnOutgoing struct {
 
 func (o *rawConnOutgoing) init(conn *rawConn) {
 	o.conn = conn
-	o.readleft = DefaultWindowSize
-	o.writeleft = DefaultWindowSize
+	o.readleft = DefaultConnectionWindow
+	o.writeleft = DefaultConnectionWindow
 	o.writecond.L = &o.mu
 	o.unblocked.L = &o.mu
 }

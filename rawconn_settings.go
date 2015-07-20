@@ -21,10 +21,10 @@ type rawConnSettings struct {
 
 func (s *rawConnSettings) init(conn *rawConn) {
 	s.conn = conn
-	s.localConnWindowSize = DefaultWindowSize
-	s.remoteConnWindowSize = DefaultWindowSize
-	s.localStreamWindowSize = DefaultWindowSize
-	s.remoteStreamWindowSize = DefaultWindowSize
+	s.localConnWindowSize = DefaultConnectionWindow
+	s.remoteConnWindowSize = DefaultConnectionWindow
+	s.localStreamWindowSize = DefaultStreamWindow
+	s.remoteStreamWindowSize = DefaultStreamWindow
 	s.localInactivityTimeout = DefaultInactivityTimeout
 	s.remoteInactivityTimeout = DefaultInactivityTimeout
 }
