@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import sys
-import functools
 from gevent.hub import get_hub
 from gevent.pywsgi import WSGIHandler
 
@@ -68,13 +67,12 @@ class FakeSocket(object):
 def wsgi(application=None):
     """This decorator transforms a wsgi application into a copper handler"""
     def decorator(application):
-        @functools.wraps(application)
-        def handler(stream):
+        def wsgi_handler(stream):
             socket = FakeSocket(stream)
             address = socket.getpeername()
             handler = WSGIHandler(socket, address, FakeServer(application))
             handler.handle()
-        return handler
+        return wsgi_handler
     if application is not None:
         return decorator(application)
     return decorator
