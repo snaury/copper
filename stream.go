@@ -34,6 +34,9 @@ type Stream interface {
 	// Flush returns when all data has been flushed
 	Flush() error
 
+	// Closed returns a channel that's closed when Close is called.
+	Closed() <-chan struct{}
+
 	// ReadErr returns an error that caused the read side to be closed.
 	ReadErr() error
 

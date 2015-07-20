@@ -74,6 +74,8 @@ type rawStream struct {
 	write rawStreamWrite // write side of the stream
 	reset error          // error used to close the stream
 
+	closed chan struct{} // closed when close is called
+
 	// these are protected by the outgoing lock
 	inctrl bool // stream is in ctrl queue
 	indata bool // stream is in data queue
@@ -86,6 +88,7 @@ func newStream(conn *rawConn, streamID uint32) *rawStream {
 	s := &rawStream{
 		conn:     conn,
 		streamID: streamID,
+		closed:   make(chan struct{}),
 	}
 	s.read.init(&s.mu, conn.settings.localStreamWindowSize)
 	s.write.init(&s.mu, conn.settings.remoteStreamWindowSize)
@@ -590,6 +593,7 @@ func (s *rawStream) closeWithErrorLocked(err error, closed bool) error {
 	preverror := s.reset
 	if preverror == nil {
 		s.reset = err
+		close(s.closed)
 		s.setReadErrorLocked(err)
 		s.setWriteErrorLocked(err)
 		s.write.flushed.Broadcast()
@@ -702,6 +706,10 @@ func (s *rawStream) Flush() error {
 	err := s.waitFlushedLocked()
 	s.mu.Unlock()
 	return err
+}
+
+func (s *rawStream) Closed() <-chan struct{} {
+	return s.closed
 }
 
 func (s *rawStream) ReadErr() error {

@@ -12,7 +12,7 @@ type fakeListener struct {
 
 func (l *fakeListener) Accept() (net.Conn, error) {
 	if l.accepted {
-		<-l.stream.WriteClosed()
+		<-l.stream.Closed()
 		return nil, ECLOSED
 	}
 	l.accepted = true
