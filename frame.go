@@ -18,9 +18,9 @@ const (
 	MaxDataFramePayloadSize     = MaxFramePayloadSize
 	MaxResetFrameMessageSize    = MaxFramePayloadSize - 4
 	MaxSettingsFramePayloadSize = 6 * 1024
-	DefaultStreamWindow         = 65536
-	DefaultConnectionWindow     = 1 << 20
-	DefaultInactivityTimeout    = 60 * time.Second
+	InitialStreamWindow         = 65536
+	InitialConnectionWindow     = 1 << 20
+	InitialInactivityTimeout    = 60 * time.Second
 )
 
 // SettingID identifies a setting

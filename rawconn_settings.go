@@ -21,12 +21,12 @@ type rawConnSettings struct {
 
 func (s *rawConnSettings) init(conn *rawConn) {
 	s.conn = conn
-	s.localConnWindowSize = DefaultConnectionWindow
-	s.remoteConnWindowSize = DefaultConnectionWindow
-	s.localStreamWindowSize = DefaultStreamWindow
-	s.remoteStreamWindowSize = DefaultStreamWindow
-	s.localInactivityTimeout = DefaultInactivityTimeout
-	s.remoteInactivityTimeout = DefaultInactivityTimeout
+	s.localConnWindowSize = InitialConnectionWindow
+	s.remoteConnWindowSize = InitialConnectionWindow
+	s.localStreamWindowSize = InitialStreamWindow
+	s.remoteStreamWindowSize = InitialStreamWindow
+	s.localInactivityTimeout = InitialInactivityTimeout
+	s.remoteInactivityTimeout = InitialInactivityTimeout
 }
 
 // Fails all pending callbacks with err, called when closing the connection
