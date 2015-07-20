@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
 import time
+import traceback
 from gevent import spawn
 from gevent import Timeout
 from gevent.hub import Waiter
@@ -110,6 +111,8 @@ class _RawConnWriter(object):
         frame.dump(self)
 
 class RawConn(object):
+    DEBUG_HANDLERS = False
+
     def __init__(self, sock, handler=None, is_server=False):
         self._sock = sock
         self._handler = handler
@@ -245,6 +248,8 @@ class RawConn(object):
         try:
             self._handler(stream)
         except:
+            if self.DEBUG_HANDLERS:
+                traceback.print_exc()
             stream.close_with_error(sys.exc_info()[1])
         else:
             stream.close()
@@ -747,6 +752,10 @@ class RawStream(object):
             self._clear_read_buffer()
             self._reset_both_sides()
 
+    @property
+    def closed(self):
+        return self._reset_error is not None
+
     def close(self):
         self._close_with_error(StreamClosedError(), True)
 
@@ -778,45 +787,88 @@ class RawStream(object):
         return self._readbuf
 
     def discard(self, n):
-        if n > len(self._readbuf):
-            n = len(self._readbuf)
-        elif n <= 0:
+        if n <= 0:
             return 0
-        self._readbuf = self._readbuf[n:]
-        self._readleft += n
+        elif len(self._readbuf) <= n:
+            n = len(self._readbuf)
+            self._readbuf = ''
+        else:
+            self._readbuf = self._readbuf[n:]
         if self._read_error is None:
+            self._readleft += n
             self._schedule_ack(n)
         return n
 
-    def read_some(self, n=None):
+    def recv(self, bufsize):
+        if bufsize <= 0:
+            # Don't block if trying to receive 0 bytes
+            return ''
         while not self._readbuf:
             if self._read_error is not None:
                 if isinstance(self._read_error, EOFError):
                     return ''
                 raise self._read_error
             self._read_cond.wait()
-        if n is None or n >= len(self._readbuf):
+        if len(self._readbuf) <= bufsize:
             data, self._readbuf = self._readbuf, ''
-        elif n > 0:
-            data, self._readbuf = self._readbuf[:n], self._readbuf[n:]
         else:
-            data = ''
-        if len(data) > 0 and self._read_error is None:
+            data, self._readbuf = self._readbuf[:bufsize], self._readbuf[bufsize:]
+        if self._read_error is None:
+            self._readleft += len(data)
             self._schedule_ack(len(data))
         return data
 
-    def read(self, n=None):
+    def read(self, n=-1):
         data = ''
-        while n is None or n > 0:
-            chunk = self.read_some(n)
-            if not chunk:
-                break
+        while n != 0:
+            while not self._readbuf:
+                if self._read_error is not None:
+                    if isinstance(self._read_error, EOFError):
+                        return data
+                    raise self._read_error
+                self._read_cond.wait()
+            if n < 0 or len(self._readbuf) <= n:
+                chunk, self._readbuf = self._readbuf, ''
+            else:
+                chunk, self._readbuf = self._readbuf[:n], self._readbuf[n:]
+            if self._read_error is None:
+                self._readleft += len(chunk)
+                self._schedule_ack(len(chunk))
             data += chunk
-            if n is not None:
+            if n > 0:
                 n -= len(chunk)
         return data
 
-    def write_some(self, data):
+    def readline(self, n=-1):
+        data = ''
+        while n != 0:
+            while not self._readbuf:
+                if self._read_error is not None:
+                    if isinstance(self._read_error, EOFError):
+                        return data
+                    raise self._read_error
+                self._read_cond.wait()
+            size = self._readbuf.find('\n') + 1
+            if size > 0:
+                stop = True
+            else:
+                size = len(self._readbuf)
+                stop = False
+            if n > 0 and size >= n:
+                size = n
+                stop = True
+            chunk, self._readbuf = self._readbuf[:size], self._readbuf[size:]
+            if self._read_error is None:
+                self._readleft += size
+                self._schedule_ack(size)
+            data += chunk
+            if stop:
+                break
+            if n > 0:
+                n -= size
+        return data
+
+    def send(self, data):
         while self._write_error is None and self._writeleft <= 0:
             self._write_cond.wait()
         if self._write_error is not None:
@@ -828,8 +880,16 @@ class RawStream(object):
 
     def write(self, data):
         while data:
-            n = self.write_some(data)
+            n = self.send(data)
             data = data[n:]
+
+    sendall = write
+
+    def getpeername(self):
+        return self._conn._sock.getpeername()
+
+    def getsockname(self):
+        return self._conn._sock.getsockname()
 
     def flush(self):
         while self._writebuf:

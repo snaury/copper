@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 import struct
-from .errors import CopperError, UnknownFrameError, InvalidFrameError
+from .errors import (
+    CopperError,
+    UnknownFrameError,
+    InvalidFrameError,
+    InternalError,
+)
 
 __all__ = [
     'Frame',
@@ -173,7 +178,7 @@ class ResetFrame(Frame):
         return cls(header.stream_id, header.flags, CopperError.from_error_code(error_code, message))
 
     def dump(self, writer):
-        error_code = getattr(self.error, 'copper_error', -1)
+        error_code = getattr(self.error, 'copper_error', InternalError.copper_error)
         if error_code == -1:
             message = '%s' % (self.error,)
         else:
