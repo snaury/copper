@@ -46,6 +46,7 @@ const (
 // FrameReader reads copper frames
 type FrameReader struct {
 	io.Reader
+	buf     [9]byte
 	scratch []byte
 }
 
@@ -66,17 +67,16 @@ var frameParsers = map[FrameType]func(h FrameHeader, payload []byte) (Frame, err
 
 // ReadHeader reads a frame header from the reader
 func (r *FrameReader) ReadHeader() (h FrameHeader, err error) {
-	if len(r.scratch) < 9 {
-		r.scratch = make([]byte, 64)
-	}
-	_, err = io.ReadFull(r, r.scratch[:9])
+	_, err = io.ReadFull(r, r.buf[0:9])
 	if err != nil {
 		return
 	}
-	var buf [9]byte
-	copy(buf[:], r.scratch[:9])
-	h = decodeFrameHeader(buf)
-	return
+	return FrameHeader{
+		StreamID: uint32(r.buf[0])<<24 | uint32(r.buf[1])<<16 | uint32(r.buf[2])<<8 | uint32(r.buf[3]),
+		Length:   uint32(r.buf[4])<<16 | uint32(r.buf[5])<<8 | uint32(r.buf[6]),
+		Flags:    FrameFlags(r.buf[7]),
+		Type:     FrameType(r.buf[8]),
+	}, nil
 }
 
 // ReadFrame reads a frame from the reader
@@ -109,6 +109,7 @@ func (r *FrameReader) ReadFrame() (Frame, error) {
 // FrameWriter writes copper frames
 type FrameWriter struct {
 	io.Writer
+	buf [9]byte
 }
 
 // NewFrameWriter returns a new FrameWriter
@@ -120,13 +121,16 @@ func NewFrameWriter(w io.Writer) *FrameWriter {
 
 // WriteHeader writes a frame header to the writer
 func (w *FrameWriter) WriteHeader(t FrameType, flags FrameFlags, length uint32, streamID uint32) error {
-	buf := encodeFrameHeader(FrameHeader{
-		Type:     t,
-		Flags:    flags,
-		Length:   length,
-		StreamID: streamID,
-	})
-	_, err := w.Write(buf[:])
+	w.buf[0] = byte(streamID >> 24)
+	w.buf[1] = byte(streamID >> 16)
+	w.buf[2] = byte(streamID >> 8)
+	w.buf[3] = byte(streamID)
+	w.buf[4] = byte(length >> 16)
+	w.buf[5] = byte(length >> 8)
+	w.buf[6] = byte(length)
+	w.buf[7] = byte(flags)
+	w.buf[8] = byte(t)
+	_, err := w.Write(w.buf[0:9])
 	return err
 }
 

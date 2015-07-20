@@ -114,26 +114,3 @@ type FrameHeader struct {
 func (h FrameHeader) String() string {
 	return fmt.Sprintf("[%s flags=%s length=%d stream=%d]", h.Type, h.Flags.String(h.Type), h.Length, h.StreamID)
 }
-
-func decodeFrameHeader(buf [9]byte) FrameHeader {
-	return FrameHeader{
-		StreamID: uint32(buf[0])<<24 | uint32(buf[1])<<16 | uint32(buf[2])<<8 | uint32(buf[3]),
-		Length:   uint32(buf[4])<<16 | uint32(buf[5])<<8 | uint32(buf[6]),
-		Flags:    FrameFlags(buf[7]),
-		Type:     FrameType(buf[8]),
-	}
-}
-
-func encodeFrameHeader(h FrameHeader) [9]byte {
-	return [...]byte{
-		byte(h.StreamID >> 24),
-		byte(h.StreamID >> 16),
-		byte(h.StreamID >> 8),
-		byte(h.StreamID),
-		byte(h.Length >> 16),
-		byte(h.Length >> 8),
-		byte(h.Length),
-		byte(h.Flags),
-		byte(h.Type),
-	}
-}
