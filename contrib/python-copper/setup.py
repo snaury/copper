@@ -1,7 +1,20 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import os
+import subprocess
 from setuptools import setup
 from setuptools.command.test import test as TestCommand
+
+SRC_PROTOCOL = '../../protocol'
+
+# Generated code built with newer versions of protobuf does not work with older
+# versions of python-protobuf, so it's better to regenerate it every time.
+subprocess.check_call([
+    'protoc',
+    '--python_out=lib/copper',
+    '--proto_path=' + SRC_PROTOCOL,
+    os.path.join(SRC_PROTOCOL, 'copper.proto'),
+])
 
 class PyTest(TestCommand):
     user_options = [('pytest-args=', 'a', "Arguments to pass to py.test")]

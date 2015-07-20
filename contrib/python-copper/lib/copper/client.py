@@ -21,7 +21,6 @@ from .rawconn import (
 )
 from .copper_pb2 import (
     NewStream,
-    SubscribeOption,
     Subscribe, SubscribeRequest, SubscribeResponse,
     GetEndpoints, GetEndpointsRequest, GetEndpointsResponse,
     Unsubscribe, UnsubscribeRequest, UnsubscribeResponse,
@@ -32,6 +31,10 @@ from .copper_pb2 import (
     ListRoutes, ListRoutesRequest, ListRoutesResponse,
     LookupRoute, LookupRouteRequest, LookupRouteResponse,
 )
+
+__all__ = [
+    'Client',
+]
 
 def _split_hostport(hostport):
     index = hostport.rfind(':')
@@ -91,7 +94,7 @@ def _do_connect(endpoint):
         raise ValueError('no addresses for %r' % (endpoint,))
     raise exc
 
-class CopperClient(object):
+class Client(object):
     class Subscription(object):
         def __init__(self, owner):
             self._owner = owner

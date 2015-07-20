@@ -57,6 +57,6 @@ def copper_node(workdir):
 
 @pytest.yield_fixture
 def copper_client(copper_node):
-    from copper.client import CopperClient
-    with CopperClient(('unix', copper_node)) as client:
+    from copper.client import Client
+    with Client(('unix', copper_node)) as client:
         yield client
