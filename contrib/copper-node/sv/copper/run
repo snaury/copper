@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+exec 2>&1
+mkdir -m0755 -p /run/copper
+chown copper:copper /run/copper
+ulimit -n 65536
+exec chpst -u copper /usr/bin/copper-node

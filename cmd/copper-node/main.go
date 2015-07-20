@@ -17,7 +17,7 @@ const (
 	// Ports 5322-5342 are not currently assigned, however 5335 is known to be
 	// used by mDNSResponder service, we currently use 5323.
 	defaultPort       = "5323"
-	defaultListenAddr = ":" + defaultPort
+	defaultListenAddr = "localhost:" + defaultPort
 	defaultConfigFile = "/etc/copper-node.yaml"
 )
 

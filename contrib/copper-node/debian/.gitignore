@@ -1,0 +1,6 @@
+/files
+/*.log
+/*.debhelper
+/*.substvars
+/tmp
+/copper-node

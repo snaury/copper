@@ -1,0 +1,12 @@
+Source: copper-node
+Section: misc
+Priority: optional
+Maintainer: Alexey Borzenkov <snaury@gmail.com>
+Build-Depends: debhelper (>= 7)
+Standards-Version: 3.9.3
+
+Package: copper-node
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}, runit
+Description: Package copper-node
+ This is package copper-node.

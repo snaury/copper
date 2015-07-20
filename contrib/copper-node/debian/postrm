@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        sv force-shutdown /etc/sv/copper || :
+        rm -rf /etc/sv/copper/log/supervise
+        rm -rf /etc/sv/copper/supervise
+        rm -rf /var/lib/supervise/copper.log
+        rm -rf /var/lib/supervise/copper
+
+        rm -rf /run/copper
+        for i in '@*' current config lock state; do
+            rm -f /var/log/copper/$i
+        done
+
+        deluser --quiet --system copper
+        rm -rf /var/spool/copper
+        ;;
+esac
+
+#DEBHELPER#

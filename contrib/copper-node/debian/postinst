@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+getent passwd copper >/dev/null 2>&1 || \
+    adduser --quiet --system --group --home /var/spool/copper copper
+
+chown copper:copper /var/log/copper
+
+update-service --add /etc/sv/copper
+
+test -z "$2" || sv -v term copper || :
+
+#DEBHELPER#
