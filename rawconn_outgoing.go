@@ -192,7 +192,7 @@ writeloop:
 			for _, data := range pingAcks {
 				err := o.conn.writer.WritePing(FlagPingAck, data)
 				if err != nil {
-					o.conn.closeWithError(err, false)
+					o.conn.closeWithError(err)
 					return false
 				}
 			}
@@ -206,7 +206,7 @@ writeloop:
 			for _, data := range pingQueue {
 				err := o.conn.writer.WritePing(0, data)
 				if err != nil {
-					o.conn.closeWithError(err, false)
+					o.conn.closeWithError(err)
 					return false
 				}
 			}
@@ -218,7 +218,7 @@ writeloop:
 			o.mu.Unlock()
 			err := o.conn.writer.WriteSettingsAck()
 			if err != nil {
-				o.conn.closeWithError(err, false)
+				o.conn.closeWithError(err)
 				return false
 			}
 			o.mu.Lock()
@@ -231,7 +231,7 @@ writeloop:
 			o.mu.Unlock()
 			err := o.conn.writer.WriteWindow(0, uint32(increment))
 			if err != nil {
-				o.conn.closeWithError(err, false)
+				o.conn.closeWithError(err)
 				return false
 			}
 			o.mu.Lock()
@@ -243,7 +243,7 @@ writeloop:
 			o.mu.Unlock()
 			err := stream.writeCtrl()
 			if err != nil {
-				o.conn.closeWithError(err, false)
+				o.conn.closeWithError(err)
 				return false
 			}
 			o.mu.Lock()
@@ -264,7 +264,7 @@ writeloop:
 			o.mu.Unlock()
 			err := stream.writeData()
 			if err != nil {
-				o.conn.closeWithError(err, false)
+				o.conn.closeWithError(err)
 				return false
 			}
 			o.mu.Lock()

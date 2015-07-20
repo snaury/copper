@@ -86,7 +86,7 @@ var debugPrefixByClientFlag = map[bool]string{
 	false: "server",
 }
 
-func (c *rawConn) closeWithError(err error, closed bool) error {
+func (c *rawConn) closeWithError(err error) error {
 	if err == nil {
 		err = ECONNCLOSED
 	} else if isTimeout(err) {
@@ -102,8 +102,8 @@ func (c *rawConn) closeWithError(err error, closed bool) error {
 		close(c.closedchan)
 		c.outgoing.fail(err)
 		c.outgoing.clearPingQueue()
+		c.streams.failLocked(err)
 	}
-	c.streams.failLocked(err, closed)
 	c.mu.Unlock()
 	return preverror
 }
@@ -116,7 +116,7 @@ func (c *rawConn) Err() error {
 }
 
 func (c *rawConn) Close() error {
-	return c.closeWithError(ECONNCLOSED, true)
+	return c.closeWithError(ECONNCLOSED)
 }
 
 func (c *rawConn) Done() <-chan struct{} {
@@ -248,13 +248,13 @@ func (c *rawConn) processDataFrame(frame *DataFrame) error {
 			// we are closed and ignore valid DATA frames
 			err := c.failure
 			c.mu.Unlock()
-			stream.closeWithError(err, true)
+			stream.CloseWithError(err)
 			return nil
 		}
 		if c.shutdownchan != nil {
 			// we are shutting down and should close incoming streams
 			c.mu.Unlock()
-			stream.closeWithError(ECONNSHUTDOWN, true)
+			stream.CloseWithError(ECONNSHUTDOWN)
 			return nil
 		}
 		c.finishgroup.Add(1)
@@ -355,7 +355,7 @@ func (c *rawConn) processFrame(rawFrame Frame) bool {
 		err = EUNKNOWNFRAME
 	}
 	if err != nil {
-		c.closeWithError(err, false)
+		c.closeWithError(err)
 		return false
 	}
 	return true
@@ -366,7 +366,7 @@ func (c *rawConn) readloop() {
 	for {
 		rawFrame, err := c.reader.ReadFrame()
 		if err != nil {
-			c.closeWithError(err, false)
+			c.closeWithError(err)
 			break
 		}
 		if !c.processFrame(rawFrame) {
@@ -376,7 +376,7 @@ func (c *rawConn) readloop() {
 	err := c.Err()
 	c.pings.fail(err)
 	c.mu.Lock()
-	c.streams.failLocked(err, false)
+	c.streams.failLocked(err)
 	c.settings.failLocked(err)
 	c.mu.Unlock()
 }
@@ -398,14 +398,14 @@ func (c *rawConn) writeloop() {
 			// We haven't written anything for a while, write an empty frame
 			err := c.writer.WriteData(0, 0, nil)
 			if err != nil {
-				c.closeWithError(err, false)
+				c.closeWithError(err)
 				break
 			}
 		}
 		if c.bw.Buffered() > 0 {
 			err := c.bw.Flush()
 			if err != nil {
-				c.closeWithError(err, false)
+				c.closeWithError(err)
 				break
 			}
 		}

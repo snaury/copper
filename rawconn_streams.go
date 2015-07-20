@@ -5,10 +5,9 @@ package copper
 type rawConnStreams struct {
 	conn *rawConn
 
-	err    error  // non-nil when the connection is closed
-	flag   uint32 // stream id flag, 1 for clients and 0 for servers
-	next   uint32 // next stream id, wraps around 2^31
-	closed bool   // true if the connection was closed by the user
+	err  error  // non-nil when the connection is closed
+	flag uint32 // stream id flag, 1 for clients and 0 for servers
+	next uint32 // next stream id, wraps around 2^31
 
 	live map[uint32]*rawStream // currently live streams
 }
@@ -36,17 +35,12 @@ func (s *rawConnStreams) isOwnedID(id uint32) bool {
 }
 
 // Fails all known streams with err
-// If closed is true, then user has closed the connection, so streams lose
-// contents of their read buffer and fail immediately.
-func (s *rawConnStreams) failLocked(err error, closed bool) {
-	if s.err == nil || closed && !s.closed {
+func (s *rawConnStreams) failLocked(err error) {
+	if s.err == nil {
 		s.err = err
-		if closed {
-			s.closed = true
-		}
 		for _, stream := range s.live {
 			s.conn.mu.Unlock()
-			stream.closeWithError(err, closed)
+			stream.CloseWithError(err)
 			s.conn.mu.Lock()
 		}
 	}

@@ -449,7 +449,7 @@ func TestRawStreamConnClose(t *testing.T) {
 		client.(*rawConn).unblockWrite()
 
 		n, err = stream.Read(make([]byte, 16))
-		if n != 0 || err != ECONNCLOSED {
+		if n != 5 || err != ECONNCLOSED {
 			t.Fatalf("client: Read: %d, %v", n, err)
 		}
 	})

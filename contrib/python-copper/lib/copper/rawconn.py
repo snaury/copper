@@ -179,7 +179,7 @@ class RawConn(object):
         if self._active_handlers == 0:
             self._handlers_finished.set()
 
-    def _close_with_error(self, error, closed):
+    def _close_with_error(self, error):
         if not self._closed:
             self._closed = True
             self._failure = error
@@ -192,8 +192,8 @@ class RawConn(object):
             self._write_ready.set()
             # Don't send any pings that haven't been sent already
             self._ping_reqs = []
-        for stream in self._streams.values():
-            stream._close_with_error(error, closed)
+            for stream in self._streams.values():
+                stream._close_with_error(error)
 
     @property
     def error(self):
@@ -202,7 +202,7 @@ class RawConn(object):
         return None
 
     def close(self):
-        self._close_with_error(ConnectionClosedError(), True)
+        self._close_with_error(ConnectionClosedError())
 
     def shutdown(self):
         self._shutdown = True
@@ -363,7 +363,7 @@ class RawConn(object):
                 if not isinstance(e, socket_error):
                     import traceback
                     traceback.print_exc()
-                self._close_with_error(e, False)
+                self._close_with_error(e)
                 break
         # Nothing else will be read, clean up
         self._ping_reqs = []
@@ -374,7 +374,7 @@ class RawConn(object):
         # TODO: settings stuff
         while self._streams:
             _, stream = self._streams.popitem()
-            stream._close_with_error(self._failure, False)
+            stream._close_with_error(self._failure)
 
     def _stream_can_receive(self, stream_id):
         if stream_id == 0:
@@ -474,7 +474,7 @@ class RawConn(object):
                 if not isinstance(e, socket_error):
                     import traceback
                     traceback.print_exc()
-                self._close_with_error(e, False)
+                self._close_with_error(e)
                 break
         self._sock.close()
 
@@ -539,11 +539,6 @@ class RawStream(object):
 
     def _schedule_data(self):
         self._conn._add_data_stream(self)
-
-    def _clear_read_buffer(self):
-        if self._readbuf:
-            self._readbuf = 0
-            self._cleanup()
 
     def _clear_write_buffer(self):
         self._writebuf = ''
@@ -740,7 +735,7 @@ class RawStream(object):
             if self._active_reset():
                 self._schedule_ctrl()
 
-    def _close_with_error(self, error, closed):
+    def _close_with_error(self, error):
         if error is None or isinstance(error, EOFError):
             error = StreamClosedError()
         if self._reset_error is None:
@@ -748,8 +743,6 @@ class RawStream(object):
             self._set_read_error(error)
             self._set_write_error(error)
             self._flush_cond.broadcast()
-        if closed:
-            self._clear_read_buffer()
             self._reset_both_sides()
 
     @property
@@ -757,25 +750,23 @@ class RawStream(object):
         return self._reset_error is not None
 
     def close(self):
-        self._close_with_error(StreamClosedError(), True)
+        self._close_with_error(StreamClosedError())
 
     def close_read(self):
         self._set_read_error(StreamClosedError())
-        self._clear_read_buffer()
         self._reset_read_side()
 
     def close_read_error(self, error):
         if error is None or isinstance(error, EOFError):
             error = StreamClosedError()
         self._set_read_error(error)
-        self._clear_read_buffer()
         self._reset_read_side()
 
     def close_write(self):
         self._set_write_error(StreamClosedError())
 
     def close_with_error(self, error):
-        self._close_with_error(error, True)
+        self._close_with_error(error)
 
     def peek(self):
         while not self._readbuf:

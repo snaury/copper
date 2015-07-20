@@ -126,13 +126,6 @@ func (s *rawStream) cleanupLocked() {
 	}
 }
 
-// Clears read buffer, called when user calls Close() on the stream
-func (s *rawStream) clearReadBufferLocked() {
-	if s.read.buf.size > 0 {
-		s.read.buf.clear()
-	}
-}
-
 // Clears write buffer, called when remote closes its read side
 func (s *rawStream) clearWriteBufferLocked() {
 	s.write.buf.clear()
@@ -579,14 +572,7 @@ func (s *rawStream) setWriteErrorLocked(err error) {
 	}
 }
 
-func (s *rawStream) closeWithError(err error, closed bool) error {
-	s.mu.Lock()
-	preverror := s.closeWithErrorLocked(err, closed)
-	s.mu.Unlock()
-	return preverror
-}
-
-func (s *rawStream) closeWithErrorLocked(err error, closed bool) error {
+func (s *rawStream) closeWithErrorLocked(err error) error {
 	if err == nil || err == io.EOF {
 		err = ECLOSED
 	}
@@ -597,9 +583,6 @@ func (s *rawStream) closeWithErrorLocked(err error, closed bool) error {
 		s.setReadErrorLocked(err)
 		s.setWriteErrorLocked(err)
 		s.write.flushed.Broadcast()
-	}
-	if closed {
-		s.clearReadBufferLocked()
 		s.resetBothSidesLocked()
 	}
 	return preverror
@@ -758,7 +741,7 @@ func (s *rawStream) IsAcknowledged() bool {
 
 func (s *rawStream) Close() error {
 	s.mu.Lock()
-	err := s.closeWithErrorLocked(nil, true)
+	err := s.closeWithErrorLocked(nil)
 	s.mu.Unlock()
 	return err
 }
@@ -767,7 +750,6 @@ func (s *rawStream) CloseRead() error {
 	s.mu.Lock()
 	preverror := s.read.err
 	s.setReadErrorLocked(ECLOSED)
-	s.clearReadBufferLocked()
 	s.resetReadSideLocked()
 	s.mu.Unlock()
 	return preverror
@@ -780,7 +762,6 @@ func (s *rawStream) CloseReadError(err error) error {
 	s.mu.Lock()
 	preverror := s.read.err
 	s.setReadErrorLocked(err)
-	s.clearReadBufferLocked()
 	s.resetReadSideLocked()
 	s.mu.Unlock()
 	return preverror
@@ -796,7 +777,7 @@ func (s *rawStream) CloseWrite() error {
 
 func (s *rawStream) CloseWithError(err error) error {
 	s.mu.Lock()
-	preverror := s.closeWithErrorLocked(err, true)
+	preverror := s.closeWithErrorLocked(err)
 	s.mu.Unlock()
 	return preverror
 }
