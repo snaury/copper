@@ -43,7 +43,7 @@ func (r *serverRoute) handleRequestLocked(callback handleRequestCallback) handle
 		// There are no routes
 		return handleRequestStatusNoRoute
 	}
-	bin := r.owner.random.Int63n(sum)
+	bin := globalRandom.Int63n(sum)
 	for _, c := range r.cases {
 		if c.weight > 0 && c.sub.isActiveLocked() {
 			if bin < int64(c.weight) {

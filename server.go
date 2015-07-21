@@ -59,9 +59,30 @@ type endpointReference interface {
 	handleRequestLocked(callback handleRequestCallback) handleRequestStatus
 }
 
+type lockedRandomSource struct {
+	mu  sync.Mutex
+	src rand.Source
+}
+
+func (s *lockedRandomSource) Int63() (n int64) {
+	s.mu.Lock()
+	n = s.src.Int63()
+	s.mu.Unlock()
+	return n
+}
+
+func (s *lockedRandomSource) Seed(seed int64) {
+	s.mu.Lock()
+	s.src.Seed(seed)
+	s.mu.Unlock()
+}
+
+var globalRandom = rand.New(&lockedRandomSource{
+	src: rand.NewSource(time.Now().UnixNano()),
+})
+
 type server struct {
-	lock   sync.Mutex
-	random *rand.Rand
+	lock sync.Mutex
 
 	lastTargetID int64
 
@@ -88,8 +109,6 @@ type server struct {
 // NewServer returns a new local server
 func NewServer() Server {
 	s := &server{
-		random: rand.New(rand.NewSource(time.Now().UnixNano())),
-
 		peers: make(map[serverPeerKey]*serverPeer),
 
 		subsByName: make(map[string]map[*serverSubscription]struct{}),

@@ -2,93 +2,212 @@ package copper
 
 import (
 	"fmt"
+	"sort"
 )
+
+type serverPublicationByPriority []*serverPublication
+
+func (p serverPublicationByPriority) Len() int      { return len(p) }
+func (p serverPublicationByPriority) Swap(i, j int) { p[i], p[j] = p[j], p[i] }
+func (p serverPublicationByPriority) Less(i, j int) bool {
+	return p[i].settings.Priority < p[j].settings.Priority
+}
+func (p serverPublicationByPriority) Sort() { sort.Sort(p) }
+
+type serverPeerRemotesByPriority []*serverPeerRemote
+
+func (p serverPeerRemotesByPriority) Len() int      { return len(p) }
+func (p serverPeerRemotesByPriority) Swap(i, j int) { p[i], p[j] = p[j], p[i] }
+func (p serverPeerRemotesByPriority) Less(i, j int) bool {
+	return p[i].settings.Priority < p[j].settings.Priority
+}
+func (p serverPeerRemotesByPriority) Sort() { sort.Sort(p) }
+
+type serverSubscriptionOption struct {
+	option *SubscribeOption
+	route  *serverRoute
+	local  serverPublicationByPriority
+	remote serverPeerRemotesByPriority
+
+	localPriority  uint32
+	remoteCount    int
+	remotePriority uint32
+}
+
+var _ endpointReference = &serverSubscriptionOption{}
+
+func (o *serverSubscriptionOption) getEndpointsLocked() []Endpoint {
+	if o.route != nil {
+		return o.route.getEndpointsLocked()
+	}
+	if len(o.local) > 0 && o.localPriority <= o.remotePriority {
+		return o.local[0].getEndpointsLocked()
+	}
+	var result []Endpoint
+	for _, remote := range o.remote {
+		if remote.settings.Priority == o.remotePriority {
+			result = append(result, remote.getEndpointsLocked()...)
+		}
+	}
+	return result
+}
+
+func (o *serverSubscriptionOption) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
+	if o.route != nil {
+		return o.route.handleRequestLocked(callback)
+	}
+	if len(o.local) > 0 && o.localPriority <= o.remotePriority {
+		return o.local[0].handleRequestLocked(callback)
+	}
+	if o.remoteCount > 0 {
+		index := 0
+		if o.remoteCount > 1 {
+			index = globalRandom.Intn(o.remoteCount)
+		}
+		return o.remote[index].handleRequestLocked(callback)
+	}
+	return handleRequestStatusNoRoute
+}
+
+func (o *serverSubscriptionOption) isActiveLocked() bool {
+	if o.route != nil {
+		return true
+	}
+	if len(o.local) > 0 {
+		return true
+	}
+	if len(o.remote) > 0 {
+		return true
+	}
+	return false
+}
+
+func (o *serverSubscriptionOption) updateLocalPriorityLocked() {
+	if len(o.local) > 0 {
+		o.localPriority = o.local[0].settings.Priority
+	} else {
+		o.localPriority = 0xffffffff
+	}
+}
+
+func (o *serverSubscriptionOption) updateRemotePriorityLocked() {
+	if len(o.remote) > 0 {
+		o.remoteCount = 1
+		o.remotePriority = o.remote[0].settings.Priority
+		for i := 1; i < len(o.remote); i++ {
+			if o.remote[i].settings.Priority != o.remotePriority {
+				break
+			}
+			o.remoteCount++
+		}
+	} else {
+		o.remoteCount = 0
+		o.remotePriority = 0xffffffff
+	}
+}
+
+func (o *serverSubscriptionOption) addRouteLocked(route *serverRoute) bool {
+	o.route = route
+	return true
+}
+
+func (o *serverSubscriptionOption) removeRouteLocked(route *serverRoute) bool {
+	if o.route == route {
+		o.route = nil
+		return true
+	}
+	return false
+}
+
+func (o *serverSubscriptionOption) addPublicationLocked(pub *serverPublication) bool {
+	if o.option.MinDistance == 0 {
+		// this option allows using local publications
+		o.local = append(o.local, pub)
+		return true
+	}
+	return false
+}
+
+func (o *serverSubscriptionOption) removePublicationLocked(pub *serverPublication) bool {
+	if o.option.MinDistance == 0 {
+		// this option allows using local publications
+		for index, value := range o.local {
+			if value == pub {
+				copy(o.local[index:], o.local[index+1:])
+				o.local[len(o.local)-1] = nil
+				o.local = o.local[:len(o.local)-1]
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (o *serverSubscriptionOption) addRemoteLocked(remote *serverPeerRemote) bool {
+	if o.option.MinDistance <= remote.settings.Distance && remote.settings.Distance <= o.option.MaxDistance {
+		// this remote falls under this option's filter
+		o.remote = append(o.remote, remote)
+		return true
+	}
+	return false
+}
+
+func (o *serverSubscriptionOption) removeRemoteLocked(remote *serverPeerRemote) bool {
+	if o.option.MinDistance <= remote.settings.Distance && remote.settings.Distance <= o.option.MaxDistance {
+		// this remote falls under this option's filter
+		for index, value := range o.remote {
+			if value == remote {
+				copy(o.local[index:], o.local[index+1:])
+				o.local[len(o.local)-1] = nil
+				o.local = o.local[:len(o.local)-1]
+				return true
+			}
+		}
+	}
+	return false
+}
 
 type serverSubscription struct {
 	owner    *server
 	targetID int64
 	settings SubscribeSettings
 
-	indexByName    map[string][]int
-	trackedPubs    []map[uint32]*serverPublication
-	trackedRemotes []map[*serverPeerRemote]struct{}
-	remotePriority []uint32
-
-	routes  []*serverRoute
-	locals  []*serverPublication
-	remotes []map[*serverPeerRemote]struct{}
+	options []serverSubscriptionOption
 	active  int
+
+	indexByName map[string][]int
 }
 
 var _ endpointReference = &serverSubscription{}
 
 func (sub *serverSubscription) getEndpointsLocked() []Endpoint {
-	if sub.active < len(sub.settings.Options) {
-		if route := sub.routes[sub.active]; route != nil {
-			return route.getEndpointsLocked()
-		}
-		if local := sub.locals[sub.active]; local != nil && local.settings.Priority <= sub.remotePriority[sub.active] {
-			return local.getEndpointsLocked()
-		}
-		var result []Endpoint
-		for remote := range sub.remotes[sub.active] {
-			result = append(result, remote.getEndpointsLocked()...)
-		}
-		return result
+	if sub.active < len(sub.options) {
+		return sub.options[sub.active].getEndpointsLocked()
 	}
 	// TODO: support upstream
 	return nil
 }
 
 func (sub *serverSubscription) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
-	if sub.active < len(sub.settings.Options) {
-		if route := sub.routes[sub.active]; route != nil {
-			return route.handleRequestLocked(callback)
-		}
-		if local := sub.locals[sub.active]; local != nil && local.settings.Priority <= sub.remotePriority[sub.active] {
-			return local.handleRequestLocked(callback)
-		}
-		for remote := range sub.remotes[sub.active] {
-			switch status := remote.handleRequestLocked(callback); status {
-			case handleRequestStatusImpossible, handleRequestStatusNoRoute:
-				continue
-			default:
-				return status
-			}
-		}
+	if sub.active < len(sub.options) {
+		return sub.options[sub.active].handleRequestLocked(callback)
 	}
 	// TODO: support upstream
 	return handleRequestStatusNoRoute
 }
 
 func (sub *serverSubscription) isActiveLocked() bool {
-	return sub.active < len(sub.settings.Options)
+	return sub.active < len(sub.options)
 }
 
 func (sub *serverSubscription) updateActiveIndexLocked() {
-	sub.active = len(sub.settings.Options)
-	for index := range sub.settings.Options {
-		if sub.routes[index] != nil || sub.locals[index] != nil || len(sub.remotes[index]) > 0 {
-			if sub.active > index {
-				sub.active = index
-				break
-			}
+	for index := range sub.options {
+		if sub.options[index].isActiveLocked() {
+			sub.active = index
+			return
 		}
 	}
-}
-
-func (sub *serverSubscription) updateRemotePriorityLocked(index int) {
-	sub.remotePriority[index] = 0xffffffff
-	for remote := range sub.trackedRemotes[index] {
-		if sub.remotePriority[index] > remote.settings.Priority {
-			sub.remotePriority[index] = remote.settings.Priority
-		}
-	}
-	for remote := range sub.trackedRemotes[index] {
-		if sub.remotePriority[index] == remote.settings.Priority {
-			sub.remotes[index][remote] = struct{}{}
-		}
-	}
+	sub.active = len(sub.options)
 }
 
 func (sub *serverSubscription) addRouteLocked(route *serverRoute) {
@@ -97,11 +216,12 @@ func (sub *serverSubscription) addRouteLocked(route *serverRoute) {
 	}
 	changed := false
 	for _, index := range sub.indexByName[route.name] {
-		route.subscriptions[sub] = struct{}{}
-		sub.routes[index] = route
-		changed = true
+		if sub.options[index].addRouteLocked(route) {
+			changed = true
+		}
 	}
 	if changed {
+		route.subscriptions[sub] = struct{}{}
 		sub.updateActiveIndexLocked()
 	}
 }
@@ -112,8 +232,7 @@ func (sub *serverSubscription) removeRouteLocked(route *serverRoute) {
 	}
 	changed := false
 	for index := range sub.settings.Options {
-		if sub.routes[index] == route {
-			sub.routes[index] = nil
+		if sub.options[index].removeRouteLocked(route) {
 			changed = true
 		}
 	}
@@ -125,17 +244,14 @@ func (sub *serverSubscription) removeRouteLocked(route *serverRoute) {
 func (sub *serverSubscription) addPublicationLocked(pub *serverPublication) {
 	changed := false
 	for _, index := range sub.indexByName[pub.name] {
-		option := sub.settings.Options[index]
-		if option.MinDistance == 0 {
-			pub.subscriptions[sub] = struct{}{}
-			sub.trackedPubs[index][pub.settings.Priority] = pub
-			if old := sub.locals[index]; old == nil || pub.settings.Priority < old.settings.Priority {
-				sub.locals[index] = pub
-				changed = true
-			}
+		if sub.options[index].addPublicationLocked(pub) {
+			changed = true
+			sub.options[index].local.Sort()
+			sub.options[index].updateLocalPriorityLocked()
 		}
 	}
 	if changed {
+		pub.subscriptions[sub] = struct{}{}
 		sub.updateActiveIndexLocked()
 	}
 }
@@ -143,16 +259,9 @@ func (sub *serverSubscription) addPublicationLocked(pub *serverPublication) {
 func (sub *serverSubscription) removePublicationLocked(pub *serverPublication) {
 	changed := false
 	for _, index := range sub.indexByName[pub.name] {
-		delete(sub.trackedPubs[index], pub.settings.Priority)
-		if sub.locals[index] == pub {
-			sub.locals[index] = nil
-			// Select a new lower priority publication
-			for _, candidate := range sub.trackedPubs[index] {
-				if old := sub.locals[index]; old == nil || candidate.settings.Priority < old.settings.Priority {
-					sub.locals[index] = candidate
-				}
-			}
+		if sub.options[index].removePublicationLocked(pub) {
 			changed = true
+			sub.options[index].updateLocalPriorityLocked()
 		}
 	}
 	if changed {
@@ -163,26 +272,14 @@ func (sub *serverSubscription) removePublicationLocked(pub *serverPublication) {
 func (sub *serverSubscription) addRemoteLocked(remote *serverPeerRemote) {
 	changed := false
 	for _, index := range sub.indexByName[remote.name] {
-		option := sub.settings.Options[index]
-		if remote.settings.Distance >= option.MinDistance && remote.settings.Distance <= option.MaxDistance {
-			// this remote falls under this option's filter
-			remote.subscriptions[sub] = struct{}{}
-			sub.trackedRemotes[index][remote] = struct{}{}
-			if sub.remotePriority[index] > remote.settings.Priority {
-				// a new lower priority remote, replace all current
-				for r := range sub.remotes[index] {
-					delete(sub.remotes[index], r)
-				}
-				sub.remotePriority[index] = remote.settings.Priority
-				sub.remotes[index][remote] = struct{}{}
-				changed = true
-			} else if sub.remotePriority[index] == remote.settings.Priority {
-				sub.remotes[index][remote] = struct{}{}
-				changed = true
-			}
+		if sub.options[index].addRemoteLocked(remote) {
+			changed = true
+			sub.options[index].remote.Sort()
+			sub.options[index].updateRemotePriorityLocked()
 		}
 	}
 	if changed {
+		remote.subscriptions[sub] = struct{}{}
 		sub.updateActiveIndexLocked()
 	}
 }
@@ -190,12 +287,7 @@ func (sub *serverSubscription) addRemoteLocked(remote *serverPeerRemote) {
 func (sub *serverSubscription) removeRemoteLocked(remote *serverPeerRemote) {
 	changed := false
 	for _, index := range sub.indexByName[remote.name] {
-		delete(sub.trackedRemotes[index], remote)
-		if sub.remotePriority[index] == remote.settings.Priority {
-			delete(sub.remotes[index], remote)
-			if len(sub.remotes[index]) == 0 {
-				sub.updateRemotePriorityLocked(index)
-			}
+		if sub.options[index].removeRemoteLocked(remote) {
 			changed = true
 		}
 	}
@@ -213,56 +305,73 @@ func (s *server) subscribeLocked(settings SubscribeSettings) (*serverSubscriptio
 		targetID: s.allocateTargetID(),
 		settings: settings,
 
-		indexByName:    make(map[string][]int),
-		trackedPubs:    make([]map[uint32]*serverPublication, len(settings.Options)),
-		trackedRemotes: make([]map[*serverPeerRemote]struct{}, len(settings.Options)),
-		remotePriority: make([]uint32, len(settings.Options)),
-
-		routes:  make([]*serverRoute, len(settings.Options)),
-		locals:  make([]*serverPublication, len(settings.Options)),
-		remotes: make([]map[*serverPeerRemote]struct{}, len(settings.Options)),
+		options: make([]serverSubscriptionOption, len(settings.Options)),
 		active:  len(settings.Options),
+
+		indexByName: make(map[string][]int),
 	}
-	for index, option := range sub.settings.Options {
+	for index := range sub.settings.Options {
+		option := &sub.settings.Options[index]
+		sub.options[index].option = option
 		sub.indexByName[option.Service] = append(sub.indexByName[option.Service], index)
 	}
-	for index, option := range sub.settings.Options {
-		// Let others know we have an interested in this name
-		subs := sub.owner.subsByName[option.Service]
+	for name, indexes := range sub.indexByName {
+		// Let others know we have an interest in this name
+		subs := sub.owner.subsByName[name]
 		if subs == nil {
 			subs = make(map[*serverSubscription]struct{})
-			sub.owner.subsByName[option.Service] = subs
+			sub.owner.subsByName[name] = subs
 		}
 		subs[sub] = struct{}{}
+
+		// Find an existing route, if any
 		if !sub.settings.DisableRoutes {
-			route := sub.owner.routeByName[option.Service]
-			if route != nil {
-				sub.routes[index] = route
-				route.subscriptions[sub] = struct{}{}
+			if route := sub.owner.routeByName[name]; route != nil {
+				changed := false
+				for _, index := range indexes {
+					if sub.options[index].addRouteLocked(route) {
+						changed = true
+					}
+				}
+				if changed {
+					route.subscriptions[sub] = struct{}{}
+				}
 			}
 		}
-		if option.MinDistance == 0 {
-			// This option allows local services, look them up
-			sub.trackedPubs[index] = make(map[uint32]*serverPublication)
-			for _, pub := range sub.owner.pubsByName[option.Service] {
+
+		// Find and subscribe to local publications
+		for _, pub := range sub.owner.pubsByName[name] {
+			changed := false
+			for _, index := range indexes {
+				if sub.options[index].addPublicationLocked(pub) {
+					changed = true
+				}
+			}
+			if changed {
 				pub.subscriptions[sub] = struct{}{}
-				sub.trackedPubs[index][pub.settings.Priority] = pub
-				if old := sub.locals[index]; old == nil || pub.settings.Priority < old.settings.Priority {
-					sub.locals[index] = pub
-				}
 			}
 		}
-		sub.trackedRemotes[index] = make(map[*serverPeerRemote]struct{})
+
+		// Find and subscribe to remote publications
 		for _, peer := range s.peers {
-			for _, remote := range peer.remotesByName[option.Service] {
-				if remote.settings.Distance >= option.MinDistance && remote.settings.Distance <= option.MaxDistance {
+			for _, remote := range peer.remotesByName[name] {
+				changed := false
+				for _, index := range indexes {
+					if sub.options[index].addRemoteLocked(remote) {
+						changed = true
+					}
+				}
+				if changed {
 					remote.subscriptions[sub] = struct{}{}
-					sub.trackedRemotes[index][remote] = struct{}{}
 				}
 			}
 		}
-		sub.remotes[index] = make(map[*serverPeerRemote]struct{})
-		sub.updateRemotePriorityLocked(index)
+	}
+	for index := range sub.options {
+		sub.options[index].local.Sort()
+		sub.options[index].updateLocalPriorityLocked()
+		sub.options[index].remote.Sort()
+		sub.options[index].updateRemotePriorityLocked()
 	}
 	// TODO: support upstream
 	sub.updateActiveIndexLocked()
@@ -271,23 +380,30 @@ func (s *server) subscribeLocked(settings SubscribeSettings) (*serverSubscriptio
 
 func (sub *serverSubscription) unsubscribeLocked() {
 	// TODO: support upstream
-	for index, option := range sub.settings.Options {
-		// TODO: support remote services
-		for _, pub := range sub.trackedPubs[index] {
+	for index := range sub.options {
+		o := &sub.options[index]
+		if o.route != nil {
+			delete(o.route.subscriptions, sub)
+		}
+		for _, pub := range o.local {
 			delete(pub.subscriptions, sub)
 		}
-		if route := sub.routes[index]; route != nil {
-			delete(route.subscriptions, sub)
+		for _, remote := range o.remote {
+			delete(remote.subscriptions, sub)
 		}
-		sub.trackedPubs[index] = nil
-		sub.locals[index] = nil
-		sub.routes[index] = nil
-		if subs := sub.owner.subsByName[option.Service]; subs != nil {
+		o.route = nil
+		o.local = nil
+		o.remote = nil
+	}
+	for name := range sub.indexByName {
+		if subs := sub.owner.subsByName[name]; subs != nil {
 			delete(subs, sub)
 			if len(subs) == 0 {
-				delete(sub.owner.subsByName, option.Service)
+				delete(sub.owner.subsByName, name)
 			}
 		}
 	}
-	sub.active = len(sub.settings.Options)
+	sub.active = 0
+	sub.options = nil
+	sub.indexByName = nil
 }
