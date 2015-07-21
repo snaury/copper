@@ -3,29 +3,28 @@ package copper
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"testing"
 )
 
-func addHTTPListener(server Server, address string) string {
+func addHTTPListener(t *testing.T, server Server, address string) string {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
-		log.Fatalf("Failed to listen: %s", err)
+		t.Fatalf("Failed to listen: %s", err)
 	}
 	err = server.AddHTTPListener(listener)
 	if err != nil {
-		log.Fatalf("Failed to add listener: %s", err)
+		t.Fatalf("Failed to add listener: %s", err)
 	}
 	return listener.Addr().String()
 }
 
-func readResponseBody(res *http.Response) string {
+func readResponseBody(t *testing.T, res *http.Response) string {
 	var buf [65536]byte
 	n, err := io.ReadFull(res.Body, buf[:])
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		log.Fatalf("failed to read response: %s", err)
+		t.Fatalf("failed to read response: %s", err)
 	}
 	return string(buf[:n])
 }
@@ -33,7 +32,7 @@ func readResponseBody(res *http.Response) string {
 func TestHTTP(t *testing.T) {
 	server, addr := runServer("localhost:0")
 	defer server.Close()
-	httpaddr := addHTTPListener(server, "localhost:0")
+	httpaddr := addHTTPListener(t, server, "localhost:0")
 
 	makeRequest := func(path string) (int, string) {
 		t.Logf("makeRequest(%q)", path)
@@ -42,7 +41,7 @@ func TestHTTP(t *testing.T) {
 			t.Fatalf("Get(%q): %s", path, err)
 		}
 		defer res.Body.Close()
-		body := readResponseBody(res)
+		body := readResponseBody(t, res)
 		return res.StatusCode, body
 	}
 
@@ -58,7 +57,7 @@ func TestHTTP(t *testing.T) {
 			t.Fatalf("Get(%q, %q): %s", service, path, err)
 		}
 		defer res.Body.Close()
-		body := readResponseBody(res)
+		body := readResponseBody(t, res)
 		return res.StatusCode, body
 	}
 
@@ -66,7 +65,7 @@ func TestHTTP(t *testing.T) {
 	defer client.Close()
 
 	pub1, err := client.Publish(
-		"http:/service/",
+		"http:hello",
 		PublishSettings{
 			Concurrency: 1,
 			QueueSize:   64,
@@ -82,7 +81,7 @@ func TestHTTP(t *testing.T) {
 	defer pub1.Stop()
 
 	pub2, err := client.Publish(
-		"http:/service/special",
+		"http:world",
 		PublishSettings{
 			Concurrency: 1,
 			QueueSize:   64,
@@ -97,13 +96,13 @@ func TestHTTP(t *testing.T) {
 	}
 	defer pub2.Stop()
 
-	status, body := makeRequest("/service/special/whatever")
-	if status != 200 || body != "pub1: /service/special/whatever" {
+	status, body := makeRequest("/hello/whatever")
+	if status != 200 || body != "pub1: /whatever" {
 		t.Fatalf("Case 1: %d: %s", status, body)
 	}
 
-	status, body = makeRequest("/service/special")
-	if status != 200 || body != "pub2: /service/special" {
+	status, body = makeRequest("/world/foo/bar/baz")
+	if status != 200 || body != "pub2: /foo/bar/baz" {
 		t.Fatalf("Case 2: %d: %s", status, body)
 	}
 
@@ -112,12 +111,12 @@ func TestHTTP(t *testing.T) {
 		t.Fatalf("Case 3: %d: %s", status, body)
 	}
 
-	status, body = makeServiceRequest("/service/", "/foo/bar/baz")
+	status, body = makeServiceRequest("hello", "/foo/bar/baz")
 	if status != 200 || body != "pub1: /foo/bar/baz" {
 		t.Fatalf("Case 4: %d: %s", status, body)
 	}
 
-	status, body = makeServiceRequest("foobar", "/service/special/whatever")
+	status, body = makeServiceRequest("foobar", "/hello/whatever")
 	if status != 404 {
 		t.Fatalf("Case 5: %d: %s", status, body)
 	}

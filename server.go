@@ -208,33 +208,6 @@ func (s *server) findEndpointLocked(name string, minDistance, maxDistance uint32
 	return endpoint
 }
 
-func (s *server) findEndpointHTTPLocked(path string) (endpoint endpointReference) {
-	if len(path) == 0 {
-		path = "/"
-	} else if path[0] != '/' {
-		path = "/" + path
-	}
-	for len(path) > 0 {
-		endpoint = s.findEndpointLocked("http:"+path, 0, 1)
-		if endpoint != nil {
-			return endpoint
-		}
-		endpoint = s.findEndpointLocked("http:"+path, 2, 2)
-		if endpoint != nil {
-			return endpoint
-		}
-		if path[len(path)-1] == '/' {
-			path = path[:len(path)-1]
-		}
-		index := strings.LastIndex(path, "/")
-		if index == -1 {
-			break
-		}
-		path = path[:index+1]
-	}
-	return nil
-}
-
 // Hop-by-hop headers. These are removed when sent to the backend.
 // http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
 var hopHeaders = []string{
@@ -256,22 +229,39 @@ func copyHeaders(dst, src http.Header) {
 	}
 }
 
+// Extracts service name from an incoming http request
+// If the request is for /{service}/path, then we re-route that request to
+// locally published name http:{service} and change its path to /path.
+func extractHTTPServiceName(req *http.Request) string {
+	path := req.URL.Path
+	if len(path) > 1 && path[0] == '/' {
+		path = path[1:]
+		index := strings.IndexByte(path, '/')
+		if index > 0 {
+			req.URL.Path = path[index:]
+			return path[:index]
+		}
+	}
+	return ""
+}
+
 func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	status := func() handleRequestStatus {
+		service := req.Header.Get("X-Copper-Service")
+		if len(service) == 0 {
+			service = extractHTTPServiceName(req)
+			if len(service) == 0 {
+				return handleRequestStatusNoRoute
+			}
+		}
 		s.lock.Lock()
 		defer s.lock.Unlock()
-		var endpoint endpointReference
-		service := req.Header.Get("X-Copper-Service")
-		if len(service) != 0 {
-			endpoint = s.findEndpointLocked("http:"+service, 0, 1)
-			if endpoint == nil {
-				endpoint = s.findEndpointLocked("http:"+service, 2, 2)
-			}
-		} else {
-			endpoint = s.findEndpointHTTPLocked(req.URL.Path)
-		}
+		endpoint := s.findEndpointLocked("http:"+service, 0, 1)
 		if endpoint == nil {
-			return handleRequestStatusNoRoute
+			endpoint = s.findEndpointLocked("http:"+service, 2, 2)
+			if endpoint == nil {
+				return handleRequestStatusNoRoute
+			}
 		}
 		return endpoint.handleRequestLocked(func(remote Stream) handleRequestStatus {
 			outreq := new(http.Request)
@@ -288,7 +278,12 @@ func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			}
 			go func() {
 				err := outreq.Write(remote)
-				if err != nil {
+				if err != nil && !isCopperError(err) {
+					// Only close the stream if it was not a copper error.
+					// Otherwise the remote likely closed the stream and is
+					// either sending us response (that might become incomplete
+					// if we reset the stream here), or it failed and reading
+					// response will fail as well.
 					remote.CloseWithError(err)
 				}
 			}()

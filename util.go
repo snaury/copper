@@ -21,6 +21,13 @@ func isTimeout(err error) bool {
 	return false
 }
 
+func isCopperError(err error) bool {
+	if _, ok := err.(Error); ok {
+		return true
+	}
+	return false
+}
+
 func isOverCapacity(err error) bool {
 	if e, ok := err.(Error); ok {
 		return e.ErrorCode() == EOVERCAPACITY
