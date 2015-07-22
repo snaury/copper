@@ -157,9 +157,9 @@ func (o *serverSubscriptionOption) removeRemoteLocked(remote *serverPeerRemote) 
 		// this remote falls under this option's filter
 		for index, value := range o.remote {
 			if value == remote {
-				copy(o.local[index:], o.local[index+1:])
-				o.local[len(o.local)-1] = nil
-				o.local = o.local[:len(o.local)-1]
+				copy(o.remote[index:], o.remote[index+1:])
+				o.remote[len(o.remote)-1] = nil
+				o.remote = o.remote[:len(o.remote)-1]
 				return true
 			}
 		}
