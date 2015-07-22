@@ -653,10 +653,13 @@ func (s *rawStream) Write(b []byte) (n int, err error) {
 		s.scheduleData()
 		n += taken
 	}
-	if err == nil && n > 0 {
-		err = s.waitFlushedLocked()
-		if err != nil {
+	if n > 0 {
+		err2 := s.waitFlushedLocked()
+		if s.write.failed > 0 {
 			n -= s.write.failed
+			if err == nil {
+				err = err2
+			}
 		}
 	}
 	s.mu.Unlock()
