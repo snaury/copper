@@ -9,11 +9,11 @@ def test_http_handler(copper_client, copper_http_client):
             ('Content-Length', '%d' % len(message)),
         ])
         return [message]
-    with copper_client.publish('http:/hello/', wsgi(application)):
+    with copper_client.publish('http:hello', wsgi(application)):
         result = copper_http_client.open('copper:///hello/world').read()
-        assert result == 'Hello, /hello/world!'
+        assert result == 'Hello, /world!'
         result = copper_http_client.open('copper:///hello/foobar').read()
-        assert result == 'Hello, /hello/foobar!'
+        assert result == 'Hello, /foobar!'
         res = copper_http_client.open('copper:///hello')
         assert res.code == 404
         res = copper_http_client.open('copper:///foobar')
