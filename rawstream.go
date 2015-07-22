@@ -50,6 +50,8 @@ type rawStreamWrite struct {
 	left  int    // number of bytes we are allowed to send (not including buf)
 	wired int    // number of bytes in buf that are being written on the wire
 
+	failed int // indicates how many bytes in buf have been thrown away
+
 	closed chan struct{} // closed when write side is closed
 
 	ready   condWithDeadline // signals when write() should be unblocked
@@ -128,6 +130,7 @@ func (s *rawStream) cleanupLocked() {
 
 // Clears write buffer, called when remote closes its read side
 func (s *rawStream) clearWriteBufferLocked() {
+	s.write.failed += s.write.buf.size - s.write.wired
 	s.write.buf.clear()
 	s.write.wired = 0
 	s.write.flushed.Broadcast()
@@ -634,22 +637,6 @@ func (s *rawStream) Read(b []byte) (n int, err error) {
 	return
 }
 
-func (s *rawStream) ReadByte() (byte, error) {
-	s.mu.Lock()
-	err := s.waitReadReadyLocked()
-	if err != nil {
-		s.mu.Unlock()
-		return 0, err
-	}
-	b := s.read.buf.readbyte()
-	if s.read.err == nil {
-		s.read.increment++
-		s.scheduleCtrl()
-	}
-	s.mu.Unlock()
-	return b, nil
-}
-
 func (s *rawStream) Write(b []byte) (n int, err error) {
 	s.mu.Lock()
 	for n < len(b) {
@@ -666,29 +653,14 @@ func (s *rawStream) Write(b []byte) (n int, err error) {
 		s.scheduleData()
 		n += taken
 	}
+	if err == nil && n > 0 {
+		err = s.waitFlushedLocked()
+		if err != nil {
+			n -= s.write.failed
+		}
+	}
 	s.mu.Unlock()
 	return
-}
-
-func (s *rawStream) WriteByte(b byte) error {
-	s.mu.Lock()
-	err := s.waitWriteReadyLocked()
-	if err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	s.write.buf.writebyte(b)
-	s.write.left--
-	s.scheduleData()
-	s.mu.Unlock()
-	return nil
-}
-
-func (s *rawStream) Flush() error {
-	s.mu.Lock()
-	err := s.waitFlushedLocked()
-	s.mu.Unlock()
-	return err
 }
 
 func (s *rawStream) Closed() <-chan struct{} {

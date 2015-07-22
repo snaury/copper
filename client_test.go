@@ -727,10 +727,6 @@ func TestClientServerCloseRead(t *testing.T) {
 			if n != 4 || err != nil {
 				t.Fatalf("server: Write: %d, %v", n, err)
 			}
-			err = stream.Flush()
-			if err != nil {
-				t.Fatalf("server: Flush: %v", err)
-			}
 			mayCloseRead <- 1
 
 			<-stream.WriteClosed()
