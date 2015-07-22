@@ -23,6 +23,13 @@ def test_client(copper_client):
             with sub.open() as stream:
                 assert stream.read() == 'Hello, world!'
 
+def test_client_shutdown_empty(copper_client):
+    def handler(stream):
+        pass
+    with copper_client.publish('test:helloworld', handler):
+        pass
+    copper_client.shutdown()
+
 def test_client_shutdown(copper_client):
     have_stream = Event()
     may_respond = Event()

@@ -144,7 +144,9 @@ class RawConn(object):
         self._active_workers = 0
         self._active_handlers = 0
         self._workers_finished = Event()
+        self._workers_finished.set()
         self._handlers_finished = Event()
+        self._handlers_finished.set()
         self._spawn(self._read_loop)
         self._spawn(self._write_loop)
 
