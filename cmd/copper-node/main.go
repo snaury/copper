@@ -17,11 +17,30 @@ const (
 	// Ports 5322-5342 are not currently assigned, however 5335 is known to be
 	// used by mDNSResponder service, we currently use 5323.
 	defaultPort       = "5323"
-	defaultListenTCP  = "localhost:5323"
-	defaultListenHTTP = "localhost:5380"
-	defaultListenUnix = "/run/copper/copper.sock"
 	defaultConfigFile = "/etc/copper-node.yaml"
 )
+
+var defaultListenAddrs = []ListenAddr{
+	ListenAddr{
+		Network: "unix",
+		Address: "/run/copper/copper.sock",
+		Changes: true,
+	},
+	ListenAddr{
+		Type:    "http",
+		Network: "unix",
+		Address: "/run/copper/copper.http",
+	},
+	ListenAddr{
+		Network: "tcp",
+		Address: "localhost:5323",
+	},
+	ListenAddr{
+		Type:    "http",
+		Network: "tcp",
+		Address: "localhost:5380",
+	},
+}
 
 func main() {
 	configFile := flag.String("config", "", "config filename")
@@ -34,22 +53,7 @@ func main() {
 	if len(*configFile) != 0 {
 		config = loadConfig(*configFile)
 	} else {
-		config.Listen = []ListenAddr{
-			ListenAddr{
-				Network:      "unix",
-				Address:      defaultListenUnix,
-				AllowChanges: true,
-			},
-			ListenAddr{
-				Network: "tcp",
-				Address: defaultListenTCP,
-			},
-			ListenAddr{
-				Type:    "http",
-				Network: "tcp",
-				Address: defaultListenHTTP,
-			},
-		}
+		config.Listen = defaultListenAddrs
 	}
 	if len(config.Listen) == 0 {
 		log.Fatalf("There are no listen addresses configured")
@@ -108,7 +112,7 @@ func main() {
 		if ishttp {
 			server.AddHTTPListener(l)
 		} else {
-			server.AddListener(l, listen.AllowChanges)
+			server.AddListener(l, listen.Changes)
 		}
 		log.Printf("Listening on %s", listen.Address)
 	}

@@ -11,10 +11,10 @@ import (
 
 // ListenAddr is settings for a listening address
 type ListenAddr struct {
-	Type         string `yaml:"type"`
-	Network      string `yaml:"net"`
-	Address      string `yaml:"addr"`
-	AllowChanges bool   `yaml:"allow-changes"`
+	Type    string `yaml:"type"`
+	Network string `yaml:"net"`
+	Address string `yaml:"addr"`
+	Changes bool   `yaml:"allow-changes"`
 }
 
 // DataCenterPeers is a list of datacenter peers
