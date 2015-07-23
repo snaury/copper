@@ -17,7 +17,9 @@ const (
 	// Ports 5322-5342 are not currently assigned, however 5335 is known to be
 	// used by mDNSResponder service, we currently use 5323.
 	defaultPort       = "5323"
-	defaultListenAddr = "localhost:" + defaultPort
+	defaultListenTCP  = "localhost:5323"
+	defaultListenHTTP = "localhost:5380"
+	defaultListenUnix = "/run/copper/copper.sock"
 	defaultConfigFile = "/etc/copper-node.yaml"
 )
 
@@ -31,15 +33,26 @@ func main() {
 	}
 	if len(*configFile) != 0 {
 		config = loadConfig(*configFile)
-	}
-	if len(config.Listen) == 0 {
+	} else {
 		config.Listen = []ListenAddr{
 			ListenAddr{
-				Network:      "tcp",
-				Address:      defaultListenAddr,
+				Network:      "unix",
+				Address:      defaultListenUnix,
 				AllowChanges: true,
 			},
+			ListenAddr{
+				Network: "tcp",
+				Address: defaultListenTCP,
+			},
+			ListenAddr{
+				Type:    "http",
+				Network: "tcp",
+				Address: defaultListenHTTP,
+			},
 		}
+	}
+	if len(config.Listen) == 0 {
+		log.Fatalf("There are no listen addresses configured")
 	}
 
 	server := copper.NewServer()
