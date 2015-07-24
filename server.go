@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -273,14 +274,39 @@ func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				return handleRequestStatusNoRoute
 			}
 		}
+		mindistance := uint32(0)
+		maxdistance := uint32(2)
+		if value, err := strconv.Atoi(req.Header.Get("X-Copper-MinDistance")); err == nil && value >= 0 {
+			mindistance = uint32(value)
+		}
+		if value, err := strconv.Atoi(req.Header.Get("X-Copper-MaxDistance")); err == nil && value >= 0 {
+			maxdistance = uint32(value)
+		}
 		s.lock.Lock()
 		defer s.lock.Unlock()
-		endpoint := s.findEndpointLocked("http:"+service, 0, 1)
-		if endpoint == nil {
-			endpoint = s.findEndpointLocked("http:"+service, 2, 2)
-			if endpoint == nil {
-				return handleRequestStatusNoRoute
+		var endpoint endpointReference
+		if maxdistance >= 2 {
+			if mindistance <= 1 {
+				endpoint = s.findEndpointLocked("http:"+service, mindistance, 1)
 			}
+			if endpoint == nil {
+				distance := uint32(2)
+				if distance < mindistance {
+					distance = mindistance
+				}
+				for distance <= maxdistance {
+					endpoint = s.findEndpointLocked("http:"+service, distance, distance)
+					if endpoint != nil || distance == maxdistance {
+						break
+					}
+					distance++
+				}
+			}
+		} else {
+			endpoint = s.findEndpointLocked("http:"+service, mindistance, maxdistance)
+		}
+		if endpoint == nil {
+			return handleRequestStatusNoRoute
 		}
 		return endpoint.handleRequestLocked(func(remote Stream) handleRequestStatus {
 			outreq := new(http.Request)
