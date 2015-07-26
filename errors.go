@@ -8,6 +8,12 @@ import (
 // ErrNoFreeStreamID is returned when all possible stream ids have been allocated
 var ErrNoFreeStreamID = errors.New("there are no free stream ids available")
 
+// errMultipleReads is returned when simultaneous read operations are detected
+var errMultipleReads = errors.New("multiple simultaneous reads are not allowed")
+
+// errMultipleWrites is returned when simultaneous write operations are detected
+var errMultipleWrites = errors.New("multiple simultaneous writes are not allowed")
+
 // Error is used to detect copper error codes
 type Error interface {
 	error
