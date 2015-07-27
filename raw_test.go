@@ -106,9 +106,9 @@ func TestRawConnStreams(t *testing.T) {
 		if err != nil {
 			t.Fatalf("server: NewStream: unexpected error: %v", err)
 		}
-		_, err = stream.Read(make([]byte, 256))
-		if err != ENOTARGET {
-			t.Fatalf("server: Read: expected ENOTARGET, got: %v", err)
+		n, err := stream.Read(make([]byte, 256))
+		if n != 0 || err != ENOTARGET {
+			t.Fatalf("server: Read: expected ENOTARGET, got: %d, %v", n, err)
 		}
 		serverReady <- 1
 

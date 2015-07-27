@@ -207,7 +207,7 @@ func (s *rawStream) processDataLocked(data []byte, flags FrameFlags) error {
 	if len(data) > 0 {
 		if len(data) > s.read.left {
 			return copperError{
-				error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", s.streamID, s.read.buf.size, len(data), s.read.left),
+				error: fmt.Errorf("stream 0x%08x received %d bytes, which is more than %d bytes window", s.streamID, len(data), s.read.left),
 				code:  EWINDOWOVERFLOW,
 			}
 		}
