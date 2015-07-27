@@ -137,9 +137,6 @@ func (f FrameFlags) String(t FrameType) string {
 	return buf.String()
 }
 
-// FrameHeaderSize is 9 bytes
-const FrameHeaderSize = 9
-
 // FrameHeader is a 9 byte frame header
 type FrameHeader struct {
 	Type     FrameType
@@ -160,7 +157,7 @@ type Frame interface {
 // FrameReader reads copper frames
 type FrameReader struct {
 	io.Reader
-	buf     [FrameHeaderSize]byte
+	buf     [9]byte
 	scratch []byte
 }
 
@@ -181,7 +178,7 @@ var frameParsers = map[FrameType]func(h FrameHeader, payload []byte) (Frame, err
 
 // ReadHeader reads a frame header from the reader
 func (r *FrameReader) ReadHeader() (h FrameHeader, err error) {
-	_, err = io.ReadFull(r, r.buf[:])
+	_, err = io.ReadFull(r, r.buf[0:9])
 	if err != nil {
 		return
 	}
@@ -223,7 +220,7 @@ func (r *FrameReader) ReadFrame() (Frame, error) {
 // FrameWriter writes copper frames
 type FrameWriter struct {
 	io.Writer
-	buf [FrameHeaderSize]byte
+	buf [9]byte
 }
 
 // NewFrameWriter returns a new FrameWriter
@@ -244,7 +241,7 @@ func (w *FrameWriter) WriteHeader(t FrameType, flags FrameFlags, length uint32, 
 	w.buf[6] = byte(length)
 	w.buf[7] = byte(flags)
 	w.buf[8] = byte(t)
-	_, err := w.Write(w.buf[:])
+	_, err := w.Write(w.buf[0:9])
 	return err
 }
 

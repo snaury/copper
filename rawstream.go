@@ -31,41 +31,38 @@ type rawStreamRead struct {
 	acked  chan struct{} // closed when acknowledged or read side is closed
 	closed chan struct{} // closed when read side is closed
 
-	request []byte   // pending Read() request
-	replies chan int // pending Read() results
-	active  bool     // set to true while Read() is active
-
 	increment int // pending outgoing window increment
 
-	deadline deadlineChannel
+	ready condWithDeadline // signals when read() should be unblocked
 }
 
 func (r *rawStreamRead) init(l sync.Locker, window int) {
 	r.left = window
 	r.acked = make(chan struct{})
 	r.closed = make(chan struct{})
-	r.replies = make(chan int, 1)
+	r.ready.init(l)
 }
 
 // write side of the stream
 type rawStreamWrite struct {
-	err  error // non-nil if write side is closed (locally or remotely)
-	left int   // number of bytes we are allowed to send
+	err   error  // non-nil if write side is closed (locally or remotely)
+	buf   buffer // buffered outgoing bytes
+	left  int    // number of bytes we are allowed to send (not including buf)
+	wired int    // number of bytes in buf that are being written on the wire
+
+	failed int // indicates how many bytes in buf have been thrown away
 
 	closed chan struct{} // closed when write side is closed
 
-	request []byte   // pending Write() request
-	written int      // number of bytes written so far
-	replies chan int // pending Write() results
-	active  bool     // set to true while Write() is active
-
-	deadline deadlineChannel
+	ready   condWithDeadline // signals when write() should be unblocked
+	flushed condWithDeadline // signals when flush() should be unblocked
 }
 
 func (w *rawStreamWrite) init(l sync.Locker, window int) {
 	w.left = window
+	w.ready.init(l)
+	w.flushed.init(l)
 	w.closed = make(chan struct{})
-	w.replies = make(chan int, 1)
 }
 
 // rawStream tracks state of the copper stream
@@ -131,12 +128,67 @@ func (s *rawStream) cleanupLocked() {
 	}
 }
 
+// Clears write buffer, called when remote closes its read side
+func (s *rawStream) clearWriteBufferLocked() {
+	s.write.failed += s.write.buf.size - s.write.wired
+	s.write.buf.clear()
+	s.write.wired = 0
+	s.write.flushed.Broadcast()
+	if s.flags&flagStreamNeedEOF != 0 {
+		// If we had data pending, then it's no longer the case (it will now
+		// become a no-op), however we still need to send EOF, so switch over
+		// to sending it using a ctrl.
+		s.scheduleCtrl()
+	}
+}
+
 func (s *rawStream) setReadDeadlineLocked(t time.Time) {
-	s.read.deadline.setDeadline(t)
+	s.read.ready.setDeadline(t)
 }
 
 func (s *rawStream) setWriteDeadlineLocked(t time.Time) {
-	s.write.deadline.setDeadline(t)
+	s.write.ready.setDeadline(t)
+	s.write.flushed.setDeadline(t)
+}
+
+// Waits until a byte may be read, or read side is closed
+func (s *rawStream) waitReadReadyLocked() error {
+	for s.read.buf.size == 0 {
+		if s.read.err != nil {
+			return s.read.err
+		}
+		err := s.read.ready.Wait()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Waits until a byte may be written, or write side is closed
+func (s *rawStream) waitWriteReadyLocked() error {
+	for s.write.err == nil && s.write.left <= 0 {
+		err := s.write.ready.Wait()
+		if err != nil {
+			return err
+		}
+	}
+	return s.write.err
+}
+
+// Waits until all data has been flushed on the wire, where the wire is the
+// outgoing connection buffer, not the actual connection.
+func (s *rawStream) waitFlushedLocked() error {
+	for s.write.buf.size > 0 {
+		if s.reset != nil {
+			break
+		}
+		err := s.write.flushed.Wait()
+		if err != nil {
+			return err
+		}
+	}
+	return s.write.err
 }
 
 // Processes incoming data, returns a connection-level error on failure
@@ -158,19 +210,13 @@ func (s *rawStream) processDataLocked(data []byte, flags FrameFlags) error {
 	if len(data) > 0 {
 		if len(data) > s.read.left {
 			return copperError{
-				error: fmt.Errorf("stream 0x%08x received %d bytes, which is more than %d bytes window", s.streamID, len(data), s.read.left),
+				error: fmt.Errorf("stream 0x%08x received %d+%d bytes, which is more than %d bytes window", s.streamID, s.read.buf.size, len(data), s.read.left),
 				code:  EWINDOWOVERFLOW,
 			}
 		}
 		if s.read.err == nil {
-			if s.read.active {
-				n := copy(s.read.request, data)
-				s.read.replies <- n
-				s.read.active = false
-				s.read.buf.write(data[n:])
-			} else {
-				s.read.buf.write(data)
-			}
+			s.read.buf.write(data)
+			s.read.ready.Broadcast()
 		}
 		s.read.left -= len(data)
 	}
@@ -195,6 +241,7 @@ func (s *rawStream) processResetFrame(frame *ResetFrame) error {
 	s.mu.Lock()
 	if frame.Flags.Has(FlagResetRead) {
 		err := frame.Error
+		s.clearWriteBufferLocked()
 		s.setWriteErrorLocked(err)
 	}
 	if frame.Flags.Has(FlagResetWrite) {
@@ -215,14 +262,13 @@ func (s *rawStream) processResetFrame(frame *ResetFrame) error {
 func (s *rawStream) changeWriteWindow(diff int) {
 	s.mu.Lock()
 	if s.write.err == nil {
-		if s.write.active && s.write.left <= 0 && len(s.write.request) > 0 {
-			s.write.left += diff
-			if s.write.left > 0 {
-				// If we gained enough window we need to reschedule
-				s.scheduleData()
-			}
-		} else {
-			s.write.left += diff
+		wasactive := s.activeData()
+		s.write.left += diff
+		if !wasactive && s.activeData() {
+			s.scheduleData()
+		}
+		if s.write.left > 0 {
+			s.write.ready.Broadcast()
 		}
 	}
 	s.mu.Unlock()
@@ -240,54 +286,28 @@ func (s *rawStream) processWindowFrame(frame *WindowFrame) error {
 	return nil
 }
 
-// Flushes the connection write buffer if a DATA frame with at least mindata
-// bytes cannot be written without blocking. Returns the maximum number of
-// bytes that may fit in a DATA frame without blocking or an error. When
-// error is not nil the lock is not re-taken!
-func (s *rawStream) flushBeforeDataLocked(mindata int) (maxdata int, flushed bool, err error) {
-	maxdata = s.conn.bw.Available() - FrameHeaderSize
-	if maxdata < mindata {
-		s.mu.Unlock()
-		flushed = true
-		err = s.conn.bw.Flush()
-		if err != nil {
-			return
-		}
-		maxdata = s.conn.bw.Available() - FrameHeaderSize
-		if maxdata < mindata {
-			panic(fmt.Errorf("flushing freed %d bytes DATA frame, when %d is the minimum", maxdata, mindata))
-		}
-		flushed = true
-		s.mu.Lock()
-	}
-	return
-}
-
 // Prepares a chunk of data for the wire, up to maxpayload bytes. The data is
-// taken directly from request and charged against both stream and connection
-// windows. It is important to not unlock until this data is properly added
-// to the request reply.
+// restricted by current debt and credited towards the connection window. For
+// efficiency data is not removed from the write buffer, but is marked as
+// wired, so flags calculation may correctly take it into account.
 func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
-	if s.write.left <= 0 || !s.write.active || len(s.write.request) == 0 {
-		// There is no pending write request, or no available window
-		return nil
+	n := s.write.buf.size
+	if s.write.left < 0 {
+		// Incoming SETTINGS reduced our window and we have extra data in our
+		// buffer, however we cannot send that extra data until there's a
+		// window on the remote side.
+		n += s.write.left
 	}
-	n := len(s.write.request)
 	if n > maxpayload {
 		n = maxpayload
 	}
-	if n > s.write.left {
-		n = s.write.left
-	}
-	if n > MaxDataFramePayloadSize {
-		n = MaxDataFramePayloadSize
-	}
 	n = s.conn.outgoing.takeWriteWindow(n)
 	if n > 0 {
-		data := s.write.request[:n]
-		s.write.left -= n
-		// Need to shrink the request, but it must not become nil
-		s.write.request = s.write.request[n:]
+		data := s.write.buf.peek()
+		if len(data) > n {
+			data = data[:n]
+		}
+		s.write.wired = n
 		return data
 	}
 	return nil
@@ -301,7 +321,7 @@ func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 // re-register.
 func (s *rawStream) writeCtrl() error {
 	s.mu.Lock()
-	if s.flags&flagStreamDiscard == flagStreamDiscard && s.write.request == nil {
+	if s.flags&flagStreamDiscard == flagStreamDiscard && s.write.buf.size == 0 {
 		// If stream was opened, and then immediately closed, then we don't
 		// have to send any frames at all, just pretend it all happened
 		// already and move on.
@@ -314,23 +334,18 @@ func (s *rawStream) writeCtrl() error {
 	for {
 		if s.flags&flagStreamDataCtrl != 0 && s.flags&flagStreamSentEOF == 0 {
 			// Write DATA frame if we need to send OPEN or ACK
-			maxdata, _, err := s.flushBeforeDataLocked(0)
-			if err != nil {
-				// The stream is already unlocked
-				return err
-			}
-			data := s.prepareDataLocked(maxdata)
+			data := s.prepareDataLocked(MaxDataFramePayloadSize)
 			flags := s.outgoingFlags()
-			err = s.conn.writer.WriteData(s.streamID, flags, data)
+			s.mu.Unlock()
+			err := s.conn.writer.WriteData(s.streamID, flags, data)
 			if err != nil {
-				s.mu.Unlock()
 				return err
 			}
-			s.write.written += len(data)
-			if len(s.write.request) == 0 && s.write.active {
-				// We have written all data from the request
-				s.write.replies <- s.write.written
-				s.write.active = false
+			s.mu.Lock()
+			s.write.buf.discard(s.write.wired)
+			s.write.wired = 0
+			if s.write.buf.size == 0 {
+				s.write.flushed.Broadcast()
 			}
 			continue
 		}
@@ -364,7 +379,7 @@ func (s *rawStream) writeCtrl() error {
 			if s.flags&(flagStreamSeenEOF|flagStreamSentReset) == 0 {
 				flags |= FlagResetRead
 			}
-			if s.pendingData() == 0 && s.flags&flagStreamNeedEOF != 0 {
+			if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
 				// This RESET closes both sides of the stream, otherwise it only
 				// closes the read side and write side is delayed until we need to
 				// send EOF.
@@ -386,7 +401,7 @@ func (s *rawStream) writeCtrl() error {
 			s.mu.Lock()
 			continue
 		}
-		if s.pendingData() == 0 && s.flags&flagStreamNeedEOF != 0 {
+		if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
 			// We have an empty write buffer with a pending EOF. Since writeData
 			// callback is only called when there is pending data and sending
 			// EOF doesn't cost us any window bytes we do it right here.
@@ -412,57 +427,39 @@ func (s *rawStream) writeCtrl() error {
 // doesn't do anything, since writing an empty EOF frame is done by writeCtrl.
 func (s *rawStream) writeData() error {
 	s.mu.Lock()
-	for s.activeData() {
-		maxdata, flushed, err := s.flushBeforeDataLocked(1)
-		if err != nil {
-			// The stream is already unlocked
-			return err
-		}
-		if flushed {
-			// Make sure request is still active
-			continue
-		}
-		data := s.prepareDataLocked(maxdata)
-		if len(data) == 0 {
-			// Cannot write data for some reason
-			s.scheduleData()
-			s.mu.Unlock()
-			return nil
-		}
+	data := s.prepareDataLocked(MaxDataFramePayloadSize)
+	if len(data) > 0 {
 		flags := s.outgoingFlags()
-		err = s.conn.writer.WriteData(s.streamID, flags, data)
+		if s.activeData() {
+			// We have more data, make sure to re-register
+			s.scheduleData()
+		} else if s.activeReset() {
+			// Sending all data unlocked a pending RESET
+			s.scheduleCtrl()
+		}
+		s.mu.Unlock()
+		err := s.conn.writer.WriteData(s.streamID, flags, data)
 		if err != nil {
-			s.mu.Unlock()
 			return err
 		}
-		s.write.written += len(data)
-		if len(s.write.request) == 0 && s.write.active {
-			// We have written all the data from the request
-			s.write.replies <- s.write.written
-			s.write.active = false
-			if s.activeReset() {
-				// Sending all data unlocked a pending RESET
-				s.scheduleCtrl()
-			}
-			s.mu.Unlock()
-			return nil
+		s.mu.Lock()
+		s.write.buf.discard(s.write.wired)
+		s.write.wired = 0
+		if s.write.buf.size == 0 {
+			s.write.flushed.Broadcast()
 		}
 	}
 	s.mu.Unlock()
 	return nil
 }
 
-// Returns the length of pending write request
-func (s *rawStream) pendingData() int {
-	if s.write.active {
-		return len(s.write.request)
-	}
-	return 0
-}
-
 // Returns true if there is pending data that needs to be written
 func (s *rawStream) activeData() bool {
-	return s.write.active && s.write.left > 0 && len(s.write.request) > 0
+	pending := s.write.buf.size - s.write.wired
+	if s.write.left >= 0 {
+		return pending > 0
+	}
+	return pending+s.write.left > 0
 }
 
 // Returns true if there is a RESET frame pending and it needs to be written
@@ -483,7 +480,7 @@ func (s *rawStream) activeReset() bool {
 			s.flags &^= flagStreamNeedReset
 			return false
 		}
-		if s.pendingData() == 0 && s.flags&flagStreamNeedEOF != 0 {
+		if s.write.buf.size == s.write.wired && s.flags&flagStreamNeedEOF != 0 {
 			// need to send EOF now and close the write side
 			return true
 		}
@@ -495,7 +492,7 @@ func (s *rawStream) activeReset() bool {
 
 // Returns true if there is EOF pending and it needs to be written now
 func (s *rawStream) activeEOF() bool {
-	if s.pendingData() == 0 && s.flags&flagStreamNeedEOF != 0 {
+	if s.write.buf.size == s.write.wired && s.flags&flagStreamNeedEOF != 0 {
 		// there's no data and a EOF is pending
 		if s.flags&flagStreamNeedReset != 0 {
 			// send EOF only when pending RESET is without an error
@@ -557,11 +554,8 @@ func (s *rawStream) setReadErrorLocked(err error) {
 		if s.flags&flagStreamSeenAck == 0 {
 			close(s.read.acked)
 		}
-		if s.read.active {
-			s.read.replies <- 0
-			s.read.active = false
-		}
 		s.read.increment = 0
+		s.read.ready.Broadcast()
 	}
 }
 
@@ -572,13 +566,12 @@ func (s *rawStream) setWriteErrorLocked(err error) {
 		close(s.write.closed)
 		s.write.left = 0
 		s.flags |= flagStreamNeedEOF
-		if s.write.active {
-			s.write.replies <- s.write.written
-			s.write.active = false
+		if s.write.buf.size == s.write.wired {
+			// We had no pending data, but now we need to send a EOF, which can
+			// only be done in a ctrl phase, so make sure to schedule it.
+			s.scheduleCtrl()
 		}
-		// Need to send EOF, which can only be done in writeCtrl in the absense
-		// of pending data, make sure to schedule that.
-		s.scheduleCtrl()
+		s.write.ready.Broadcast()
 	}
 }
 
@@ -592,46 +585,17 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 		close(s.closed)
 		s.setReadErrorLocked(err)
 		s.setWriteErrorLocked(err)
+		s.write.flushed.Broadcast()
 		s.resetBothSidesLocked()
 	}
 	return preverror
 }
 
-// emptyReadBuffer is used by Peek() to make an empty read request
-var emptyReadBuffer = []byte{}
-
 func (s *rawStream) Peek() (b []byte, err error) {
 	s.mu.Lock()
-	if s.read.request != nil {
-		s.mu.Unlock()
-		return nil, errMultipleReads
-	}
-	if s.read.buf.size == 0 && s.read.err == nil {
-		// Read buffer is empty, schedule a request
-		s.read.request = emptyReadBuffer
-		s.read.active = true
-		timeout := s.read.deadline.expired
-		s.mu.Unlock()
-		select {
-		case <-s.read.replies:
-			s.mu.Lock()
-		case <-timeout:
-			s.mu.Lock()
-			if s.read.active {
-				// timeout, cancel the request
-				s.read.active = false
-				err = errTimeout
-			} else {
-				// timeout and reply were simultaneous
-				<-s.read.replies
-			}
-		}
-		s.read.request = nil
-	}
-	if s.read.buf.size > 0 {
+	err = s.waitReadReadyLocked()
+	if err == nil {
 		b = s.read.buf.peek()
-	}
-	if s.read.err != nil {
 		err = s.read.err
 	}
 	s.mu.Unlock()
@@ -641,9 +605,11 @@ func (s *rawStream) Peek() (b []byte, err error) {
 func (s *rawStream) Discard(n int) int {
 	s.mu.Lock()
 	n = s.read.buf.discard(n)
-	if n > 0 && s.read.err == nil {
-		s.read.increment += n
-		s.scheduleCtrl()
+	if n > 0 {
+		if s.read.err == nil {
+			s.read.increment += n
+			s.scheduleCtrl()
+		}
 	}
 	s.mu.Unlock()
 	return n
@@ -651,38 +617,17 @@ func (s *rawStream) Discard(n int) int {
 
 func (s *rawStream) Read(b []byte) (n int, err error) {
 	s.mu.Lock()
-	if s.read.request != nil {
-		s.mu.Unlock()
-		return 0, errMultipleReads
-	}
-	if len(b) > 0 && s.read.buf.size > 0 {
-		// Take some data from the buffer
-		n = s.read.buf.read(b)
-	} else if len(b) > 0 && s.read.err == nil {
-		// Read buffer is empty, schedule a request
-		s.read.request = b
-		s.read.active = true
-		timeout := s.read.deadline.expired
-		s.mu.Unlock()
-		select {
-		case n = <-s.read.replies:
-			s.mu.Lock()
-		case <-timeout:
-			s.mu.Lock()
-			if s.read.active {
-				// timeout, cancel the request
-				s.read.active = false
-				err = errTimeout
-			} else {
-				// timeout and reply were simultaneous
-				n = <-s.read.replies
-			}
+	if len(b) > 0 {
+		err = s.waitReadReadyLocked()
+		if err != nil {
+			s.mu.Unlock()
+			return
 		}
-		s.read.request = nil
-	}
-	if n > 0 && s.read.err == nil {
-		s.read.increment += n
-		s.scheduleCtrl()
+		n = s.read.buf.read(b)
+		if s.read.err == nil {
+			s.read.increment += n
+			s.scheduleCtrl()
+		}
 	}
 	if s.read.err != nil && s.read.buf.size == 0 {
 		// there will be no more data, return the error too
@@ -694,40 +639,28 @@ func (s *rawStream) Read(b []byte) (n int, err error) {
 
 func (s *rawStream) Write(b []byte) (n int, err error) {
 	s.mu.Lock()
-	if s.write.request != nil {
-		s.mu.Unlock()
-		return 0, errMultipleWrites
-	}
-	if len(b) > 0 && s.write.err == nil {
-		s.write.request = b
-		s.write.written = 0
-		s.write.active = true
-		if s.activeData() {
-			s.scheduleData()
+	for n < len(b) {
+		err = s.waitWriteReadyLocked()
+		if err != nil {
+			break
 		}
-		timeout := s.write.deadline.expired
-		s.mu.Unlock()
-		select {
-		case n = <-s.write.replies:
-			s.mu.Lock()
-		case <-timeout:
-			s.mu.Lock()
-			if s.write.active {
-				// timeout, cancel the request
-				s.write.active = false
-				n = s.write.written
-				err = errTimeout
-			} else {
-				// timeout and reply were simultaneous
-				n = <-s.write.replies
+		taken := len(b) - n
+		if taken > s.write.left {
+			taken = s.write.left
+		}
+		s.write.buf.write(b[n : n+taken])
+		s.write.left -= taken
+		s.scheduleData()
+		n += taken
+	}
+	if n > 0 {
+		err2 := s.waitFlushedLocked()
+		if s.write.failed > 0 {
+			n -= s.write.failed
+			if err == nil {
+				err = err2
 			}
 		}
-		s.write.request = nil
-		if n < len(b) && s.write.err != nil {
-			err = s.write.err
-		}
-	} else {
-		err = s.write.err
 	}
 	s.mu.Unlock()
 	return
