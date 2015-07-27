@@ -201,48 +201,53 @@ def test_routed_services(copper_client):
                     with sub.open() as stream:
                         assert stream.read() == 'Hello from handler1'
 
-@pytest.mark.parametrize('concurrency', [1, 8, 64, 512])
-def test_speed(copper_client, concurrency):
-    def handler(stream):
-        x = stream.read(1)
-        stream.write(x)
-    with copper_client.publish('test:myservice', handler, concurrency=concurrency, queue_size=concurrency*2):
-        with copper_client.subscribe('test:myservice') as sub:
-            def make_request():
-                with sub.open() as stream:
-                    stream.write('x')
-                    stream.close_write()
-                    assert stream.read(1) == 'x'
-            for _ in xrange(32):
-                make_request()
-            start_time = time.time()
-            stop_time = start_time + 1.0
-            timings = []
-            def worker_func():
-                while True:
-                    t0 = time.time()
+if os.environ.get('SPEEDTEST', '').strip().lower() in ('1', 'yes', 'true'):
+    @pytest.mark.parametrize('concurrency', [1, 8, 64, 512])
+    def test_speed(copper_client, concurrency):
+        def handler(stream):
+            x = stream.read(1)
+            stream.write(x)
+        with copper_client.publish('test:myservice', handler, concurrency=concurrency, queue_size=concurrency*2):
+            with copper_client.subscribe('test:myservice') as sub:
+                def make_request():
+                    with sub.open() as stream:
+                        stream.write('x')
+                        stream.close_write()
+                        assert stream.read(1) == 'x'
+                for _ in xrange(32):
                     make_request()
-                    t1 = time.time()
-                    timings.append(t1 - t0)
-                    if t1 >= stop_time:
-                        break
-            workers = [gevent.spawn(worker_func) for _ in xrange(concurrency)]
-            for worker in gevent.wait(workers):
-                worker.get()
-            if not timings:
-                print 'No timings have been collected'
-            timings.sort()
-            percentiles = (50, 90, 95, 96, 97, 98, 99, 100)
-            values = []
-            for p in percentiles:
-                index = ((len(timings) * p + 99) // 100) - 1
-                if index < 0:
-                    index = 0
-                values.append(timings[index])
-            print 'Concurrency %s: %s avg=%.3fms' % (concurrency, ' '.join(
-                'p%d=%.3fms' % (p, value * 1000.0)
-                for (p, value) in zip(percentiles, values)
-            ), sum(timings) * 1000.0 / len(timings))
-
-if os.environ.get('SPEEDTEST', '').strip().lower() not in ('1', 'yes', 'true'):
-    del test_speed
+                start_time = time.time()
+                stop_time = start_time + 1.0
+                timings = []
+                def worker_func():
+                    while True:
+                        t0 = time.time()
+                        make_request()
+                        t1 = time.time()
+                        timings.append(t1 - t0)
+                        if t1 >= stop_time:
+                            break
+                workers = [gevent.spawn(worker_func) for _ in xrange(concurrency)]
+                for worker in gevent.wait(workers):
+                    worker.get()
+                stop_time = time.time()
+                if not timings:
+                    print 'No timings have been collected'
+                    return
+                timings.sort()
+                percentiles = (50, 90, 95, 96, 97, 98, 99, 100)
+                values = []
+                for p in percentiles:
+                    index = ((len(timings) * p + 99) // 100) - 1
+                    if index < 0:
+                        index = 0
+                    values.append(timings[index])
+                print 'Concurrency %s: %s avg=%.3fms %.3freqs/s' % (
+                    concurrency,
+                    ' '.join(
+                        'p%d=%.3fms' % (p, value * 1000.0)
+                        for (p, value) in zip(percentiles, values)
+                    ),
+                    sum(timings) * 1000.0 / len(timings),
+                    len(timings) / (stop_time - start_time),
+                )
