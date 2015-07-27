@@ -106,9 +106,9 @@ func TestRawConnStreams(t *testing.T) {
 		if err != nil {
 			t.Fatalf("server: NewStream: unexpected error: %v", err)
 		}
-		n, err := stream.Read(make([]byte, 256))
-		if n != 0 || err != ENOTARGET {
-			t.Fatalf("server: Read: expected ENOTARGET, got: %d, %v", n, err)
+		_, err = stream.Read(make([]byte, 256))
+		if err != ENOTARGET {
+			t.Fatalf("server: Read: expected ENOTARGET, got: %v", err)
 		}
 		serverReady <- 1
 
@@ -143,6 +143,7 @@ func TestRawConnStreams(t *testing.T) {
 		}
 		for index, message := range messages {
 			func() {
+				client.(*rawConn).blockWrite()
 				stream, err := client.NewStream()
 				if err != nil {
 					t.Fatalf("client: NewStream(): unexpected error: %v", err)
@@ -156,6 +157,7 @@ func TestRawConnStreams(t *testing.T) {
 				if err != nil {
 					t.Fatalf("client: CloseWrite(%d): unexpected error: %v", index+1, err)
 				}
+				client.(*rawConn).unblockWrite()
 
 				r := bufio.NewReader(stream)
 				line, err := r.ReadString('\n')
@@ -362,11 +364,13 @@ func TestRawStreamCloseWithData(t *testing.T) {
 		defer stream.Close()
 
 		goahead1.Lock()
+		client.(*rawConn).blockWrite()
 		n, err := stream.Write([]byte("hello"))
 		if n != 5 || err != nil {
 			t.Fatalf("client: Write: %d, %v", n, err)
 		}
 		stream.CloseWithError(ENOROUTE)
+		client.(*rawConn).unblockWrite()
 		goahead2.Lock()
 	})
 }
@@ -526,6 +530,41 @@ func TestRawStreamCloseReadErrorWithError(t *testing.T) {
 			if n != 13 || err != ENOROUTE {
 				t.Fatalf("server: Read: %d, %v", n, err)
 			}
+			return nil
+		},
+	)
+}
+
+func TestRawStreamFlush(t *testing.T) {
+	clientMayClose := make(chan int, 1)
+	serverMayClose := make(chan int, 1)
+	runRawClientServerStream(
+		func(client Stream) error {
+			defer close(serverMayClose)
+			n, err := client.Write([]byte("Hello, world!"))
+			if n != 13 || err != nil {
+				t.Fatalf("client: Write: %d, %v", n, err)
+			}
+			err = client.Flush()
+			if err != nil {
+				t.Fatalf("client: Flush: %v", err)
+			}
+			serverMayClose <- 1
+			<-clientMayClose
+			return nil
+		},
+		func(server Stream) error {
+			defer close(clientMayClose)
+			n, err := server.Write([]byte("foo bar baz"))
+			if n != 11 || err != nil {
+				t.Fatalf("server: Write: %d, %v", n, err)
+			}
+			err = server.Flush()
+			if err != nil {
+				t.Fatalf("server: Flush: %v", err)
+			}
+			clientMayClose <- 1
+			<-serverMayClose
 			return nil
 		},
 	)
