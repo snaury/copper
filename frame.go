@@ -137,10 +137,10 @@ func (f FrameFlags) String(t FrameType) string {
 	return buf.String()
 }
 
-// FrameHeaderSize is 9 bytes
+// FrameHeaderSize is the size of the header
 const FrameHeaderSize = 9
 
-// FrameHeader is a 9 byte frame header
+// FrameHeader is a decoded frame header
 type FrameHeader struct {
 	Type     FrameType
 	Flags    FrameFlags

@@ -1,6 +1,7 @@
 package copper
 
 import (
+	"io"
 	"net"
 	"time"
 )
@@ -21,8 +22,17 @@ type Stream interface {
 	// Read reads data from the stream
 	Read(b []byte) (n int, err error)
 
+	// ReadByte reads a single byte from the stream
+	ReadByte() (c byte, err error)
+
 	// Write writes data to the stream
 	Write(b []byte) (n int, err error)
+
+	// WriteByte writes a single byte to the stream
+	WriteByte(c byte) error
+
+	// Flush returns when all data has been flushed
+	Flush() error
 
 	// Closed returns a channel that's closed when Close is called.
 	Closed() <-chan struct{}
@@ -92,3 +102,5 @@ type Stream interface {
 }
 
 var _ net.Conn = Stream(nil)
+var _ io.ByteReader = Stream(nil)
+var _ io.ByteWriter = Stream(nil)

@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	rawConnBufferSize = 128 * 1024
+	rawConnBufferSize = 4096
 )
 
 // RawConn is a multiplexed connection implementing the copper protocol
