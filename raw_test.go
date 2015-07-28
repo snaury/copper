@@ -238,8 +238,8 @@ func TestRawStreamBigWrite(t *testing.T) {
 			t.Fatalf("client: NewStream: %s", err)
 		}
 		defer stream.Close()
-		n, err := stream.Write(make([]byte, 65536+16))
-		if n != 65536 || err != ENOROUTE {
+		n, err := stream.Write(make([]byte, 65536+65536+16))
+		if (n != 65536 && n != 65536*2) || err != ENOROUTE {
 			t.Fatalf("client: Write: unexpected result: %d, %v", n, err)
 		}
 	})
@@ -271,7 +271,7 @@ func TestRawStreamReadDeadline(t *testing.T) {
 
 func TestRawStreamWriteDeadline(t *testing.T) {
 	runRawClientServer(HandlerFunc(func(stream Stream) error {
-		stream.Write(make([]byte, 65536+16))
+		stream.Write(make([]byte, 65536+65536+16))
 		return nil
 	}), func(client RawConn) {
 		var deadline time.Time
@@ -283,8 +283,8 @@ func TestRawStreamWriteDeadline(t *testing.T) {
 
 		deadline = time.Now().Add(5 * time.Millisecond)
 		stream.SetWriteDeadline(deadline)
-		n, err := stream.Write(make([]byte, 65536+16))
-		if n != 65536 || !isTimeout(err) {
+		n, err := stream.Write(make([]byte, 65536+65536+16))
+		if n != 65536*2 || !isTimeout(err) {
 			t.Fatalf("client: Write: expected timeout, got: %d, %v", n, err)
 		}
 		if deadline.After(time.Now()) {

@@ -401,6 +401,7 @@ func TestSubscribePriorities(t *testing.T) {
 func runClientServerService(clientfunc func(conn Client), serverfunc func(stream Stream) error, name string, settings PublishSettings) {
 	published := make(chan int, 1)
 	unpublish := make(chan int, 1)
+	finished := make(chan int, 1)
 	runClientServer(
 		func(client Client) {
 			defer close(unpublish)
@@ -412,8 +413,10 @@ func runClientServerService(clientfunc func(conn Client), serverfunc func(stream
 			clientfunc(client)
 
 			unpublish <- 1
+			<-finished
 		},
 		func(server Client) {
+			defer close(finished)
 			defer close(published)
 
 			pub, err := server.Publish(
@@ -435,6 +438,9 @@ func runClientServerService(clientfunc func(conn Client), serverfunc func(stream
 			if err != nil {
 				log.Fatalf("server: Unpublish: %s", err)
 			}
+
+			<-server.Shutdown()
+			finished <- 1
 		},
 	)
 }
@@ -659,6 +665,10 @@ func TestClientServerBigRequest(t *testing.T) {
 					t.Fatalf("client: Write: %s", err)
 				}
 			}
+			//err := client.Flush()
+			//if err != nil {
+			//	t.Fatalf("client: Flush: %s", err)
+			//}
 			if !client.IsAcknowledged() {
 				t.Fatalf("client: not acknowledged!")
 			}
@@ -674,11 +684,11 @@ func TestClientServerBigRequest(t *testing.T) {
 					if err == io.EOF {
 						break
 					}
-					t.Fatalf("server: Read: %s", err)
+					t.Fatalf("server: Read: %s (total %d)", err, total)
 				}
 			}
 			if total != 65536*3 {
-				t.Fatalf("server: total request data: %d", total)
+				t.Fatalf("server: total received: %d", total)
 			}
 			return nil
 		},

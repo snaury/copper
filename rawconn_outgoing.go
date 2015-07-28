@@ -185,6 +185,15 @@ writeloop:
 			// Allow tests to setup things properly
 			o.unblocked.Wait()
 		}
+		if o.err != nil {
+			err := o.err
+			o.mu.Unlock()
+			// Attempt to notify the other side that we have an error
+			// It's ok if any of this fails, the read side will stop
+			// when we close the connection.
+			o.conn.writer.WriteReset(0, 0, err)
+			return false
+		}
 		pingAcks := o.pingAcks
 		if len(pingAcks) > 0 {
 			o.pingAcks = nil
@@ -248,15 +257,6 @@ writeloop:
 			}
 			o.mu.Lock()
 			continue writeloop
-		}
-		if o.err != nil {
-			err := o.err
-			o.mu.Unlock()
-			// Attempt to notify the other side that we have an error
-			// It's ok if any of this fails, the read side will stop
-			// when we close the connection.
-			o.conn.writer.WriteReset(0, 0, err)
-			return false
 		}
 		if o.data.size > 0 && o.writeleft > 0 {
 			stream := o.data.take()

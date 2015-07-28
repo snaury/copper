@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const streamWriteBufferSize = 65536
+
 const (
 	flagStreamSentEOF   = 0x01
 	flagStreamSeenEOF   = 0x02
@@ -47,7 +49,7 @@ func (r *rawStreamRead) init(l sync.Locker, window int) {
 type rawStreamWrite struct {
 	err   error  // non-nil if write side is closed (locally or remotely)
 	buf   buffer // buffered outgoing bytes
-	left  int    // number of bytes we are allowed to send (not including buf)
+	left  int    // number of bytes we are allowed to send
 	wired int    // number of bytes in buf that are being written on the wire
 
 	closed chan struct{} // closed when write side is closed
@@ -131,7 +133,6 @@ func (s *rawStream) cleanupLocked() {
 func (s *rawStream) clearWriteBufferLocked() {
 	// After clearing the write buffer there's no need to broadcast to writes,
 	// because closing write side will also broadcast, unless already closed.
-	s.write.left += s.write.buf.size
 	s.write.buf.clear()
 	s.write.wired = 0
 	s.write.flushed.Broadcast()
@@ -171,7 +172,7 @@ func (s *rawStream) waitReadReadyLocked() error {
 
 // Waits until a byte may be written, or write side is closed
 func (s *rawStream) waitWriteReadyLocked() error {
-	for s.write.err == nil && s.write.left <= 0 {
+	for s.write.err == nil && s.write.buf.size >= streamWriteBufferSize {
 		err := s.write.ready.Wait()
 		if err != nil {
 			return err
@@ -262,18 +263,13 @@ func (s *rawStream) processResetFrame(frame *ResetFrame) error {
 // Changes the size of the write window (WINDOW or SETTINGS frames)
 func (s *rawStream) changeWriteWindow(diff int) {
 	s.mu.Lock()
-	if s.write.err == nil {
-		if s.write.left < 0 && s.pendingBytes() > 0 && s.pendingBytes()+s.write.left <= 0 {
-			s.write.left += diff
-			if s.activeData() {
-				s.scheduleData()
-			}
-		} else {
-			s.write.left += diff
-		}
+	if s.write.left <= 0 && s.pendingBytes() > 0 {
+		s.write.left += diff
 		if s.write.left > 0 {
-			s.write.ready.Broadcast()
+			s.scheduleData()
 		}
+	} else {
+		s.write.left += diff
 	}
 	s.mu.Unlock()
 }
@@ -296,12 +292,9 @@ func (s *rawStream) processWindowFrame(frame *WindowFrame) error {
 // wired, so flags calculation may correctly take it into account.
 func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 	n := s.write.buf.size
-	if s.write.left < 0 {
-		// We have more data in the buffer than stream window allows, this may
-		// happen if the incoming SETTINGS frame reduced stream window size,
-		// in which case we hold on to that data until enough window is
-		// available.
-		n += s.write.left
+	if n > s.write.left {
+		// We have more data in the buffer than stream window allows
+		n = s.write.left
 	}
 	if n <= 0 {
 		return nil
@@ -313,6 +306,7 @@ func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 	if n > 0 {
 		data := s.write.buf.peek()[:n]
 		s.write.wired = n
+		s.write.left -= n
 		return data
 	}
 	return nil
@@ -349,6 +343,9 @@ func (s *rawStream) writeCtrl() error {
 			s.mu.Lock()
 			s.write.buf.discard(s.write.wired)
 			s.write.wired = 0
+			if s.write.buf.size < streamWriteBufferSize {
+				s.write.ready.Broadcast()
+			}
 			if s.write.buf.size == 0 {
 				s.write.flushed.Broadcast()
 			}
@@ -450,6 +447,9 @@ func (s *rawStream) writeData() error {
 		s.mu.Lock()
 		s.write.buf.discard(s.write.wired)
 		s.write.wired = 0
+		if s.write.buf.size < streamWriteBufferSize {
+			s.write.ready.Broadcast()
+		}
 		if s.write.buf.size == 0 {
 			s.write.flushed.Broadcast()
 		}
@@ -465,10 +465,7 @@ func (s *rawStream) pendingBytes() int {
 
 // Returns true if there is pending data that needs to be written
 func (s *rawStream) activeData() bool {
-	if s.write.left >= 0 {
-		return s.pendingBytes() > 0
-	}
-	return s.pendingBytes()+s.write.left > 0
+	return s.write.left > 0 && s.pendingBytes() > 0
 }
 
 // Returns true if there is a RESET frame pending and it needs to be written
@@ -594,7 +591,6 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 		close(s.closed)
 		s.setReadErrorLocked(err)
 		s.setWriteErrorLocked(err)
-		s.write.flushed.Broadcast()
 		s.resetBothSidesLocked()
 	}
 	return preverror
@@ -675,12 +671,13 @@ func (s *rawStream) Write(b []byte) (n int, err error) {
 			break
 		}
 		taken := len(b) - n
-		if taken > s.write.left {
-			taken = s.write.left
+		if taken > streamWriteBufferSize-s.write.buf.size {
+			taken = streamWriteBufferSize - s.write.buf.size
 		}
 		s.write.buf.write(b[n : n+taken])
-		s.write.left -= taken
-		s.scheduleData()
+		if s.write.left > 0 {
+			s.scheduleData()
+		}
 		n += taken
 	}
 	s.mu.Unlock()
@@ -695,8 +692,9 @@ func (s *rawStream) WriteByte(b byte) error {
 		return err
 	}
 	s.write.buf.writebyte(b)
-	s.write.left--
-	s.scheduleData()
+	if s.write.left > 0 {
+		s.scheduleData()
+	}
 	s.mu.Unlock()
 	return nil
 }
