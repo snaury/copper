@@ -108,6 +108,9 @@ type Client interface {
 	// SetRoute sets a route on the server
 	SetRoute(name string, routes ...Route) error
 
+	// ListRoutes lists routes on the server
+	ListRoutes() ([]string, error)
+
 	// LookupRoute looks up a route on the server
 	LookupRoute(name string) ([]Route, error)
 

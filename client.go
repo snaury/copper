@@ -84,6 +84,10 @@ func (c *clientConn) SetRoute(name string, routes ...Route) error {
 	return c.setRoute(name, routes...)
 }
 
+func (c *clientConn) ListRoutes() ([]string, error) {
+	return c.listRoutes()
+}
+
 func (c *clientConn) LookupRoute(name string) ([]Route, error) {
 	return c.lookupRoute(name)
 }
