@@ -11,16 +11,16 @@ import (
 const streamWriteBufferSize = 65536
 
 const (
-	flagStreamSentEOF   = 0x01
-	flagStreamSeenEOF   = 0x02
-	flagStreamBothEOF   = flagStreamSentEOF | flagStreamSeenEOF
-	flagStreamSentReset = 0x04
-	flagStreamSeenAck   = 0x08
+	flagStreamSeenEOF   = 0x01
+	flagStreamSentEOF   = 0x02
+	flagStreamBothEOF   = flagStreamSeenEOF | flagStreamSentEOF
+	flagStreamSeenAck   = 0x04
+	flagStreamSeenReset = 0x08
 	flagStreamNeedOpen  = 0x10
-	flagStreamNeedEOF   = 0x20
+	flagStreamNeedAck   = 0x20
 	flagStreamNeedReset = 0x40
-	flagStreamNeedAck   = 0x80
-	flagStreamDiscard   = flagStreamNeedOpen | flagStreamNeedEOF | flagStreamNeedReset
+	flagStreamNeedEOF   = 0x80
+	flagStreamDiscard   = flagStreamNeedOpen | flagStreamNeedReset | flagStreamNeedEOF
 	flagStreamDataCtrl  = flagStreamNeedOpen | flagStreamNeedAck
 )
 
@@ -74,8 +74,8 @@ type rawStream struct {
 	flags int            // stream state flags
 	read  rawStreamRead  // read side of the stream
 	write rawStreamWrite // write side of the stream
-	reset error          // error used to close the stream
 
+	err    error         // error used to close the stream
 	closed chan struct{} // closed when close is called
 
 	// these are protected by the outgoing lock
@@ -224,6 +224,7 @@ func (s *rawStream) processDataLocked(data []byte, flags FrameFlags) error {
 	}
 	if flags.Has(FlagDataEOF) {
 		s.flags |= flagStreamSeenEOF
+		s.flags &^= flagStreamNeedReset
 		s.setReadErrorLocked(io.EOF)
 		s.cleanupLocked()
 	}
@@ -243,6 +244,7 @@ func (s *rawStream) processResetFrame(frame *ResetFrame) error {
 	s.mu.Lock()
 	if frame.Flags.Has(FlagResetRead) {
 		err := frame.Error
+		s.flags |= flagStreamSeenReset
 		s.clearWriteBufferLocked()
 		s.setWriteErrorLocked(err)
 	}
@@ -253,6 +255,7 @@ func (s *rawStream) processResetFrame(frame *ResetFrame) error {
 			err = io.EOF
 		}
 		s.flags |= flagStreamSeenEOF
+		s.flags &^= flagStreamNeedReset
 		s.setReadErrorLocked(err)
 		s.cleanupLocked()
 	}
@@ -324,7 +327,7 @@ func (s *rawStream) writeCtrl() error {
 		// If stream was opened, and then immediately closed, then we don't
 		// have to send any frames at all, just pretend it all happened
 		// already and move on.
-		s.flags = flagStreamSentEOF | flagStreamSeenEOF | flagStreamSentReset
+		s.flags = flagStreamSeenEOF | flagStreamSentEOF
 		s.cleanupLocked()
 		s.mu.Unlock()
 		return nil
@@ -364,38 +367,26 @@ func (s *rawStream) writeCtrl() error {
 			s.mu.Lock()
 			continue
 		}
-		if s.activeReset() {
-			reset := s.reset
-			if reset == nil {
-				// The only way we may end up with reset being nil, but with an
-				// outgoing RESET pending, is when we haven't seen a EOF yet, but
-				// either CloseRead() or CloseReadError() was called. In both of
-				// those cases the error is in read.
-				reset = s.read.err
+		if s.flags&flagStreamNeedReset != 0 {
+			// Need to send a RESET frame for the read side
+			s.flags &^= flagStreamNeedReset
+			flags := FlagResetRead
+			reset := s.read.err
+			if reset == io.EOF {
+				reset = ECLOSED
 			}
-			if reset == ECONNCLOSED {
-				// Instead of ECONNCLOSED remote should receive ECONNSHUTDOWN
-				reset = ECONNSHUTDOWN
-			}
-			var flags FrameFlags
-			if s.flags&(flagStreamSeenEOF|flagStreamSentReset) == 0 {
-				flags |= FlagResetRead
-			}
-			if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
-				// This RESET closes both sides of the stream, otherwise it only
-				// closes the read side and write side is delayed until we need to
-				// send EOF.
-				s.flags &^= flagStreamNeedReset
+			if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 && s.write.err == reset {
+				// Coalesce and send a RESET for both sides
 				s.flags &^= flagStreamNeedEOF
 				s.flags |= flagStreamSentEOF
 				s.cleanupLocked()
 				flags |= FlagResetWrite
 			}
-			// N.B.: we may send RESET twice. First without EOF, to stop the other
-			// side from sending us more data. Second with EOF, after sending all
-			// our pending data, to convey the error message to the other side.
-			s.flags |= flagStreamSentReset
 			s.mu.Unlock()
+			if reset == ECONNCLOSED {
+				// Instead of ECONNCLOSED remote should receive ECONNSHUTDOWN
+				reset = ECONNSHUTDOWN
+			}
 			err := s.conn.writer.WriteReset(s.streamID, flags, reset)
 			if err != nil {
 				return err
@@ -404,14 +395,34 @@ func (s *rawStream) writeCtrl() error {
 			continue
 		}
 		if s.write.buf.size == 0 && s.flags&flagStreamNeedEOF != 0 {
-			// We have an empty write buffer with a pending EOF. Since writeData
-			// callback is only called when there is pending data and sending
-			// EOF doesn't cost us any window bytes we do it right here.
-			flags := s.outgoingFlags()
-			s.mu.Unlock()
-			err := s.conn.writer.WriteData(s.streamID, flags, nil)
-			if err != nil {
-				return err
+			// We have an empty write buffer with a pending EOF/RESET. Since
+			// writeData callback is only called when there is pending data and
+			// sending EOF/RESET doesn't cost us any window bytes we always do
+			// it here.
+			s.flags &^= flagStreamNeedEOF
+			s.flags |= flagStreamSentEOF
+			s.cleanupLocked()
+			if s.write.err != ECLOSED {
+				// Time to send a RESET for the write side
+				flags := FlagResetWrite
+				reset := s.write.err
+				s.mu.Unlock()
+				if reset == ECONNCLOSED {
+					// Instead of ECONNCLOSED remote should receive ECONNSHUTDOWN
+					reset = ECONNSHUTDOWN
+				}
+				err := s.conn.writer.WriteReset(s.streamID, flags, reset)
+				if err != nil {
+					return err
+				}
+			} else {
+				// Send a normal DATA frame with EOF flag set
+				flags := FlagDataEOF
+				s.mu.Unlock()
+				err := s.conn.writer.WriteData(s.streamID, flags, nil)
+				if err != nil {
+					return err
+				}
 			}
 			s.mu.Lock()
 			continue
@@ -435,7 +446,7 @@ func (s *rawStream) writeData() error {
 		if s.activeData() {
 			// We have more data, make sure to re-register
 			s.scheduleData()
-		} else if s.activeReset() {
+		} else if s.activeResetWrite() {
 			// Sending all data unlocked a pending RESET
 			s.scheduleCtrl()
 		}
@@ -463,48 +474,26 @@ func (s *rawStream) pendingBytes() int {
 	return s.write.buf.size - s.write.wired
 }
 
-// Returns true if there is pending data that needs to be written
+// Returns true if there is pending data and it needs to be written
 func (s *rawStream) activeData() bool {
 	return s.write.left > 0 && s.pendingBytes() > 0
 }
 
-// Returns true if there is a RESET frame pending and it needs to be written
-func (s *rawStream) activeReset() bool {
-	if s.flags&flagStreamNeedReset != 0 {
-		// there's a RESET frame pending
-		if s.flags&flagStreamBothEOF == flagStreamBothEOF {
-			// both sides already closed, don't need to send anything
-			s.flags &^= flagStreamNeedReset
-			return false
-		}
-		if s.flags&(flagStreamSeenEOF|flagStreamSentReset) == 0 {
-			// haven't seen EOF yet, so send RESET as soon as possible
-			return true
-		}
-		if s.reset == nil || s.reset == ECLOSED {
-			// without an error it's better to send DATA with EOF flag set
-			s.flags &^= flagStreamNeedReset
-			return false
-		}
-		if s.write.buf.size == s.write.wired && s.flags&flagStreamNeedEOF != 0 {
-			// need to send EOF now and close the write side
-			return true
-		}
-		// must delay RESET until we need to send EOF
-		return false
-	}
-	return false
+// Returns true if there is a RESET for the read side that needs to be written
+func (s *rawStream) activeResetRead() bool {
+	return s.flags&flagStreamNeedReset != 0
 }
 
-// Returns true if there is EOF pending and it needs to be written now
+// Returns true if there is a RESET for the write side that needs to be written
+func (s *rawStream) activeResetWrite() bool {
+	return s.flags&flagStreamNeedEOF != 0 && s.write.buf.size == s.write.wired && s.write.err != ECLOSED
+}
+
+// Returns true if there is EOF pending and it needs to be written
 func (s *rawStream) activeEOF() bool {
-	if s.write.buf.size == s.write.wired && s.flags&flagStreamNeedEOF != 0 {
-		// there's no data and a EOF is pending
-		if s.flags&flagStreamNeedReset != 0 {
-			// send EOF only when pending RESET is without an error
-			return s.reset == nil || s.reset == ECLOSED
-		}
-		return true
+	if s.flags&flagStreamNeedEOF != 0 && s.write.buf.size == s.write.wired {
+		// there's no data and a EOF is pending, send it unless RESET is active
+		return s.flags&flagStreamNeedReset == 0 && s.write.err == ECLOSED
 	}
 	return false
 }
@@ -531,67 +520,53 @@ func (s *rawStream) outgoingFlags() FrameFlags {
 	return flags
 }
 
-// Schedules a RESET on the read side, preventing remote from sending more data
-func (s *rawStream) resetReadSideLocked() {
-	if s.flags&flagStreamSeenEOF == 0 {
-		s.flags |= flagStreamNeedReset
-		if s.activeReset() {
-			s.scheduleCtrl()
-		}
-	}
-}
-
-// Schedules a RESET on both sides, so not only the remote is prevented from
-// sending more data, it also receives an error code in any of its read calls.
-func (s *rawStream) resetBothSidesLocked() {
-	if s.flags&flagStreamBothEOF != flagStreamBothEOF {
-		s.flags |= flagStreamNeedReset
-		if s.activeReset() {
-			s.scheduleCtrl()
-		}
-	}
-}
-
 // Sets the read error to err
-func (s *rawStream) setReadErrorLocked(err error) {
-	if s.read.err == nil {
+func (s *rawStream) setReadErrorLocked(err error) error {
+	preverror := s.read.err
+	if preverror == nil {
 		s.read.err = err
 		close(s.read.closed)
 		if s.flags&flagStreamSeenAck == 0 {
 			close(s.read.acked)
 		}
+		if s.flags&flagStreamSeenEOF == 0 {
+			s.flags |= flagStreamNeedReset
+			s.scheduleCtrl()
+		}
 		s.read.increment = 0
 		s.read.ready.Broadcast()
 	}
+	return preverror
 }
 
 // Sets the write error to err
-func (s *rawStream) setWriteErrorLocked(err error) {
-	if s.write.err == nil {
+func (s *rawStream) setWriteErrorLocked(err error) error {
+	preverror := s.write.err
+	if preverror == nil {
 		s.write.err = err
 		close(s.write.closed)
 		s.flags |= flagStreamNeedEOF
 		if s.write.buf.size == s.write.wired {
-			// We had no pending data, but now we need to send a EOF, which can
-			// only be done in a ctrl phase, so make sure to schedule it.
+			// We had no pending data, but now we need to send EOF/RESET, which
+			// can only be done in a ctrl phase, so make sure to schedule it.
 			s.scheduleCtrl()
 		}
 		s.write.ready.Broadcast()
 		s.write.flushed.Broadcast()
 	}
+	return preverror
 }
 
 func (s *rawStream) closeWithErrorLocked(err error) error {
 	if err == nil || err == io.EOF {
 		err = ECLOSED
 	}
-	preverror := s.reset
+	preverror := s.err
 	if preverror == nil {
-		s.reset = err
+		s.err = err
 		close(s.closed)
 		s.setReadErrorLocked(err)
 		s.setWriteErrorLocked(err)
-		s.resetBothSidesLocked()
 	}
 	return preverror
 }
@@ -761,40 +736,45 @@ func (s *rawStream) Close() error {
 	return err
 }
 
+func (s *rawStream) CloseWithError(err error) error {
+	s.mu.Lock()
+	err = s.closeWithErrorLocked(err)
+	s.mu.Unlock()
+	return err
+}
+
 func (s *rawStream) CloseRead() error {
 	s.mu.Lock()
-	preverror := s.read.err
-	s.setReadErrorLocked(ECLOSED)
-	s.resetReadSideLocked()
+	preverror := s.setReadErrorLocked(ECLOSED)
 	s.mu.Unlock()
 	return preverror
 }
 
-func (s *rawStream) CloseReadError(err error) error {
+func (s *rawStream) CloseReadWithError(err error) error {
 	if err == nil || err == io.EOF {
 		err = ECLOSED
 	}
 	s.mu.Lock()
-	preverror := s.read.err
-	s.setReadErrorLocked(err)
-	s.resetReadSideLocked()
+	err = s.setReadErrorLocked(err)
 	s.mu.Unlock()
-	return preverror
+	return err
 }
 
 func (s *rawStream) CloseWrite() error {
 	s.mu.Lock()
-	preverror := s.write.err
-	s.setWriteErrorLocked(ECLOSED)
+	preverror := s.setWriteErrorLocked(ECLOSED)
 	s.mu.Unlock()
 	return preverror
 }
 
-func (s *rawStream) CloseWithError(err error) error {
+func (s *rawStream) CloseWriteWithError(err error) error {
+	if err == nil || err == io.EOF {
+		err = ECLOSED
+	}
 	s.mu.Lock()
-	preverror := s.closeWithErrorLocked(err)
+	err = s.setWriteErrorLocked(err)
 	s.mu.Unlock()
-	return preverror
+	return err
 }
 
 func (s *rawStream) SetDeadline(t time.Time) error {

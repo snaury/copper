@@ -463,7 +463,7 @@ func TestRawStreamCloseReadError(t *testing.T) {
 			if 1 != <-startClosingRead {
 				return nil
 			}
-			client.CloseReadError(EINTERNAL)
+			client.CloseReadWithError(EINTERNAL)
 			if 1 != <-startWritingBack {
 				return nil
 			}
@@ -503,7 +503,7 @@ func TestRawStreamCloseReadErrorWithError(t *testing.T) {
 			if 1 != <-startClosingRead {
 				return nil
 			}
-			client.CloseReadError(EINTERNAL)
+			client.CloseReadWithError(EINTERNAL)
 			if 1 != <-startWritingBack {
 				return nil
 			}

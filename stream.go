@@ -70,17 +70,20 @@ type Stream interface {
 	// Closes closes the stream, discarding any data
 	Close() error
 
+	// CloseWithError closes the stream with the specified error
+	CloseWithError(err error) error
+
 	// CloseRead closes the read side of the connection
 	CloseRead() error
 
-	// CloseReadError closes the read side with the specifed error
-	CloseReadError(err error) error
+	// CloseReadWithError closes the read side with the specifed error
+	CloseReadWithError(err error) error
 
 	// CloseWrite closes the write side of the connection
 	CloseWrite() error
 
-	// CloseWithError closes the stream with the specified error
-	CloseWithError(err error) error
+	// CloseWriteWithError close the write side with the specified error
+	CloseWriteWithError(err error) error
 
 	// SetDeadline sets both read and write deadlines
 	SetDeadline(t time.Time) error

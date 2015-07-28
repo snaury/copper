@@ -1,7 +1,6 @@
 package copper
 
 import (
-	"io"
 	"sync"
 )
 
@@ -12,11 +11,7 @@ func passthru(dst, src Stream, waitack bool) {
 		write.Lock()
 		defer write.Unlock()
 		err := dst.WriteErr()
-		if err == ECLOSED {
-			src.CloseRead()
-		} else {
-			src.CloseReadError(err)
-		}
+		src.CloseReadWithError(err)
 	}()
 	for {
 		buf, err := src.Peek()
@@ -28,11 +23,7 @@ func passthru(dst, src Stream, waitack bool) {
 			}
 			write.Unlock()
 			if werr != nil {
-				if werr == ECLOSED {
-					src.CloseRead()
-				} else {
-					src.CloseReadError(werr)
-				}
+				src.CloseReadWithError(werr)
 				return
 			}
 			if waitack {
@@ -44,13 +35,7 @@ func passthru(dst, src Stream, waitack bool) {
 			}
 		}
 		if err != nil {
-			if dst.WriteErr() == nil {
-				if err == io.EOF {
-					dst.CloseWrite()
-				} else {
-					dst.CloseWithError(err)
-				}
-			}
+			dst.CloseWriteWithError(err)
 			return
 		}
 	}

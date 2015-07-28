@@ -658,17 +658,25 @@ func TestClientServerStream(t *testing.T) {
 func TestClientServerBigRequest(t *testing.T) {
 	runClientServerStream(
 		func(client Stream) error {
+			// N.B. need to send more than 65536*3, here's why:
+			// - first 64k will be sent and peeked in passthru
+			// - there will be a window update equal to those 64k
+			// - stream should get acknowledged, however it may happen after
+			//   earlier window update and it will become pending
+			// - second 64k will be sent on the wire
+			// - before we receive a window update third 64k might get buffered
+			//   locally, and the Write() call might return before receiving
+			//   an ack frame
+			// - to make sure we receive an ack we need to either flush or send
+			//   more data, then ack will be sent before the new window update
+			//   and we should receive it reliably
 			buf := make([]byte, 65536)
-			for i := 0; i < 3; i++ {
+			for i := 0; i < 4; i++ {
 				_, err := client.Write(buf)
 				if err != nil {
 					t.Fatalf("client: Write: %s", err)
 				}
 			}
-			//err := client.Flush()
-			//if err != nil {
-			//	t.Fatalf("client: Flush: %s", err)
-			//}
 			if !client.IsAcknowledged() {
 				t.Fatalf("client: not acknowledged!")
 			}
@@ -687,7 +695,7 @@ func TestClientServerBigRequest(t *testing.T) {
 					t.Fatalf("server: Read: %s (total %d)", err, total)
 				}
 			}
-			if total != 65536*3 {
+			if total != 65536*4 {
 				t.Fatalf("server: total received: %d", total)
 			}
 			return nil
@@ -713,7 +721,7 @@ func TestClientServerCloseRead(t *testing.T) {
 			if 1 != <-mayCloseRead {
 				return nil
 			}
-			stream.CloseReadError(EINTERNAL)
+			stream.CloseReadWithError(EINTERNAL)
 
 			if 1 != <-mayWriteResponse {
 				return nil
@@ -798,7 +806,7 @@ func TestClientServerCloseReadBig(t *testing.T) {
 				return nil
 			}
 
-			server.CloseReadError(EINTERNAL)
+			server.CloseReadWithError(EINTERNAL)
 
 			<-serverMayClose
 			return nil
