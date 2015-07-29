@@ -52,11 +52,9 @@ func main() {
 	}
 	if len(*configFile) != 0 {
 		config = loadConfig(*configFile)
-	} else {
-		config.Listen = defaultListenAddrs
 	}
 	if len(config.Listen) == 0 {
-		log.Fatalf("There are no listen addresses configured")
+		config.Listen = defaultListenAddrs
 	}
 
 	server := copper.NewServer()
