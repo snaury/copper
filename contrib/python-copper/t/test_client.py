@@ -7,8 +7,18 @@ from collections import defaultdict
 from gevent import sleep
 from gevent import Timeout
 from gevent.event import Event
+from copper import Client
 from copper.errors import ConnectionShutdownError
 from copper.errors import NoRouteError
+
+def test_client_ping(copper_client):
+    copper_client.ping(12345)
+
+def test_client_bad_endpoint(capsys):
+    with pytest.raises(Timeout):
+        Client(('unix', './no-such-socket.sock'), connect=True, timeout=0.1)
+    out, err = capsys.readouterr()
+    assert 'error: [Errno 2]' in err
 
 def test_client(copper_client):
     def handler(stream):
