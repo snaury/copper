@@ -1,5 +1,5 @@
-python-copper (0.0.1) UNRELEASED; urgency=medium
+python-copper (0.0.1) unstable; urgency=medium
 
   * Initial release.
 
- -- Alexey Borzenkov <snaury@gmail.com>  Fri, 17 Jul 2015 12:46:41 +0300
+ -- Alexey Borzenkov <snaury@gmail.com>  Wed, 29 Jul 2015 12:17:06 +0300
