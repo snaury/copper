@@ -61,6 +61,8 @@ peerloop:
 
 // CopperNodeConfig is a parsed copper-node config
 type CopperNodeConfig struct {
+	CPU int `yaml:"cpu"`
+
 	Listen []ListenAddr `yaml:"listen"`
 
 	DCMap map[string]DataCenterPeers `yaml:"dcmap"`

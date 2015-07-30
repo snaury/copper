@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -55,6 +56,10 @@ func main() {
 	}
 	if len(config.Listen) == 0 {
 		config.Listen = defaultListenAddrs
+	}
+
+	if config.CPU != 0 {
+		runtime.GOMAXPROCS(config.CPU)
 	}
 
 	server := copper.NewServer()
