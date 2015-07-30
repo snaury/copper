@@ -83,15 +83,15 @@ func main() {
 			if err != nil {
 				log.Fatalf("Invalid listen address %s/%s: %s", listen.Network, listen.Address, err)
 			}
-			if host != "" {
-				hostports = append(hostports, listen.Address)
-			} else {
+			hostport := listen.Address
+			if host == "" {
 				host, err = fullHostname()
 				if err != nil {
 					log.Fatalf("Failed to get current hostname: %s", err)
 				}
-				hostports = append(hostports, net.JoinHostPort(host, port))
+				hostport = net.JoinHostPort(host, port)
 			}
+			hostports = append(hostports, strings.ToLower(hostport))
 		} else if strings.HasPrefix(listen.Network, "unix") {
 			os.Remove(listen.Address)
 		}
@@ -116,10 +116,9 @@ func main() {
 	}
 
 	for dc, peers := range config.DCMap {
-		islocal := peers.Contains(hostports...)
-		distance := uint32(2)
-		if islocal {
-			distance = uint32(1)
+		distance := uint32(1)
+		if !peers.Contains(hostports...) {
+			distance = uint32(2)
 		}
 		for _, addr := range peers.OtherAddresses(hostports...) {
 			err := server.AddPeer("tcp", addr, distance)
