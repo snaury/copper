@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
 import struct
+import logging
 from gevent import (
     spawn,
     sleep,
@@ -44,6 +45,8 @@ from .copper_pb2 import (
 __all__ = [
     'Client',
 ]
+
+log = logging.getLogger(__name__)
 
 DEFAULT_ENDPOINT = ('unix', '/run/copper/copper.sock')
 
@@ -221,25 +224,25 @@ class Client(object):
             try:
                 sock = _do_connect(self._endpoint)
             except:
-                import traceback
-                traceback.print_exc()
+                log.error('Cannot connect to %r', self._endpoint, exc_info=True)
                 if not self._closed:
                     sleep(5)
                 continue
             conn = RawConn(sock, self._handle_stream)
             try:
+                log.debug('Connected to %r', self._endpoint)
                 if self._closed or self._shutdown:
-                    return
+                    raise ConnectionClosedError()
                 try:
                     self._reregister(conn)
                     self._conn = conn
                     self._connected_cond.broadcast()
                     if self._closed:
-                        return
+                        raise ConnectionClosedError()
                     if self._shutdown:
                         self._unpublish_all()
                         conn.shutdown()
-                        return
+                        raise ConnectionClosedError()
                     # Wait until connection is closed
                     conn.wait_closed()
                 finally:
@@ -248,10 +251,9 @@ class Client(object):
                         sub._target_id = None
                 raise conn.error
             except ConnectionClosedError:
-                pass
+                log.debug('Disconnected from %r', self._endpoint)
             except:
-                import traceback
-                traceback.print_exc()
+                log.error('Connection to %r failed', self._endpoint, exc_info=True)
             finally:
                 conn.close()
 

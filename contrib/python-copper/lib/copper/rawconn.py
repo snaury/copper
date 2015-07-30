@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 import sys
 import time
-import traceback
+import logging
 from gevent import spawn
 from gevent import Timeout
 from gevent.hub import Waiter
 from gevent.hub import get_hub
 from gevent.event import Event
-from gevent.socket import EBADF, error as socket_error
+from socket import error as socket_error
 from .frames import (
     Frame,
     PingFrame,
@@ -34,13 +34,15 @@ from .errors import (
     WindowOverflowError,
 )
 
+__all__ = [
+    'RawConn',
+]
+
 INACTIVITY_TIMEOUT = 60
 DEFAULT_CONN_WINDOW = 1<<20
 DEFAULT_STREAM_WINDOW = 65536
 
-__all__ = [
-    'RawConn',
-]
+log = logging.getLogger(__name__)
 
 class Condition(object):
     def __init__(self):
@@ -251,7 +253,7 @@ class RawConn(object):
             self._handler(stream)
         except:
             if self.DEBUG_HANDLERS:
-                traceback.print_exc()
+                log.debug('Handler failed', exc_info=True)
             stream.close_with_error(sys.exc_info()[1])
         else:
             stream.close()
@@ -363,8 +365,7 @@ class RawConn(object):
             except:
                 e = sys.exc_info()[1]
                 if not isinstance(e, socket_error):
-                    import traceback
-                    traceback.print_exc()
+                    log.error('Connection readloop failed', exc_info=True)
                 self._close_with_error(e)
                 break
         # Nothing else will be read, clean up
@@ -474,8 +475,7 @@ class RawConn(object):
             except:
                 e = sys.exc_info()[1]
                 if not isinstance(e, socket_error):
-                    import traceback
-                    traceback.print_exc()
+                    log.error('Connection writeloop failed', exc_info=True)
                 self._close_with_error(e)
                 break
         self._sock.close()

@@ -42,7 +42,7 @@ setup(
     package_dir = {'': 'lib'},
     packages = ['copper'],
     install_requires = ['setuptools', 'protobuf', 'gevent'],
-    tests_require = ['pytest'],
+    tests_require = ['pytest', 'pytest-capturelog'],
     cmdclass = {
         'test': PyTest,
     },

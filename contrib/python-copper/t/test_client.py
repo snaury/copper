@@ -14,11 +14,10 @@ from copper.errors import NoRouteError
 def test_client_ping(copper_client):
     copper_client.ping(12345)
 
-def test_client_bad_endpoint(capsys):
+def test_client_bad_endpoint(caplog):
     with pytest.raises(Timeout):
         Client(('unix', './no-such-socket.sock'), connect=True, timeout=0.1)
-    out, err = capsys.readouterr()
-    assert 'error: [Errno 2]' in err
+    assert 'error: [Errno 2]' in caplog.text()
 
 def test_client(copper_client):
     def handler(stream):
