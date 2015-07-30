@@ -7,15 +7,19 @@ from gevent import (
     Timeout,
 )
 from gevent.event import Event
-from gevent.socket import ( # pylint: disable=E0611
-    socket,
-    getaddrinfo,
+from socket import (
     AF_UNIX,
     SOCK_STREAM,
     IPPROTO_TCP,
     TCP_NODELAY,
+    error as socket_error,
+)
+from gevent.socket import (
+    socket,
+    getaddrinfo,
 )
 from .errors import (
+    CopperError,
     NoTargetError,
     InvalidDataError,
     ConnectionClosedError,
@@ -233,6 +237,7 @@ class Client(object):
                     if self._closed:
                         return
                     if self._shutdown:
+                        self._unpublish_all()
                         conn.shutdown()
                         return
                     # Wait until connection is closed
@@ -249,6 +254,19 @@ class Client(object):
                 traceback.print_exc()
             finally:
                 conn.close()
+
+    def _unpublish_all(self):
+        from gevent import wait
+        def unpublish(pub):
+            try:
+                pub.stop()
+            except (socket_error, CopperError):
+                pass
+        gg = []
+        for pub in self._publications:
+            gg.append(spawn(unpublish, pub))
+        for g in wait(gg):
+            g.get()
 
     def _reregister(self, conn):
         from gevent import wait
@@ -341,10 +359,12 @@ class Client(object):
             if self._conn is not None:
                 self._conn.close()
 
-    def shutdown(self):
+    def shutdown(self, unpublish=True):
         self._shutdown = True
         self._connected_cond.broadcast()
         if self._conn is not None:
+            if unpublish:
+                self._unpublish_all()
             self._conn.shutdown()
 
     def ping(self, value):

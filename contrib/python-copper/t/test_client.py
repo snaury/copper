@@ -57,7 +57,7 @@ def test_client_shutdown(copper_client):
                         # complete on its own, because handler is still
                         # running. Being stopped with a timeout does not
                         # stop the shutdown procedure.
-                        copper_client.shutdown()
+                        copper_client.shutdown(unpublish=False)
                 # Verify our handler can still reply successfully
                 may_respond.set()
                 assert stream.read() == 'Hello, world!'
