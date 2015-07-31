@@ -218,23 +218,30 @@ func (peer *serverPeer) processChanges(client *clientConn, changes ServiceChange
 }
 
 func (peer *serverPeer) addRemoteLocked(change ServiceChange) {
+	if change.Settings.Distance < peer.distance {
+		// We are not allowed to reach this service
+		if remote := peer.remotesByTarget[change.TargetID]; remote != nil {
+			// Forget this remote and remove from all subscriptions
+			remote.removeLocked()
+		}
+		return
+	}
+
+	// Change distance to the peer distance, not the maximum allowed distance
+	change.Settings.Distance = peer.distance
+
+	// Check if we already had this remote registered
 	if remote := peer.remotesByTarget[change.TargetID]; remote != nil {
-		if remote.name == change.Name && change.Settings.Priority == remote.settings.Priority && change.Settings.Distance == remote.settings.Distance {
-			// This remote changed neigher priority nor distance
+		if remote.name == change.Name && change.Settings.Priority == remote.settings.Priority {
+			// This remote changed neigher name nor priority
 			remote.settings = change.Settings
 			return
 		}
 		// Either target id was reused for a different name (shouldn't happen
-		// in practice), or priority and/or distance changed. The easiest way
-		// to update subscriptions is to simply remove this peer and re-add
-		// it again below.
+		// in practice), or priority changed. The easiest way to update
+		// subscriptions is to simply remove this remote and re-add it again
+		// below.
 		remote.removeLocked()
-		remote = nil
-	}
-
-	if change.Settings.Distance < peer.distance {
-		// We are not allowed to reach this service
-		return
 	}
 
 	remote := &serverPeerRemote{

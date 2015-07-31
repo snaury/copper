@@ -1,3 +1,9 @@
+copper-node (0.0.4) unstable; urgency=medium
+
+  * Fix distance of remote services
+
+ -- Alexey Borzenkov <snaury@gmail.com>  Fri, 31 Jul 2015 18:43:52 +0300
+
 copper-node (0.0.3) unstable; urgency=medium
 
   * Fix routing panic after remotes disconnect
