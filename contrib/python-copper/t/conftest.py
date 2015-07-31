@@ -4,18 +4,18 @@ import sys
 import json
 import time
 import pytest
-import subprocess
 from errno import EEXIST
 from shutil import rmtree
 from tempfile import mkdtemp
 from gevent import socket
 from httplib import HTTPConnection
 from urllib2 import build_opener, AbstractHTTPHandler
+from gevent.subprocess import Popen, check_call
 
 SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 SRC_COPPER_NODE = os.path.join(SRC_ROOT, 'cmd/copper-node')
 
-subprocess.check_call(['go', 'install'], shell=False, cwd=SRC_COPPER_NODE)
+check_call(['go', 'install'], shell=False, cwd=SRC_COPPER_NODE)
 
 @pytest.yield_fixture
 def workdir():
@@ -49,7 +49,7 @@ def copper_node(workdir):
         # YAML parses valid JSON data
         json.dump(config, f)
     with open(logpath, 'wb') as logfile:
-        p = subprocess.Popen(['copper-node', '-config=' + confpath], shell=False, cwd=workdir, stdout=logfile, stderr=logfile)
+        p = Popen(['copper-node', '-config=' + confpath], shell=False, cwd=workdir, stdout=logfile, stderr=logfile)
     try:
         while not os.path.exists(unixpath):
             time.sleep(0.001)

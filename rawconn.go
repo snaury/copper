@@ -37,6 +37,8 @@ type rawConn struct {
 	shutdownchan  chan struct{}
 	shutdowngroup sync.WaitGroup
 
+	readloopdone chan struct{}
+
 	pings    rawConnPings
 	streams  rawConnStreams
 	settings rawConnSettings
@@ -61,6 +63,8 @@ func NewRawConn(conn net.Conn, handler Handler, server bool) RawConn {
 		conn:       conn,
 		handler:    handler,
 		closedchan: make(chan struct{}),
+
+		readloopdone: make(chan struct{}),
 	}
 
 	c.pings.init(c)
@@ -362,6 +366,7 @@ func (c *rawConn) processFrame(rawFrame Frame) bool {
 }
 
 func (c *rawConn) readloop() {
+	defer close(c.readloopdone)
 	defer c.finishgroup.Done()
 	for {
 		rawFrame, err := c.reader.ReadFrame()
@@ -383,7 +388,19 @@ func (c *rawConn) readloop() {
 
 func (c *rawConn) writeloop() {
 	defer c.finishgroup.Done()
-	defer c.conn.Close()
+	defer func() {
+		// Wait up to 250ms for the read loop to finish on its own.
+		// This protects the remote from getting write failures instead of the
+		// error we intended it to receive (which might happen if we close the
+		// connection before the remote has a chance to receive our error).
+		grace := time.NewTimer(250 * time.Millisecond)
+		defer grace.Stop()
+		select {
+		case <-grace.C:
+		case <-c.readloopdone:
+		}
+		c.conn.Close()
+	}()
 
 	lastwrite := c.lastwrite
 	deadline := lastwrite.Add(c.settings.getRemoteInactivityTimeout() * 2 / 3)
