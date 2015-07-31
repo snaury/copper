@@ -289,6 +289,7 @@ func (sub *serverSubscription) removeRemoteLocked(remote *serverPeerRemote) {
 	for _, index := range sub.indexByName[remote.name] {
 		if sub.options[index].removeRemoteLocked(remote) {
 			changed = true
+			sub.options[index].updateRemotePriorityLocked()
 		}
 	}
 	if changed {
