@@ -1,3 +1,9 @@
+python-copper (0.0.2) unstable; urgency=medium
+
+  * Use python logging, auto unpublish on shutdown
+
+ -- Alexey Borzenkov <snaury@gmail.com>  Fri, 31 Jul 2015 13:28:08 +0300
+
 python-copper (0.0.1) unstable; urgency=medium
 
   * Initial release.
