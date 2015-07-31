@@ -655,6 +655,36 @@ func TestClientServerStream(t *testing.T) {
 	)
 }
 
+func TestClientServerNoRequest(t *testing.T) {
+	serverMayClose := make(chan int, 1)
+	runClientServerStream(
+		func(client Stream) error {
+			defer close(serverMayClose)
+			n, err := client.Read(make([]byte, 16))
+			if err == nil {
+				_, err = client.Peek()
+			}
+			if n != 5 || err != io.EOF {
+				t.Fatalf("client: Read: %d, %v", n, err)
+			}
+			if !client.IsAcknowledged() {
+				t.Fatalf("client: not acknowledged!")
+			}
+			serverMayClose <- 1
+			return nil
+		},
+		func(server Stream) error {
+			n, err := server.Write([]byte("hello"))
+			if n != 5 || err != nil {
+				t.Fatalf("server: Write: %d, %v", n, err)
+			}
+			server.CloseWrite()
+			<-serverMayClose
+			return nil
+		},
+	)
+}
+
 func TestClientServerBigRequest(t *testing.T) {
 	runClientServerStream(
 		func(client Stream) error {

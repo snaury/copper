@@ -51,6 +51,7 @@ type rawStreamWrite struct {
 	buf   buffer // buffered outgoing bytes
 	left  int    // number of bytes we are allowed to send
 	wired int    // number of bytes in buf that are being written on the wire
+	acked bool   // set to true when Acknowledge is called
 
 	closed chan struct{} // closed when write side is closed
 
@@ -710,8 +711,9 @@ func (s *rawStream) WriteClosed() <-chan struct{} {
 func (s *rawStream) Acknowledge() error {
 	s.mu.Lock()
 	err := s.write.err
-	if err == nil {
+	if err == nil && !s.write.acked {
 		s.flags |= flagStreamNeedAck
+		s.write.acked = true
 		s.scheduleCtrl()
 	}
 	s.mu.Unlock()
