@@ -113,8 +113,6 @@ class _RawConnWriter(object):
         frame.dump(self)
 
 class RawConn(object):
-    DEBUG_HANDLERS = False
-
     def __init__(self, sock, handler=None, is_server=False):
         self._sock = sock
         self._handler = handler
@@ -252,8 +250,7 @@ class RawConn(object):
         try:
             self._handler(stream)
         except:
-            if self.DEBUG_HANDLERS:
-                log.debug('Handler failed', exc_info=True)
+            log.debug('Stream handler failed', exc_info=True)
             stream.close_with_error(sys.exc_info()[1])
         else:
             stream.close()
