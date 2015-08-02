@@ -2,16 +2,17 @@ Checklist for things that can wait, but need to eventually be done:
 
 ### Raw connections and streams
 
-- [ ] Add `WaitReadClosed` and `WaitBothClosed` to streams
-- [ ] Add `Shutdown` and `WaitDrained` to raw connections
+- [x] Add `WaitReadClosed` and `WaitBothClosed` to streams
+  - Solved differently (`ReadClosed`, `WriteClosed`, `Closed`)
+- [x] Add `Shutdown` to raw connections
   - Stop accepting new streams and close them with `ESHUTDOWN`
   - Wait until currently accepted streams are closed
 
 ### Copper server functionality
 
-- [ ] Optimize subscription updates
-  - Endpoints sorted by priority, then distance
-  - Random selection proportional to concurrency
+- [x] Optimize subscription updates
+  - Endpoints sorted by priority
+- [ ] Random selection proportional to concurrency
 - [ ] Queue should `WaitBothClosed` and remove cancelled requests
   - Not sure if should support one-way requests (send a blob, close the stream, don't expect any reply), since quickly become closed (but such requests have no way of knowing if they failed, so probably ok to try them exactly once and give up)
 - [ ] Upstream read/write detection in passthru
