@@ -68,7 +68,8 @@ func passthruBoth(local, remote Stream) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		passthru(remote, local, true)
+		// TODO: set waitack to true when local reuse support is implemented
+		passthru(remote, local, false)
 	}()
 	passthru(local, remote, false)
 	wg.Wait()
