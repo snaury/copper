@@ -373,16 +373,13 @@ class Client(object):
         self._wait_connected().ping(value)
 
     @staticmethod
-    def _convert_subscribe_options(target, options, min_distance=None, max_distance=None):
+    def _convert_subscribe_options(target, options):
         if isinstance(options, basestring):
             options = (options,)
         for option in options:
             if isinstance(option, basestring):
-                if min_distance is None and max_distance is None:
-                    target.add(service=option, min_distance=0, max_distance=1)
-                    target.add(service=option, min_distance=2, max_distance=2)
-                else:
-                    target.add(service=option, min_distance=min_distance, max_distance=max_distance)
+                target.add(service=option, min_distance=0, max_distance=1)
+                target.add(service=option, min_distance=2, max_distance=2)
             elif isinstance(option, (list, tuple)) and len(option) == 3:
                 target.add(service=option[0], min_distance=option[1], max_distance=option[2])
             else:
@@ -391,16 +388,11 @@ class Client(object):
     def subscribe(self, *args, **kwargs):
         if len(args) == 0:
             raise TypeError('subscribe requires at least one option')
-        min_distance = kwargs.pop('min_distance', None)
-        max_distance = kwargs.pop('max_distance', None)
-        if min_distance is None or max_distance is None:
-            if not (min_distance is None and max_distance is None):
-                raise ValueError('subscribe requires either both min_distance and max_distance or neither specified')
         disable_routes = kwargs.pop('disable_routes', None)
         if kwargs:
             raise TypeError('subscribe got an unexpected keyword argument %s' % (next(iter(kwargs)),))
         request = SubscribeRequest()
-        self._convert_subscribe_options(request.options, args, min_distance, max_distance)
+        self._convert_subscribe_options(request.options, args)
         if disable_routes is not None:
             request.disable_routes = disable_routes
         sub = self.Subscription(self)
@@ -431,11 +423,6 @@ class Client(object):
 
     def set_route(self, name, *routes, **kwargs):
         default_weight = kwargs.pop('weight', 1)
-        min_distance = kwargs.pop('min_distance', None)
-        max_distance = kwargs.pop('max_distance', None)
-        if min_distance is None or max_distance is None:
-            if not (min_distance is None and max_distance is None):
-                raise ValueError('set_route requires either both min_distance and max_distance or neither specified')
         def convert_routes(target):
             for route in routes:
                 if isinstance(route, basestring):
@@ -450,7 +437,7 @@ class Client(object):
                     if not options:
                         raise ValueError('invalid route %r' % (route,))
                     r = target.add(weight=weight)
-                    self._convert_subscribe_options(r.options, options, min_distance, max_distance)
+                    self._convert_subscribe_options(r.options, options)
                 else:
                     raise ValueError('invalid route %r' % (route,))
         request = SetRouteRequest()
