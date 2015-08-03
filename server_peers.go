@@ -114,7 +114,7 @@ func (peer *serverPeer) connectloop() {
 		conn, err := net.Dial(peer.key.network, peer.key.address)
 		if err != nil {
 			if log := DebugLog(); log != nil {
-				log.Printf("Peer %s: connection failed: %s", peer.key.address, err)
+				log.Printf("Peer %s: connect failed: %s", peer.key.address, err)
 			}
 			if peer.sleep(5 * time.Second) {
 				continue
@@ -151,10 +151,10 @@ func (peer *serverPeer) attachClient(client *clientConn) {
 func (peer *serverPeer) detachClient(client *clientConn) {
 	peer.owner.lock.Lock()
 	defer peer.owner.lock.Unlock()
-	if log := DebugLog(); log != nil {
-		log.Printf("Peer %s: disconnected from %s", peer.key.address, client.RemoteAddr())
-	}
 	if peer.client == client {
+		if log := DebugLog(); log != nil {
+			log.Printf("Peer %s: disconnected from %s", peer.key.address, client.RemoteAddr())
+		}
 		for _, remote := range peer.remotesByTarget {
 			remote.removeLocked()
 		}
