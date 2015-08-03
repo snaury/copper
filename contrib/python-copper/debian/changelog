@@ -1,9 +1,9 @@
-python-copper (0.0.3) UNRELEASED; urgency=medium
+python-copper (0.0.3) unstable; urgency=medium
 
   * Remove unused max_retries from the protocol
   * Remove min/max_distance from subscribe/set_route arguments
 
- -- Alexey Borzenkov <snaury@gmail.com>  Mon, 03 Aug 2015 13:03:44 +0300
+ -- Alexey Borzenkov <snaury@gmail.com>  Mon, 03 Aug 2015 13:08:59 +0300
 
 python-copper (0.0.2) unstable; urgency=medium
 

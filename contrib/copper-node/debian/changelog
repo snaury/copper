@@ -1,9 +1,9 @@
-copper-node (0.0.5) UNRELEASED; urgency=medium
+copper-node (0.0.5) unstable; urgency=medium
 
   * Log service-related messages for easier debugging
   * Remove unused max_retries from the protocol
 
- -- Alexey Borzenkov <snaury@gmail.com>  Mon, 03 Aug 2015 12:55:31 +0300
+ -- Alexey Borzenkov <snaury@gmail.com>  Mon, 03 Aug 2015 13:08:50 +0300
 
 copper-node (0.0.4) unstable; urgency=medium
 
