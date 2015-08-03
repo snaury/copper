@@ -1,3 +1,9 @@
+copper-node (0.0.7) unstable; urgency=medium
+
+  * When logging routes use %v, not %s
+
+ -- Alexey Borzenkov <snaury@gmail.com>  Mon, 03 Aug 2015 14:25:11 +0300
+
 copper-node (0.0.6) unstable; urgency=medium
 
   * Log route changes

@@ -116,7 +116,7 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 		r.cases[index].weight = route.Weight
 	}
 	if log := DebugLog(); log != nil {
-		log.Printf("Route %s: setting to %s", name, routes)
+		log.Printf("Route %s: setting to %v", name, routes)
 	}
 	return nil
 }
