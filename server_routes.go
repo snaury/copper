@@ -87,6 +87,9 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 		r.cases = nil
 		r.routes = nil
 		delete(s.routeByName, name)
+		if log := DebugLog(); log != nil {
+			log.Printf("Route %s: removed", name)
+		}
 		return nil
 	} else {
 		if reflect.DeepEqual(r.routes, routes) {
@@ -111,6 +114,9 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 		}
 		r.cases[index].sub = sub
 		r.cases[index].weight = route.Weight
+	}
+	if log := DebugLog(); log != nil {
+		log.Printf("Route %s: setting to %s", name, routes)
 	}
 	return nil
 }
