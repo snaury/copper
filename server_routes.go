@@ -104,7 +104,6 @@ func (s *server) setRouteLocked(name string, routes []Route) error {
 	for index, route := range r.routes {
 		sub, err := s.subscribeLocked(SubscribeSettings{
 			Options:       route.Options,
-			MaxRetries:    1,
 			DisableRoutes: true,
 		})
 		if err != nil {

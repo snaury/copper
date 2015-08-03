@@ -27,7 +27,6 @@ type Route struct {
 // SubscribeSettings contains settings for the subscription
 type SubscribeSettings struct {
 	Options       []SubscribeOption
-	MaxRetries    uint32
 	DisableRoutes bool
 }
 

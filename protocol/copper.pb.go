@@ -266,8 +266,7 @@ func (m *ServiceChange) GetSettings() *PublishSettings {
 
 type SubscribeRequest struct {
 	Options          []*SubscribeOption `protobuf:"bytes,1,rep,name=options" json:"options,omitempty"`
-	MaxRetries       *uint32            `protobuf:"varint,2,opt,name=max_retries" json:"max_retries,omitempty"`
-	DisableRoutes    *bool              `protobuf:"varint,3,opt,name=disable_routes" json:"disable_routes,omitempty"`
+	DisableRoutes    *bool              `protobuf:"varint,2,opt,name=disable_routes" json:"disable_routes,omitempty"`
 	XXX_unrecognized []byte             `json:"-"`
 }
 
@@ -280,13 +279,6 @@ func (m *SubscribeRequest) GetOptions() []*SubscribeOption {
 		return m.Options
 	}
 	return nil
-}
-
-func (m *SubscribeRequest) GetMaxRetries() uint32 {
-	if m != nil && m.MaxRetries != nil {
-		return *m.MaxRetries
-	}
-	return 0
 }
 
 func (m *SubscribeRequest) GetDisableRoutes() bool {

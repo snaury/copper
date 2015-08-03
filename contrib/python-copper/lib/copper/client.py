@@ -396,14 +396,11 @@ class Client(object):
         if min_distance is None or max_distance is None:
             if not (min_distance is None and max_distance is None):
                 raise ValueError('subscribe requires either both min_distance and max_distance or neither specified')
-        max_retries = kwargs.pop('max_retries', None)
         disable_routes = kwargs.pop('disable_routes', None)
         if kwargs:
             raise TypeError('subscribe got an unexpected keyword argument %s' % (next(iter(kwargs)),))
         request = SubscribeRequest()
         self._convert_subscribe_options(request.options, args, min_distance, max_distance)
-        if max_retries is not None:
-            request.max_retries = max_retries
         if disable_routes is not None:
             request.disable_routes = disable_routes
         sub = self.Subscription(self)

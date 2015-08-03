@@ -31,7 +31,6 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		}
 		targetID, err := server.subscribe(SubscribeSettings{
 			Options:       rpcProtoToSubscribeOptions(request.GetOptions()),
-			MaxRetries:    request.GetMaxRetries(),
 			DisableRoutes: request.GetDisableRoutes(),
 		})
 		if err != nil {

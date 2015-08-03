@@ -32,8 +32,7 @@ message ServiceChange {
 
 message SubscribeRequest {
     repeated SubscribeOption options = 1;
-    optional uint32 max_retries = 2;
-    optional bool disable_routes = 3;
+    optional bool disable_routes = 2;
 }
 
 message SubscribeResponse {
