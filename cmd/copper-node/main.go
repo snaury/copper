@@ -62,6 +62,9 @@ func main() {
 		runtime.GOMAXPROCS(config.CPU)
 	}
 
+	copper.SetErrorLog(log.New(os.Stderr, "", log.LstdFlags))
+	copper.SetDebugLog(log.New(os.Stdout, "", log.LstdFlags))
+
 	server := copper.NewServer()
 	defer server.Close()
 

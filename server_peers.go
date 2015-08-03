@@ -3,7 +3,6 @@ package copper
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"time"
 )
@@ -114,6 +113,9 @@ func (peer *serverPeer) connectloop() {
 		}
 		conn, err := net.Dial(peer.key.network, peer.key.address)
 		if err != nil {
+			if log := DebugLog(); log != nil {
+				log.Printf("Peer %s: connection failed: %s", peer.key.address, err)
+			}
 			if peer.sleep(5 * time.Second) {
 				continue
 			}
@@ -140,12 +142,18 @@ func (peer *serverPeer) attachClient(client *clientConn) {
 	peer.owner.lock.Lock()
 	defer peer.owner.lock.Unlock()
 	peer.client = client
+	if log := DebugLog(); log != nil {
+		log.Printf("Peer %s: connected to %s", peer.key.address, client.RemoteAddr())
+	}
 	go peer.serveClient(client)
 }
 
 func (peer *serverPeer) detachClient(client *clientConn) {
 	peer.owner.lock.Lock()
 	defer peer.owner.lock.Unlock()
+	if log := DebugLog(); log != nil {
+		log.Printf("Peer %s: disconnected from %s", peer.key.address, client.RemoteAddr())
+	}
 	if peer.client == client {
 		for _, remote := range peer.remotesByTarget {
 			remote.removeLocked()
@@ -174,7 +182,13 @@ func (peer *serverPeer) listenChanges(client *clientConn) bool {
 	stream, err := client.ServiceChanges()
 	if err != nil {
 		if err != ECONNCLOSED && err != ECONNSHUTDOWN {
-			log.Printf("peer changes stream: %s", err)
+			if log := ErrorLog(); log != nil {
+				log.Printf("Peer %s: changes stream: %s: %s", peer.key.address, client.RemoteAddr(), err)
+			}
+		} else {
+			if log := DebugLog(); log != nil {
+				log.Printf("Peer %s: changes stream: %s: %s", peer.key.address, client.RemoteAddr(), err)
+			}
 		}
 		return false
 	}
@@ -183,17 +197,28 @@ func (peer *serverPeer) listenChanges(client *clientConn) bool {
 		changes, err := stream.Read()
 		if err != nil {
 			if err == ECONNCLOSED || err == ECONNSHUTDOWN {
+				if log := DebugLog(); log != nil {
+					log.Printf("Peer %s: changes stream: %s: %s", peer.key.address, client.RemoteAddr(), err)
+				}
 				return false
 			}
 			if err != io.EOF {
-				log.Printf("peer changes stream: %s", err)
+				if log := ErrorLog(); log != nil {
+					log.Printf("Peer %s: changes stream: %s: %s", peer.key.address, client.RemoteAddr(), err)
+				}
 			}
 			// TODO: Theoretically we may receive an error if we are not reading
 			// changes fast enough, in which case we may try to reconnect, but
 			// for that we need to forget all currently active services first.
+			if log := DebugLog(); log != nil {
+				log.Printf("Peer %s: changes stream: %s: %s", peer.key.address, client.RemoteAddr(), err)
+			}
 			return false
 		}
 		if !peer.processChanges(client, changes) {
+			if log := DebugLog(); log != nil {
+				log.Printf("Peer %s: changes stream: %s: stopping", peer.key.address, client.RemoteAddr())
+			}
 			return false
 		}
 	}
@@ -209,6 +234,9 @@ func (peer *serverPeer) processChanges(client *clientConn, changes ServiceChange
 	for _, targetID := range changes.Removed {
 		if remote := peer.remotesByTarget[targetID]; remote != nil {
 			remote.removeLocked()
+			if log := DebugLog(); log != nil {
+				log.Printf("Service %s(priority=%d): removed from %s", remote.name, remote.settings.Priority, peer.key.address)
+			}
 		}
 	}
 	for _, change := range changes.Changed {
@@ -223,6 +251,9 @@ func (peer *serverPeer) addRemoteLocked(change ServiceChange) {
 		if remote := peer.remotesByTarget[change.TargetID]; remote != nil {
 			// Forget this remote and remove from all subscriptions
 			remote.removeLocked()
+			if log := DebugLog(); log != nil {
+				log.Printf("Service %s(priority=%d): removed from %s", remote.name, remote.settings.Priority, peer.key.address)
+			}
 		}
 		return
 	}
@@ -264,6 +295,10 @@ func (peer *serverPeer) addRemoteLocked(change ServiceChange) {
 
 	for sub := range peer.owner.subsByName[remote.name] {
 		sub.addRemoteLocked(remote)
+	}
+
+	if log := DebugLog(); log != nil {
+		log.Printf("Service %s(priority=%d): discovered at %s", remote.name, remote.settings.Priority, peer.key.address)
 	}
 }
 

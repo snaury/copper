@@ -188,6 +188,11 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 		watcher.addChangedLocked(pub)
 	}
 
+	if log := DebugLog(); log != nil {
+		log.Printf("Service %s(priority=%d): published locally (total: endpoints=%d, concurrency=%d, queue_size=%d, max_distance=%d)",
+			pub.name, pub.settings.Priority, len(pub.endpoints), pub.settings.Concurrency, pub.settings.QueueSize, pub.settings.Distance)
+	}
+
 	return endpoint, nil
 }
 
@@ -228,12 +233,20 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 		for sub := range pub.subscriptions {
 			sub.removePublicationLocked(pub)
 		}
+		if log := DebugLog(); log != nil {
+			log.Printf("Service %s(priority=%d): unpublished locally (no endpoints left)",
+				pub.name, pub.settings.Priority)
+		}
 	} else {
 		if len(pub.queue) > int(pub.settings.QueueSize) {
 			pub.wakeupWaitersLocked(int(pub.settings.QueueSize) - len(pub.queue))
 		}
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addChangedLocked(pub)
+		}
+		if log := DebugLog(); log != nil {
+			log.Printf("Service %s(priority=%d): unpublished locally (total: endpoints=%d, concurrency=%d, queue_size=%d, max_distance=%d)",
+				pub.name, pub.settings.Priority, len(pub.endpoints), pub.settings.Concurrency, pub.settings.QueueSize, pub.settings.Distance)
 		}
 	}
 	return nil
