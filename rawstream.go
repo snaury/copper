@@ -300,13 +300,9 @@ func (s *rawStream) prepareDataLocked(maxpayload int) []byte {
 		// We have more data in the buffer than stream window allows
 		n = s.write.left
 	}
-	if n <= 0 {
-		return nil
-	}
 	if n > maxpayload {
 		n = maxpayload
 	}
-	n = s.conn.outgoing.takeWriteWindow(n)
 	if n > 0 {
 		data := s.write.buf.peek()[:n]
 		s.write.wired = n
@@ -447,7 +443,7 @@ func (s *rawStream) writeData() error {
 		if s.activeData() {
 			// We have more data, make sure to re-register
 			s.scheduleData()
-		} else if s.activeResetWrite() {
+		} else if s.write.buf.size == s.write.wired && s.flags&flagStreamNeedEOF != 0 {
 			// Sending all data unlocked a pending RESET
 			s.scheduleCtrl()
 		}
@@ -480,19 +476,9 @@ func (s *rawStream) activeData() bool {
 	return s.write.left > 0 && s.pendingBytes() > 0
 }
 
-// Returns true if there is a RESET for the read side that needs to be written
-func (s *rawStream) activeResetRead() bool {
-	return s.flags&flagStreamNeedReset != 0
-}
-
-// Returns true if there is a RESET for the write side that needs to be written
-func (s *rawStream) activeResetWrite() bool {
-	return s.flags&flagStreamNeedEOF != 0 && s.write.buf.size == s.write.wired && s.write.err != ECLOSED
-}
-
 // Returns true if there is EOF pending and it needs to be written
 func (s *rawStream) activeEOF() bool {
-	if s.flags&flagStreamNeedEOF != 0 && s.write.buf.size == s.write.wired {
+	if s.write.buf.size == s.write.wired && s.flags&flagStreamNeedEOF != 0 {
 		// there's no data and a EOF is pending, send it unless RESET is active
 		return s.flags&flagStreamNeedReset == 0 && s.write.err == ECLOSED
 	}

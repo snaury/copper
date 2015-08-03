@@ -11,8 +11,6 @@ type rawConnSettings struct {
 	conn      *rawConn
 	callbacks []func(error)
 
-	localConnWindowSize     int
-	remoteConnWindowSize    int
 	localStreamWindowSize   int
 	remoteStreamWindowSize  int
 	localInactivityTimeout  time.Duration
@@ -21,8 +19,6 @@ type rawConnSettings struct {
 
 func (s *rawConnSettings) init(conn *rawConn) {
 	s.conn = conn
-	s.localConnWindowSize = InitialConnectionWindow
-	s.remoteConnWindowSize = InitialConnectionWindow
 	s.localStreamWindowSize = InitialStreamWindow
 	s.remoteStreamWindowSize = InitialStreamWindow
 	s.localInactivityTimeout = InitialInactivityTimeout
@@ -60,18 +56,6 @@ func (s *rawConnSettings) handleAck() {
 // Handles an incoming settings frame, updates to new settings
 func (s *rawConnSettings) handleSettings(frame *SettingsFrame) error {
 	s.conn.mu.Lock()
-	if value, ok := frame.Value(SettingConnWindow); ok {
-		if value < MinWindowSize || value > MaxWindowSize {
-			s.conn.mu.Unlock()
-			return copperError{
-				error: fmt.Errorf("cannot set connection window to %d bytes", value),
-				code:  EINVALIDFRAME,
-			}
-		}
-		diff := int(value) - s.remoteConnWindowSize
-		s.conn.outgoing.changeWriteWindow(diff)
-		s.remoteConnWindowSize = int(value)
-	}
 	if value, ok := frame.Value(SettingStreamWindow); ok {
 		if value < MinWindowSize || value > MaxWindowSize {
 			s.conn.mu.Unlock()
@@ -81,7 +65,7 @@ func (s *rawConnSettings) handleSettings(frame *SettingsFrame) error {
 			}
 		}
 		diff := int(value) - s.remoteStreamWindowSize
-		s.conn.streams.changeWriteWindow(diff)
+		s.conn.streams.changeWriteWindowLocked(diff)
 		s.remoteStreamWindowSize = int(value)
 	}
 	if value, ok := frame.Value(SettingInactivityMilliseconds); ok {

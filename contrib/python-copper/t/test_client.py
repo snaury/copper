@@ -211,6 +211,27 @@ def test_routed_services(copper_client):
                         assert stream.read() == 'Hello from handler1'
 
 if os.environ.get('SPEEDTEST', '').strip().lower() in ('1', 'yes', 'true'):
+    def test_read_speed(copper_client):
+        def handler(stream):
+            data = 'x' * 65536
+            while True:
+                n = stream.send(data)
+        with copper_client.publish('test:myservice', handler):
+            with copper_client.subscribe('test:myservice') as sub:
+                start_time = time.time()
+                stop_time = start_time + 1.0
+                received = 0
+                with sub.open() as stream:
+                    while True:
+                        chunk = stream.recv(65536)
+                        assert chunk
+                        received += len(chunk)
+                        now = time.time()
+                        if now >= stop_time:
+                            stop_time = now
+                            break
+                print 'Copper stream speed: %.3fMB/s' % (received / 1024.0 / 1024.0 / (stop_time - start_time),)
+
     @pytest.mark.parametrize('concurrency', [1, 8, 64, 512])
     def test_speed(copper_client, concurrency):
         def handler(stream):

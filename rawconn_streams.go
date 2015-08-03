@@ -95,10 +95,8 @@ func (s *rawConnStreams) remove(stream *rawStream) {
 }
 
 // Changes the write window size of all currently live streams
-func (s *rawConnStreams) changeWriteWindow(diff int) {
-	s.conn.mu.RLock()
+func (s *rawConnStreams) changeWriteWindowLocked(diff int) {
 	for _, stream := range s.live {
 		stream.changeWriteWindow(diff)
 	}
-	s.conn.mu.RUnlock()
 }

@@ -19,7 +19,6 @@ const (
 	MaxResetFrameMessageSize    = MaxFramePayloadSize - 4
 	MaxSettingsFramePayloadSize = 6 * 1024
 	InitialStreamWindow         = 65536
-	InitialConnectionWindow     = 1 << 20
 	InitialInactivityTimeout    = 60 * time.Second
 )
 
@@ -34,9 +33,8 @@ type Setting struct {
 
 // Reserved settings
 const (
-	SettingConnWindow             SettingID = 1
-	SettingStreamWindow           SettingID = 2
-	SettingInactivityMilliseconds SettingID = 3
+	SettingStreamWindow           SettingID = 1
+	SettingInactivityMilliseconds SettingID = 2
 )
 
 // FrameType is an 8-bit frame type code

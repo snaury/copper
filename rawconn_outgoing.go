@@ -14,8 +14,6 @@ type rawConnOutgoing struct {
 	mu sync.Mutex
 
 	err        error     // becomes non-nil when the connection fails
-	readleft   int       // number of bytes left in the local receive window
-	writeleft  int       // number of bytes left in the remote receive window
 	writeready bool      // true if there exists something to write
 	writecond  sync.Cond // signals when writeready becomes true
 
@@ -27,16 +25,12 @@ type rawConnOutgoing struct {
 
 	settingsAcks int // number of SETTINGS/ACK frames that need to be sent
 
-	remoteIncrement int // outgoing increment for the connection window
-
 	ctrl rawStreamQueue // a queue of streams that need to write control frames
 	data rawStreamQueue // a queue of streams that need to write data
 }
 
 func (o *rawConnOutgoing) init(conn *rawConn) {
 	o.conn = conn
-	o.readleft = InitialConnectionWindow
-	o.writeleft = InitialConnectionWindow
 	o.writecond.L = &o.mu
 	o.unblocked.L = &o.mu
 }
@@ -52,30 +46,6 @@ func (o *rawConnOutgoing) fail(err error) {
 		} else {
 			o.err = err
 		}
-		o.wakeupLocked()
-	}
-	o.mu.Unlock()
-}
-
-// Takes up to n bytes from the outgoing connection window, used by streams.
-func (o *rawConnOutgoing) takeWriteWindow(n int) int {
-	o.mu.Lock()
-	if n > o.writeleft {
-		n = o.writeleft
-	}
-	if n < 0 {
-		n = 0
-	}
-	o.writeleft -= n
-	o.mu.Unlock()
-	return n
-}
-
-// Changes the connection window size by diff bytes, increasing or decreasing.
-func (o *rawConnOutgoing) changeWriteWindow(diff int) {
-	o.mu.Lock()
-	o.writeleft += diff
-	if o.writeleft > 0 && o.data.size > 0 {
 		o.wakeupLocked()
 	}
 	o.mu.Unlock()
@@ -110,27 +80,6 @@ func (o *rawConnOutgoing) clearPingQueue() {
 func (o *rawConnOutgoing) addSettingsAck() {
 	o.mu.Lock()
 	o.settingsAcks++
-	o.wakeupLocked()
-	o.mu.Unlock()
-}
-
-// Takes n bytes from the incoming connection window, returns true if there is
-// enough bytes in the window, false otherwise.
-func (o *rawConnOutgoing) takeReadWindow(n int) bool {
-	o.mu.Lock()
-	if n > o.readleft {
-		o.mu.Unlock()
-		return false
-	}
-	o.readleft -= n
-	o.mu.Unlock()
-	return true
-}
-
-// Schedules a window increment on the connection.
-func (o *rawConnOutgoing) incrementReadWindow(increment int) {
-	o.mu.Lock()
-	o.remoteIncrement += increment
 	o.wakeupLocked()
 	o.mu.Unlock()
 }
@@ -233,19 +182,6 @@ writeloop:
 			o.mu.Lock()
 			continue writeloop
 		}
-		if o.remoteIncrement > 0 {
-			increment := o.remoteIncrement
-			o.readleft += increment
-			o.remoteIncrement = 0
-			o.mu.Unlock()
-			err := o.conn.writer.WriteWindow(0, uint32(increment))
-			if err != nil {
-				o.conn.closeWithError(err)
-				return false
-			}
-			o.mu.Lock()
-			continue writeloop
-		}
 		if o.ctrl.size > 0 {
 			stream := o.ctrl.take()
 			stream.inctrl = false
@@ -258,7 +194,7 @@ writeloop:
 			o.mu.Lock()
 			continue writeloop
 		}
-		if o.data.size > 0 && o.writeleft > 0 {
+		if o.data.size > 0 {
 			stream := o.data.take()
 			stream.indata = false
 			o.mu.Unlock()

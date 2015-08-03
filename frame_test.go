@@ -49,8 +49,8 @@ var decodedFrames = []Frame{
 	&SettingsFrame{
 		Flags: 0,
 		Data: []Setting{
-			{SettingConnWindow, 7},
-			{SettingStreamWindow, 6},
+			{SettingStreamWindow, 7},
+			{SettingInactivityMilliseconds, 6},
 		},
 	},
 	&SettingsFrame{

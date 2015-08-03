@@ -280,15 +280,6 @@ func (c *rawConn) processDataFrame(frame *DataFrame) error {
 		}
 		c.mu.RUnlock()
 	}
-	if len(frame.Data) > 0 {
-		if !c.outgoing.takeReadWindow(len(frame.Data)) {
-			return copperError{
-				error: fmt.Errorf("stream 0x%08x received %d bytes, which overflowed the connection window", stream.StreamID, len(frame.Data)),
-				code:  EWINDOWOVERFLOW,
-			}
-		}
-		c.outgoing.incrementReadWindow(len(frame.Data))
-	}
 	err := stream.processDataFrame(frame)
 	if err != nil {
 		return err
@@ -322,10 +313,6 @@ func (c *rawConn) processResetFrame(frame *ResetFrame) error {
 }
 
 func (c *rawConn) processWindowFrame(frame *WindowFrame) error {
-	if frame.StreamID == 0 {
-		c.outgoing.changeWriteWindow(int(frame.Increment))
-		return nil
-	}
 	stream := c.streams.find(frame.StreamID)
 	if stream == nil {
 		// it's ok to receive WINDOW for a dead stream

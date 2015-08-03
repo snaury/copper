@@ -61,7 +61,7 @@ Setting both OPEN and EOF flags immediately half-closes the connection, which is
 
 Setting ACK flag is akin to sending `100 Continue` in HTTP: the client may wish to hold off on sending additional data until the server proves that it is willing to receive it and that it won't immediately fail. While the use of stream acknowledgements is optional in the core protocol, client and server must negotiate separately whether its use is mandatory between them. One example would be the copper rpc, where acknowledgements are handled automatically and transparently for the user.
 
-Payload MUST NOT exceed available space in the endpoint stream window.
+Payload MUST NOT exceed available space in the target stream window.
 
 Sending DATA frames without an OPEN flag set is only allowed when the stream is open, sending DATA frames after EOF is not permitted.
 
@@ -98,9 +98,9 @@ A special error code ECLOSED is used when stream sides are closed normally. When
 
 ## WINDOW frames
 
-WINDOW frames are used for telling endpoints how much more data may be sent on the stream. Special stream id 0 is used for updating receive window for the connection, otherwise update is for receive window for the specified stream.
+WINDOW frames are used for telling the remote how many more bytes may be sent on the stream. Unlike HTTP/2 there is no connection window.
 
-Endpoints MUST NOT send more data on each stream than both connection and stream windows permit. Only payload in OPEN and DATA frames are counted towards the window, all other frames and their data are not considered. Note that sending data on the stream removes space from both connection and stream windows.
+Endpoints MUST NOT send more data on each stream than stream window permits. Only payloads in DATA frames are counted towards the window, all other frames and their data are not considered.
 
 WINDOW frames do not support any flags.
 

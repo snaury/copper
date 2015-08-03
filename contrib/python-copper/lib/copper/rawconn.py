@@ -39,8 +39,8 @@ __all__ = [
 ]
 
 INACTIVITY_TIMEOUT = 60
-DEFAULT_CONN_WINDOW = 1<<20
 DEFAULT_STREAM_WINDOW = 65536
+MAX_STREAM_BUFFER = 65536
 
 log = logging.getLogger(__name__)
 
@@ -127,7 +127,6 @@ class RawConn(object):
         self._ping_acks = []
         self._ping_reqs = []
         self._ping_waiters = {}
-        self._window_acks = {}
         self._ctrl_streams = set()
         self._data_streams = set()
         self._streams = {}
@@ -136,11 +135,8 @@ class RawConn(object):
             self._next_stream_id = 2
         else:
             self._next_stream_id = 1
-        self._local_conn_window = DEFAULT_CONN_WINDOW
         self._local_stream_window = DEFAULT_STREAM_WINDOW
-        self._remote_conn_window = DEFAULT_CONN_WINDOW
         self._remote_stream_window = DEFAULT_STREAM_WINDOW
-        self._writeleft = self._remote_conn_window
         self._active_workers = 0
         self._active_handlers = 0
         self._workers_finished = Event()
@@ -192,8 +188,6 @@ class RawConn(object):
                     self._failure_out = error
             self._close_ready.set()
             self._write_ready.set()
-            # Don't send any pings that haven't been sent already
-            self._ping_reqs = []
             for stream in self._streams.values():
                 stream._close_with_error(error)
 
@@ -289,8 +283,6 @@ class RawConn(object):
                 raise InvalidStreamError('stream 0x%08x cannot be used for opening streams' % (frame.stream_id,))
             if stream is not None:
                 raise InvalidStreamError('stream 0x%08x cannot be reopened until fully closed' % (frame.stream_id,))
-            if len(frame.data) > self._local_conn_window:
-                raise WindowOverflowError('stream 0x%08x opened with %d bytes, which is more than %d bytes window' % (frame.stream_id, len(frame.data), self._local_conn_window))
             stream = RawStream.new_incoming(self, frame.stream_id)
             if self._closed:
                 # We are closed and ignore valid DATA frames
@@ -308,8 +300,6 @@ class RawConn(object):
                 # We are closed and ignore valid DATA frames
                 return
         stream._process_data_frame(frame)
-        if len(frame.data) > 0:
-            self._add_window_ack(0, len(frame.data))
 
     def _process_reset_frame(self, frame):
         if frame.stream_id == 0:
@@ -326,10 +316,6 @@ class RawConn(object):
         stream._process_reset_frame(frame)
 
     def _process_window_frame(self, frame):
-        if frame.stream_id == 0:
-            self._writeleft += frame.increment
-            self._write_ready.set()
-            return
         stream = self._streams.get(frame.stream_id)
         if stream is None:
             # It's ok to receive WINDOW for a dead stream
@@ -376,18 +362,6 @@ class RawConn(object):
             _, stream = self._streams.popitem()
             stream._close_with_error(self._failure)
 
-    def _stream_can_receive(self, stream_id):
-        if stream_id == 0:
-            return True
-        stream = self._streams.get(stream_id)
-        if stream is not None and stream._can_receive():
-            return True
-        return False
-
-    def _add_window_ack(self, stream_id, increment):
-        self._window_acks[stream_id] = self._window_acks.get(stream_id, 0) + increment
-        self._write_ready.set()
-
     def _add_ctrl_stream(self, stream):
         self._ctrl_streams.add(stream)
         self._write_ready.set()
@@ -401,6 +375,10 @@ class RawConn(object):
             self._write_ready.clear()
             sent_marker = self._writer.sent_marker
             send_detected = False
+            if self._failure_out is not None:
+                self._writer.write_frame(ResetFrame(0, 0, self._failure_out))
+                self._writer.flush()
+                return False
             if self._ping_acks:
                 ping_acks, self._ping_acks = self._ping_acks, []
                 for value in ping_acks:
@@ -414,18 +392,6 @@ class RawConn(object):
                 if sent_marker is not self._writer.sent_marker:
                     continue
             # TODO: settings frames
-            while self._window_acks:
-                stream_id, increment = self._window_acks.popitem()
-                self._writer.write_frame(WindowFrame(stream_id, 0, increment))
-                if sent_marker is not self._writer.sent_marker:
-                    send_detected = True
-                    break
-            if send_detected:
-                continue
-            if self._failure_out is not None:
-                self._writer.write_frame(ResetFrame(0, 0, self._failure_out))
-                self._writer.flush()
-                return False
             while self._ctrl_streams:
                 stream = self._ctrl_streams.pop()
                 stream._send_ctrl(self._writer)
@@ -482,21 +448,22 @@ class RawStream(object):
         self._conn = conn
         self._stream_id = stream_id
         self._is_outgoing = False
-        self._reset_error = None
+        self._error = None
         self._readbuf = ''
         self._readleft = conn._local_stream_window
+        self._readincrement = 0
         self._read_error = None
         self._writebuf = ''
         self._writeleft = conn._remote_stream_window
         self._write_error = None
-        self._sent_eof = False
         self._seen_eof = False
-        self._sent_reset = False
+        self._sent_eof = False
         self._seen_ack = False
+        self._seen_reset = False
         self._need_open = False
-        self._need_eof = False
-        self._need_reset = False
         self._need_ack = False
+        self._need_reset = False
+        self._need_eof = False
         self._read_cond = Condition()
         self._write_cond = Condition()
         self._flush_cond = Condition()
@@ -527,12 +494,6 @@ class RawStream(object):
         if self._seen_eof and self._sent_eof:
             self._conn._remove_stream(self)
 
-    def _can_receive(self):
-        return self._read_error is None
-
-    def _schedule_ack(self, n):
-        self._conn._add_window_ack(self._stream_id, n)
-
     def _schedule_ctrl(self):
         self._conn._add_ctrl_stream(self)
 
@@ -547,15 +508,15 @@ class RawStream(object):
 
     def _prepare_data(self, maxsize=0xffffff):
         n = len(self._writebuf)
-        if self._writeleft < 0:
-            n += self._writeleft
-        if n > self._conn._writeleft:
-            n = self._conn._writeleft
+        if n > self._writeleft:
+            n = self._writeleft
         if n > maxsize:
             n = maxsize
         if n > 0:
             data, self._writebuf = self._writebuf[:n], self._writebuf[n:]
-            self._conn._writeleft -= len(data)
+            self._writeleft -= n
+            if len(self._writebuf) < MAX_STREAM_BUFFER:
+                self._write_cond.broadcast()
             return data
         return ''
 
@@ -575,93 +536,101 @@ class RawStream(object):
         return flags
 
     def _active_eof(self):
-        if not self._writebuf and self._need_eof:
-            if self._need_reset:
-                return self._reset_error is None or isinstance(self._reset_error, StreamClosedError)
-            return True
+        if self._need_eof and not self._writebuf:
+            return not self._need_reset and isinstance(self._write_error, StreamClosedError)
         return False
 
     def _active_data(self):
-        if self._writeleft >= 0:
-            return len(self._writebuf) > 0
-        return len(self._writebuf)+self._writeleft > 0
-
-    def _active_reset(self):
-        if self._need_reset:
-            if self._sent_eof and self._seen_eof:
-                self._need_reset = False
-                return False
-            if not self._seen_eof and not self._sent_reset:
-                return True
-            if self._reset_error is None or isinstance(self._reset_error, StreamClosedError):
-                self._need_reset = False
-                return False
-            if not self._writebuf and self._need_eof:
-                return True
-            return False
-        return False
+        return self._writeleft > 0 and self._writebuf
 
     def _send_ctrl(self, writer):
-        if not self._writebuf and self._need_open and self._need_eof and self._need_reset:
-            self._need_reset = False
-            self._need_open = False
-            self._need_eof = False
-            self._sent_reset = True
+        if not self._writebuf and self._need_open and self._need_reset and self._need_eof and not self._need_ack:
             self._seen_eof = True
             self._sent_eof = True
+            self._need_open = False
+            self._need_reset = False
+            self._need_eof = False
             self._cleanup()
             return
-        if self._need_open or self._need_ack:
-            data = self._prepare_data()
+        while True:
+            if (self._need_open or self._need_ack) and not self._sent_eof:
+                data = self._prepare_data()
+                flags = self._outgoing_flags()
+                writer.write_frame(DataFrame(
+                    self._stream_id,
+                    flags,
+                    data,
+                ))
+                if not self._writebuf:
+                    self._flush_cond.broadcast()
+                continue
+            if self._readincrement > 0:
+                increment = self._readincrement
+                self._readleft += increment
+                self._readincrement = 0
+                writer.write_frame(WindowFrame(
+                    self._stream_id,
+                    0,
+                    increment,
+                ))
+                continue
+            if self._need_reset:
+                self._need_reset = False
+                flags = FLAG_RESET_READ
+                error = self._read_error
+                if isinstance(error, EOFError):
+                    error = StreamClosedError()
+                if self._need_eof and not self._writebuf and error == self._write_error:
+                    self._need_eof = False
+                    self._sent_eof = True
+                    self._cleanup()
+                    flags |= FLAG_RESET_WRITE
+                if isinstance(error, ConnectionClosedError):
+                    error = ConnectionShutdownError()
+                writer.write_frame(ResetFrame(
+                    self._stream_id,
+                    flags,
+                    error,
+                ))
+                continue
+            if self._need_eof and not self._writebuf:
+                self._need_eof = False
+                self._sent_eof = True
+                self._cleanup()
+                if not isinstance(self._write_error, StreamClosedError):
+                    flags = FLAG_RESET_WRITE
+                    error = self._write_error
+                    if isinstance(error, ConnectionClosedError):
+                        error = ConnectionShutdownError()
+                    writer.write_frame(ResetFrame(
+                        self._stream_id,
+                        flags,
+                        error,
+                    ))
+                else:
+                    writer.write_frame(DataFrame(
+                        self._stream_id,
+                        FLAG_DATA_EOF,
+                        '',
+                    ))
+                continue
+            break
+
+    def _send_data(self, writer):
+        data = self._prepare_data()
+        if data:
+            flags = self._outgoing_flags()
+            if self._active_data():
+                self._schedule_data()
+            elif self._need_eof and not self._writebuf:
+                self._schedule_ctrl()
             writer.write_frame(DataFrame(
                 self._stream_id,
-                self._outgoing_flags(),
+                flags,
                 data,
             ))
             if not self._writebuf:
                 self._flush_cond.broadcast()
-        if self._active_reset():
-            error = self._reset_error
-            if error is None:
-                error = self._read_error
-            if isinstance(error, ConnectionClosedError):
-                error = ConnectionShutdownError()
-            flags = 0
-            if not self._sent_reset:
-                flags |= FLAG_RESET_READ
-            if not self._writebuf and self._need_eof:
-                self._need_reset = False
-                self._need_eof = False
-                self._sent_eof = True
-                self._cleanup()
-                flags |= FLAG_RESET_WRITE
-            self._sent_reset = True
-            writer.write_frame(ResetFrame(
-                self._stream_id,
-                flags,
-                error,
-            ))
-        if not self._writebuf and self._need_eof:
-            writer.write_frame(DataFrame(
-                self._stream_id,
-                self._outgoing_flags(),
-                '',
-            ))
-
-    def _send_data(self, writer):
-        data = self._prepare_data()
-        if len(data) > 0:
-            writer.write_frame(DataFrame(
-                self._stream_id,
-                self._outgoing_flags(),
-                data,
-            ))
-        if self._active_data():
-            self._schedule_data()
-        elif self._active_reset():
-            self._schedule_ctrl()
-        if not self._writebuf:
-            self._flush_cond.broadcast()
 
     def _process_data_frame(self, frame):
         if self._seen_eof:
@@ -669,9 +638,9 @@ class RawStream(object):
         if frame.flags & FLAG_DATA_ACK:
             self._seen_ack = True
             self._acknowledged_event.set()
-        if len(frame.data) > self._readleft:
-            raise WindowOverflowError('stream 0x%08x received %d+%d bytes, which is more than %d bytes window' % (self._stream_id, len(self._readbuf), len(frame.data), self._readleft))
         if frame.data:
+            if len(frame.data) > self._readleft:
+                raise WindowOverflowError('stream 0x%08x received %d+%d bytes, which is more than %d bytes window' % (self._stream_id, len(self._readbuf), len(frame.data), self._readleft))
             if self._read_error is None:
                 self._readbuf += frame.data
                 self._read_cond.broadcast()
@@ -683,6 +652,7 @@ class RawStream(object):
 
     def _process_reset_frame(self, frame):
         if frame.flags & FLAG_RESET_READ:
+            self._seen_reset = True
             self._clear_write_buffer()
             self._set_write_error(frame.error)
         if frame.flags & FLAG_RESET_WRITE:
@@ -690,82 +660,77 @@ class RawStream(object):
             if isinstance(error, StreamClosedError):
                 error = EOFError()
             self._seen_eof = True
+            self._need_reset = False
             self._set_read_error(error)
             self._cleanup()
 
     def _process_window_frame(self, frame):
         if frame.increment <= 0:
             raise InvalidFrameError('stream 0x%08x received invalid increment %d' % (self._stream_id, frame.increment))
-        if self._write_error is None:
+        if self._writeleft <= 0 and self._writebuf:
             self._writeleft += frame.increment
-            if self._active_data():
-                self._schedule_data()
             if self._writeleft > 0:
-                self._write_cond.broadcast()
+                self._schedule_data()
+        else:
+            self._writeleft += frame.increment
 
     def _set_read_error(self, error):
         if self._read_error is None:
             self._read_error = error
             self._read_closed_event.set()
             self._acknowledged_event.set()
+            if not self._seen_eof:
+                self._need_reset = True
+                self._schedule_ctrl()
+            self._readincrement = 0
             self._read_cond.broadcast()
 
     def _set_write_error(self, error):
         if self._write_error is None:
             self._write_error = error
             self._write_closed_event.set()
-            self._writeleft = 0
             self._need_eof = True
-            self._write_cond.broadcast()
             if not self._writebuf:
-			    # We had no pending data, but now we need to send a EOF, which
-                # can only be done in a ctrl phase, so make sure to schedule it.
+                # We had no pending data, but now we need to send EOF/RESET,
+                # which can only be done in a ctrl phase, so make sure to
+                # schedule it.
                 self._schedule_ctrl()
-
-    def _reset_read_side(self):
-        if not self._seen_eof:
-            self._need_reset = True
-            if self._active_reset():
-                self._schedule_ctrl()
-
-    def _reset_both_sides(self):
-        if not self._seen_eof or not self._sent_eof:
-            self._need_reset = True
-            if self._active_reset():
-                self._schedule_ctrl()
+            self._write_cond.broadcast()
+            self._flush_cond.broadcast()
 
     def _close_with_error(self, error):
         if error is None or isinstance(error, EOFError):
             error = StreamClosedError()
-        if self._reset_error is None:
-            self._reset_error = error
+        if self._error is None:
+            self._error = error
             self._set_read_error(error)
             self._set_write_error(error)
-            self._flush_cond.broadcast()
-            self._reset_both_sides()
 
     @property
     def closed(self):
-        return self._reset_error is not None
+        return self._error is not None
 
     def close(self):
         self._close_with_error(StreamClosedError())
 
+    def close_with_error(self, error):
+        self._close_with_error(error)
+
     def close_read(self):
         self._set_read_error(StreamClosedError())
-        self._reset_read_side()
 
     def close_read_error(self, error):
         if error is None or isinstance(error, EOFError):
             error = StreamClosedError()
         self._set_read_error(error)
-        self._reset_read_side()
 
     def close_write(self):
         self._set_write_error(StreamClosedError())
 
-    def close_with_error(self, error):
-        self._close_with_error(error)
+    def close_write_error(self):
+        if error is None or isinstance(error, EOFError):
+            error = StreamClosedError()
+        self._set_write_error(error)
 
     def peek(self):
         while not self._readbuf:
@@ -785,13 +750,15 @@ class RawStream(object):
         else:
             self._readbuf = self._readbuf[n:]
         if self._read_error is None:
-            self._readleft += n
-            self._schedule_ack(n)
+            self._readincrement += n
+            self._schedule_ctrl()
         return n
 
     def recv(self, bufsize):
         if bufsize <= 0:
             # Don't block if trying to receive 0 bytes
+            if self._read_error is not None and not isinstance(self._read_error, EOFError):
+                raise self._read_error
             return ''
         while not self._readbuf:
             if self._read_error is not None:
@@ -804,8 +771,8 @@ class RawStream(object):
         else:
             data, self._readbuf = self._readbuf[:bufsize], self._readbuf[bufsize:]
         if self._read_error is None:
-            self._readleft += len(data)
-            self._schedule_ack(len(data))
+            self._readincrement += len(data)
+            self._schedule_ctrl()
         return data
 
     def read(self, n=-1):
@@ -822,8 +789,8 @@ class RawStream(object):
             else:
                 chunk, self._readbuf = self._readbuf[:n], self._readbuf[n:]
             if self._read_error is None:
-                self._readleft += len(chunk)
-                self._schedule_ack(len(chunk))
+                self._readincrement += len(chunk)
+                self._schedule_ctrl()
             data += chunk
             if n > 0:
                 n -= len(chunk)
@@ -849,8 +816,8 @@ class RawStream(object):
                 stop = True
             chunk, self._readbuf = self._readbuf[:size], self._readbuf[size:]
             if self._read_error is None:
-                self._readleft += size
-                self._schedule_ack(size)
+                self._readincrement += size
+                self._schedule_ctrl()
             data += chunk
             if stop:
                 break
@@ -859,13 +826,15 @@ class RawStream(object):
         return data
 
     def send(self, data):
-        while self._write_error is None and self._writeleft <= 0:
+        while self._write_error is None and len(self._writebuf) >= MAX_STREAM_BUFFER:
             self._write_cond.wait()
         if self._write_error is not None:
             raise self._write_error
-        chunk = data[:self._writeleft]
+        left = MAX_STREAM_BUFFER - len(self._writebuf)
+        chunk = data[:left]
         self._writebuf += chunk
-        self._schedule_data()
+        if self._writeleft > 0:
+            self._schedule_data()
         return len(chunk)
 
     def write(self, data):
@@ -882,9 +851,7 @@ class RawStream(object):
         return self._conn._sock.getsockname()
 
     def flush(self):
-        while self._writebuf:
-            if self._reset_error is not None:
-                break
+        while self._write_error is None and self._writebuf:
             self._flush_cond.wait()
         if self._write_error is not None:
             raise self._write_error
