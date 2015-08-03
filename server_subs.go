@@ -36,40 +36,40 @@ type serverSubscriptionOption struct {
 
 var _ endpointReference = &serverSubscriptionOption{}
 
-func (o *serverSubscriptionOption) getEndpointsLocked() []Endpoint {
+func (o *serverSubscriptionOption) getEndpointsRLocked() []Endpoint {
 	if o.route != nil {
-		return o.route.getEndpointsLocked()
+		return o.route.getEndpointsRLocked()
 	}
 	if len(o.local) > 0 && o.localPriority <= o.remotePriority {
-		return o.local[0].getEndpointsLocked()
+		return o.local[0].getEndpointsRLocked()
 	}
 	var result []Endpoint
 	for _, remote := range o.remote {
 		if remote.settings.Priority == o.remotePriority {
-			result = append(result, remote.getEndpointsLocked()...)
+			result = append(result, remote.getEndpointsRLocked()...)
 		}
 	}
 	return result
 }
 
-func (o *serverSubscriptionOption) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
+func (o *serverSubscriptionOption) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
 	if o.route != nil {
-		return o.route.handleRequestLocked(callback)
+		return o.route.handleRequestRLocked(callback)
 	}
 	if len(o.local) > 0 && o.localPriority <= o.remotePriority {
-		return o.local[0].handleRequestLocked(callback)
+		return o.local[0].handleRequestRLocked(callback)
 	}
 	if o.remoteCount > 0 {
 		index := 0
 		if o.remoteCount > 1 {
 			index = globalRandom.Intn(o.remoteCount)
 		}
-		return o.remote[index].handleRequestLocked(callback)
+		return o.remote[index].handleRequestRLocked(callback)
 	}
 	return handleRequestStatusNoRoute
 }
 
-func (o *serverSubscriptionOption) isActiveLocked() bool {
+func (o *serverSubscriptionOption) isActiveRLocked() bool {
 	if o.route != nil {
 		return true
 	}
@@ -180,29 +180,29 @@ type serverSubscription struct {
 
 var _ endpointReference = &serverSubscription{}
 
-func (sub *serverSubscription) getEndpointsLocked() []Endpoint {
+func (sub *serverSubscription) getEndpointsRLocked() []Endpoint {
 	if sub.active < len(sub.options) {
-		return sub.options[sub.active].getEndpointsLocked()
+		return sub.options[sub.active].getEndpointsRLocked()
 	}
 	// TODO: support upstream
 	return nil
 }
 
-func (sub *serverSubscription) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
+func (sub *serverSubscription) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
 	if sub.active < len(sub.options) {
-		return sub.options[sub.active].handleRequestLocked(callback)
+		return sub.options[sub.active].handleRequestRLocked(callback)
 	}
 	// TODO: support upstream
 	return handleRequestStatusNoRoute
 }
 
-func (sub *serverSubscription) isActiveLocked() bool {
+func (sub *serverSubscription) isActiveRLocked() bool {
 	return sub.active < len(sub.options)
 }
 
 func (sub *serverSubscription) updateActiveIndexLocked() {
 	for index := range sub.options {
-		if sub.options[index].isActiveLocked() {
+		if sub.options[index].isActiveRLocked() {
 			sub.active = index
 			return
 		}

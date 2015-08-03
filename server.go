@@ -56,8 +56,8 @@ const (
 type handleRequestCallback func(remote Stream) handleRequestStatus
 
 type endpointReference interface {
-	getEndpointsLocked() []Endpoint
-	handleRequestLocked(callback handleRequestCallback) handleRequestStatus
+	getEndpointsRLocked() []Endpoint
+	handleRequestRLocked(callback handleRequestCallback) handleRequestStatus
 }
 
 type lockedRandomSource struct {
@@ -83,7 +83,7 @@ var globalRandom = rand.New(&lockedRandomSource{
 })
 
 type server struct {
-	lock sync.Mutex
+	mu sync.RWMutex
 
 	lastTargetID int64
 
@@ -132,8 +132,8 @@ func (s *server) allocateTargetID() int64 {
 }
 
 func (s *server) closeWithError(err error) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err == nil {
 		err = ECONNCLOSED
 	}
@@ -159,8 +159,8 @@ func (s *server) closeWithError(err error) error {
 }
 
 func (s *server) addClient(conn net.Conn, allowChanges bool) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.failure != nil {
 		conn.Close()
 		return s.failure
@@ -187,7 +187,7 @@ func (s *server) acceptor(listener net.Listener, allowChanges bool) {
 	}
 }
 
-func (s *server) findEndpointLocked(name string, minDistance, maxDistance uint32) (endpoint endpointReference) {
+func (s *server) findEndpointRLocked(name string, minDistance, maxDistance uint32) (endpoint endpointReference) {
 	var minPriority uint32
 	route := s.routeByName[name]
 	if route != nil {
@@ -289,12 +289,12 @@ func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if value, err := strconv.Atoi(req.Header.Get("X-Copper-MaxDistance")); err == nil && value >= 0 {
 			maxdistance = uint32(value)
 		}
-		s.lock.Lock()
-		defer s.lock.Unlock()
+		s.mu.RLock()
+		defer s.mu.RUnlock()
 		var endpoint endpointReference
 		if maxdistance >= 2 {
 			if mindistance <= 1 {
-				endpoint = s.findEndpointLocked("http:"+service, mindistance, 1)
+				endpoint = s.findEndpointRLocked("http:"+service, mindistance, 1)
 			}
 			if endpoint == nil {
 				distance := uint32(2)
@@ -302,7 +302,7 @@ func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 					distance = mindistance
 				}
 				for distance <= maxdistance {
-					endpoint = s.findEndpointLocked("http:"+service, distance, distance)
+					endpoint = s.findEndpointRLocked("http:"+service, distance, distance)
 					if endpoint != nil || distance == maxdistance {
 						break
 					}
@@ -310,12 +310,12 @@ func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				}
 			}
 		} else {
-			endpoint = s.findEndpointLocked("http:"+service, mindistance, maxdistance)
+			endpoint = s.findEndpointRLocked("http:"+service, mindistance, maxdistance)
 		}
 		if endpoint == nil {
 			return handleRequestStatusNoRoute
 		}
-		return endpoint.handleRequestLocked(func(remote Stream) handleRequestStatus {
+		return endpoint.handleRequestRLocked(func(remote Stream) handleRequestStatus {
 			outreq := new(http.Request)
 			*outreq = *req
 			modified := false
@@ -379,8 +379,8 @@ func (s *server) httpacceptor(listener net.Listener) {
 }
 
 func (s *server) AddPeer(network, address string, distance uint32) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.failure != nil {
 		return s.failure
 	}
@@ -388,8 +388,8 @@ func (s *server) AddPeer(network, address string, distance uint32) error {
 }
 
 func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.failure != nil {
 		return s.failure
 	}
@@ -400,8 +400,8 @@ func (s *server) AddListener(listener net.Listener, allowChanges bool) error {
 }
 
 func (s *server) AddHTTPListener(listener net.Listener) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.failure != nil {
 		return s.failure
 	}
@@ -416,8 +416,8 @@ func (s *server) SetUpstream(upstream Client) error {
 }
 
 func (s *server) Err() error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.failure
 }
 
@@ -426,8 +426,8 @@ func (s *server) Close() error {
 }
 
 func (s *server) Done() <-chan struct{} {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.finishchan == nil {
 		s.finishchan = make(chan struct{})
 		go func() {

@@ -22,20 +22,20 @@ type serverRoute struct {
 
 var _ endpointReference = &serverRoute{}
 
-func (r *serverRoute) getEndpointsLocked() []Endpoint {
+func (r *serverRoute) getEndpointsRLocked() []Endpoint {
 	var result []Endpoint
 	for _, c := range r.cases {
-		if c.weight > 0 && c.sub.isActiveLocked() {
-			result = append(result, c.sub.getEndpointsLocked()...)
+		if c.weight > 0 && c.sub.isActiveRLocked() {
+			result = append(result, c.sub.getEndpointsRLocked()...)
 		}
 	}
 	return result
 }
 
-func (r *serverRoute) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
+func (r *serverRoute) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
 	sum := int64(0)
 	for _, c := range r.cases {
-		if c.weight > 0 && c.sub.isActiveLocked() {
+		if c.weight > 0 && c.sub.isActiveRLocked() {
 			sum += int64(c.weight)
 		}
 	}
@@ -45,9 +45,9 @@ func (r *serverRoute) handleRequestLocked(callback handleRequestCallback) handle
 	}
 	bin := globalRandom.Int63n(sum)
 	for _, c := range r.cases {
-		if c.weight > 0 && c.sub.isActiveLocked() {
+		if c.weight > 0 && c.sub.isActiveRLocked() {
 			if bin < int64(c.weight) {
-				return c.sub.handleRequestLocked(callback)
+				return c.sub.handleRequestRLocked(callback)
 			}
 			bin -= int64(c.weight)
 		}

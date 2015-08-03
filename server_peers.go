@@ -24,7 +24,7 @@ type serverPeerRemote struct {
 
 var _ endpointReference = &serverPeerRemote{}
 
-func (remote *serverPeerRemote) getEndpointsLocked() []Endpoint {
+func (remote *serverPeerRemote) getEndpointsRLocked() []Endpoint {
 	if peer := remote.peer; peer != nil {
 		return []Endpoint{{
 			Network:  peer.key.network,
@@ -35,10 +35,10 @@ func (remote *serverPeerRemote) getEndpointsLocked() []Endpoint {
 	return nil
 }
 
-func (remote *serverPeerRemote) handleRequestLocked(callback handleRequestCallback) handleRequestStatus {
+func (remote *serverPeerRemote) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
 	if peer := remote.peer; peer != nil {
-		peer.owner.lock.Unlock()
-		defer peer.owner.lock.Lock()
+		peer.owner.mu.RUnlock()
+		defer peer.owner.mu.RLock()
 		stream, err := rpcNewStream(remote.client, remote.targetID)
 		if err != nil {
 			return handleRequestStatusImpossible
@@ -139,8 +139,8 @@ func (peer *serverPeer) connectloop() {
 }
 
 func (peer *serverPeer) attachClient(client *clientConn) {
-	peer.owner.lock.Lock()
-	defer peer.owner.lock.Unlock()
+	peer.owner.mu.Lock()
+	defer peer.owner.mu.Unlock()
 	peer.client = client
 	if log := DebugLog(); log != nil {
 		log.Printf("Peer %s: connected to %s", peer.key.address, client.RemoteAddr())
@@ -149,8 +149,8 @@ func (peer *serverPeer) attachClient(client *clientConn) {
 }
 
 func (peer *serverPeer) detachClient(client *clientConn) {
-	peer.owner.lock.Lock()
-	defer peer.owner.lock.Unlock()
+	peer.owner.mu.Lock()
+	defer peer.owner.mu.Unlock()
 	if peer.client == client {
 		if log := DebugLog(); log != nil {
 			log.Printf("Peer %s: disconnected from %s", peer.key.address, client.RemoteAddr())
@@ -169,9 +169,9 @@ func (peer *serverPeer) serveClient(client *clientConn) {
 		if !peer.listenChanges(client) {
 			break
 		}
-		peer.owner.lock.Lock()
+		peer.owner.mu.RLock()
 		active := peer.client == client && peer.failure == nil
-		peer.owner.lock.Unlock()
+		peer.owner.mu.RUnlock()
 		if !active {
 			break
 		}
@@ -225,8 +225,8 @@ func (peer *serverPeer) listenChanges(client *clientConn) bool {
 }
 
 func (peer *serverPeer) processChanges(client *clientConn, changes ServiceChanges) bool {
-	peer.owner.lock.Lock()
-	defer peer.owner.lock.Unlock()
+	peer.owner.mu.Lock()
+	defer peer.owner.mu.Unlock()
 	if peer.client != client || peer.failure != nil {
 		// These changes are from the wrong client
 		return false

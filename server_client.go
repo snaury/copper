@@ -37,8 +37,8 @@ func newServerClient(s *server, conn net.Conn, allowChanges bool) *serverClient 
 	return c
 }
 
-func (c *serverClient) handleRequestWith(client Stream, endpoint endpointReference) error {
-	status := endpoint.handleRequestLocked(func(remote Stream) handleRequestStatus {
+func (c *serverClient) handleRequestRLockedWith(client Stream, endpoint endpointReference) error {
+	status := endpoint.handleRequestRLocked(func(remote Stream) handleRequestStatus {
 		passthruBoth(client, remote)
 		return handleRequestStatusDone
 	})
@@ -82,32 +82,32 @@ func (c *serverClient) serve() {
 	defer c.owner.clientwg.Done()
 	<-c.conn.Done()
 	err := c.conn.Err()
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.Lock()
+	defer c.owner.mu.Unlock()
 	delete(c.owner.clients, c)
 	c.closeWithErrorLocked(err)
 }
 
 func (c *serverClient) handleNewStream(targetID int64, stream Stream) error {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.RLock()
+	defer c.owner.mu.RUnlock()
 	if c.failure != nil {
 		return c.failure
 	}
 	if sub := c.subscriptions[targetID]; sub != nil {
 		// This is a subscription
-		return c.handleRequestWith(stream, sub)
+		return c.handleRequestRLockedWith(stream, sub)
 	}
 	if pub := c.owner.pubByTarget[targetID]; pub != nil {
 		// This is a direct connection
-		return c.handleRequestWith(stream, pub)
+		return c.handleRequestRLockedWith(stream, pub)
 	}
 	return ENOTARGET
 }
 
 func (c *serverClient) subscribe(settings SubscribeSettings) (int64, error) {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.Lock()
+	defer c.owner.mu.Unlock()
 	if c.failure != nil {
 		return 0, c.failure
 	}
@@ -120,8 +120,8 @@ func (c *serverClient) subscribe(settings SubscribeSettings) (int64, error) {
 }
 
 func (c *serverClient) getEndpoints(targetID int64) ([]Endpoint, error) {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.RLock()
+	defer c.owner.mu.RUnlock()
 	if c.failure != nil {
 		return nil, c.failure
 	}
@@ -129,7 +129,7 @@ func (c *serverClient) getEndpoints(targetID int64) ([]Endpoint, error) {
 	if sub == nil {
 		return nil, fmt.Errorf("target %d is not subscribed", targetID)
 	}
-	return sub.getEndpointsLocked(), nil
+	return sub.getEndpointsRLocked(), nil
 }
 
 func (c *serverClient) streamEndpoints(targetID int64) (EndpointChangesStream, error) {
@@ -137,8 +137,8 @@ func (c *serverClient) streamEndpoints(targetID int64) (EndpointChangesStream, e
 }
 
 func (c *serverClient) unsubscribe(targetID int64) error {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.Lock()
+	defer c.owner.mu.Unlock()
 	if c.failure != nil {
 		return c.failure
 	}
@@ -152,8 +152,8 @@ func (c *serverClient) unsubscribe(targetID int64) error {
 }
 
 func (c *serverClient) publish(targetID int64, name string, settings PublishSettings) error {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.Lock()
+	defer c.owner.mu.Unlock()
 	if c.failure != nil {
 		return c.failure
 	}
@@ -179,8 +179,8 @@ func (c *serverClient) publish(targetID int64, name string, settings PublishSett
 }
 
 func (c *serverClient) unpublish(targetID int64) error {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.Lock()
+	defer c.owner.mu.Unlock()
 	if c.failure != nil {
 		return c.failure
 	}
@@ -198,8 +198,8 @@ func (c *serverClient) unpublish(targetID int64) error {
 }
 
 func (c *serverClient) setRoute(name string, routes ...Route) error {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.Lock()
+	defer c.owner.mu.Unlock()
 	if c.failure != nil {
 		return c.failure
 	}
@@ -210,8 +210,8 @@ func (c *serverClient) setRoute(name string, routes ...Route) error {
 }
 
 func (c *serverClient) listRoutes() ([]string, error) {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.RLock()
+	defer c.owner.mu.RUnlock()
 	if c.failure != nil {
 		return nil, c.failure
 	}
@@ -223,8 +223,8 @@ func (c *serverClient) listRoutes() ([]string, error) {
 }
 
 func (c *serverClient) lookupRoute(name string) ([]Route, error) {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.RLock()
+	defer c.owner.mu.RUnlock()
 	if c.failure != nil {
 		return nil, c.failure
 	}
@@ -235,8 +235,8 @@ func (c *serverClient) lookupRoute(name string) ([]Route, error) {
 }
 
 func (c *serverClient) streamServices() (ServiceChangesStream, error) {
-	c.owner.lock.Lock()
-	defer c.owner.lock.Unlock()
+	c.owner.mu.Lock()
+	defer c.owner.mu.Unlock()
 	if c.failure != nil {
 		return nil, c.failure
 	}

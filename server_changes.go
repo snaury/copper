@@ -27,7 +27,7 @@ func newServerServiceChangesStream(s *server, c *serverClient) *serverServiceCha
 		removed: make(map[int64]struct{}),
 		changed: make(map[int64]*serverPublication),
 	}
-	cs.wakeup.L = &s.lock
+	cs.wakeup.L = &s.mu
 	// send all services that are currently active
 	for _, pub := range s.pubByTarget {
 		if len(pub.endpoints) > 0 {
@@ -61,8 +61,8 @@ func (cs *serverServiceChangesStream) addChangedLocked(pub *serverPublication) {
 }
 
 func (cs *serverServiceChangesStream) Read() (ServiceChanges, error) {
-	cs.owner.lock.Lock()
-	defer cs.owner.lock.Unlock()
+	cs.owner.mu.Lock()
+	defer cs.owner.mu.Unlock()
 	for {
 		if cs.closed {
 			return ServiceChanges{}, io.EOF
@@ -105,7 +105,7 @@ func (cs *serverServiceChangesStream) stopLocked() error {
 }
 
 func (cs *serverServiceChangesStream) Stop() error {
-	cs.owner.lock.Lock()
-	defer cs.owner.lock.Unlock()
+	cs.owner.mu.Lock()
+	defer cs.owner.mu.Unlock()
 	return cs.stopLocked()
 }
