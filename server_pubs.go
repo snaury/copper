@@ -2,7 +2,7 @@ package copper
 
 import (
 	"fmt"
-	"sync"
+	"sync/atomic"
 )
 
 type localEndpointKey struct {
@@ -14,30 +14,16 @@ type localEndpoint struct {
 	owner    *server
 	pub      *serverPublication
 	key      localEndpointKey
-	active   uint32
 	settings PublishSettings
+	stopped  chan struct{}
 }
 
-var _ endpointReference = &localEndpoint{}
-
-func (endpoint *localEndpoint) getEndpointsRLocked() []Endpoint {
-	return nil
-}
-
-func (endpoint *localEndpoint) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
-	endpoint.owner.mu.RUnlock()
-	defer endpoint.owner.mu.RLock()
-	remote, err := rpcNewStream(endpoint.key.client.conn, endpoint.key.targetID)
-	if err != nil {
-		// this client has already disconnected
-		return handleRequestStatusImpossible
-	}
-	defer remote.Close()
-	return callback(remote)
+type localEndpointRequest struct {
+	callback handleRequestCallback
+	reply    chan<- handleRequestStatus
 }
 
 type serverPublication struct {
-	mu       sync.Mutex
 	owner    *server
 	name     string
 	targetID int64
@@ -46,57 +32,26 @@ type serverPublication struct {
 	distances map[uint32]int
 	settings  PublishSettings
 
-	ready map[*localEndpoint]struct{}
-	queue []chan struct{}
+	active   uint32
+	stopped  chan struct{}
+	requests chan localEndpointRequest
 
 	subscriptions map[*serverSubscription]struct{}
 }
 
 var _ endpointReference = &serverPublication{}
 
-func (pub *serverPublication) takeEndpointPubLocked() *localEndpoint {
-	for endpoint := range pub.ready {
-		endpoint.active++
-		if endpoint.active == endpoint.settings.Concurrency {
-			delete(pub.ready, endpoint)
+func (pub *serverPublication) takeActiveRLocked() bool {
+	for atomic.AddUint32(&pub.active, 1) > pub.settings.Concurrency+pub.settings.QueueSize {
+		if atomic.AddUint32(&pub.active, 0xffffffff) >= pub.settings.Concurrency+pub.settings.QueueSize {
+			return false
 		}
-		return endpoint
 	}
-	return nil
+	return true
 }
 
-func (pub *serverPublication) releaseEndpointPubLocked(endpoint *localEndpoint) {
-	if endpoint.pub == pub {
-		endpoint.active--
-		endpoint.pub.ready[endpoint] = struct{}{}
-		endpoint.pub.wakeupWaitersPubLocked(1)
-	}
-}
-
-func (pub *serverPublication) waitInQueuePubLocked() {
-	waiter := make(chan struct{})
-	pub.queue = append(pub.queue, waiter)
-	pub.mu.Unlock()
-	pub.owner.mu.RUnlock()
-	<-waiter
-	pub.owner.mu.RLock()
-	pub.mu.Lock()
-}
-
-func (pub *serverPublication) wakeupWaitersPubLocked(n int) {
-	if n > len(pub.queue) {
-		n = len(pub.queue)
-	}
-	if n > 0 {
-		for i := 0; i < n; i++ {
-			close(pub.queue[i])
-		}
-		live := copy(pub.queue, pub.queue[n:])
-		for i := live; i < len(pub.queue); i++ {
-			pub.queue[i] = nil
-		}
-		pub.queue = pub.queue[:live]
-	}
+func (pub *serverPublication) releaseActiveRLocked() {
+	atomic.AddUint32(&pub.active, 0xffffffff)
 }
 
 func (pub *serverPublication) getEndpointsRLocked() []Endpoint {
@@ -109,28 +64,43 @@ func (pub *serverPublication) getEndpointsRLocked() []Endpoint {
 	}
 }
 
-func (pub *serverPublication) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
-	pub.mu.Lock()
-	for len(pub.endpoints) > 0 {
-		endpoint := pub.takeEndpointPubLocked()
-		if endpoint != nil {
-			pub.mu.Unlock()
-			status := endpoint.handleRequestRLocked(callback)
-			pub.mu.Lock()
-			pub.releaseEndpointPubLocked(endpoint)
-			// FIXME: process handleRequestStatusImpossible?
-			pub.mu.Unlock()
-			return status
+func (pub *serverPublication) handleRequests(endpoint *localEndpoint) {
+	for {
+		select {
+		case req := <-pub.requests:
+			remote, err := rpcNewStream(endpoint.key.client.conn, endpoint.key.targetID)
+			if err != nil {
+				// this client has already disconnected
+				req.reply <- handleRequestStatusImpossible
+			}
+			req.reply <- req.callback(remote)
+			remote.Close()
+		case <-endpoint.stopped:
+			return
 		}
-		if len(pub.queue) >= int(pub.settings.QueueSize) {
-			// Queue for this publication is already full
-			pub.mu.Unlock()
-			return handleRequestStatusOverCapacity
-		}
-		pub.waitInQueuePubLocked()
 	}
-	pub.mu.Unlock()
-	return handleRequestStatusNoRoute
+}
+
+func (pub *serverPublication) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
+	if pub.takeActiveRLocked() {
+		defer pub.releaseActiveRLocked()
+		reply := make(chan handleRequestStatus, 1)
+		req := localEndpointRequest{
+			callback: callback,
+			reply:    reply,
+		}
+		pub.owner.mu.RUnlock()
+		select {
+		case pub.requests <- req:
+		case <-pub.stopped:
+			pub.owner.mu.RLock()
+			return handleRequestStatusNoRoute
+		}
+		status := <-reply
+		pub.owner.mu.RLock()
+		return status
+	}
+	return handleRequestStatusOverCapacity
 }
 
 func (s *server) publishLocked(name string, key localEndpointKey, settings PublishSettings) (*localEndpoint, error) {
@@ -151,7 +121,8 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 			distances: make(map[uint32]int),
 			settings:  settings,
 
-			ready: make(map[*localEndpoint]struct{}),
+			stopped:  make(chan struct{}),
+			requests: make(chan localEndpointRequest),
 
 			subscriptions: make(map[*serverSubscription]struct{}),
 		}
@@ -182,14 +153,14 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 		owner:    s,
 		pub:      pub,
 		key:      key,
-		active:   0,
+		stopped:  make(chan struct{}),
 		settings: settings,
 	}
 
 	pub.endpoints[endpoint.key] = endpoint
-	pub.ready[endpoint] = struct{}{}
-
-	pub.wakeupWaitersPubLocked(int(settings.Concurrency))
+	for i := uint32(0); i < endpoint.settings.Concurrency; i++ {
+		go pub.handleRequests(endpoint)
+	}
 
 	for watcher := range pub.owner.pubWatchers {
 		watcher.addChangedLocked(pub)
@@ -210,7 +181,7 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 	}
 	endpoint.pub = nil
 
-	delete(pub.ready, endpoint)
+	close(endpoint.stopped)
 	if decrementCounterUint32(pub.distances, endpoint.settings.Distance) {
 		pub.settings.Distance = 0
 		for distance := range pub.distances {
@@ -231,10 +202,7 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 				delete(pub.owner.pubsByName, pub.name)
 			}
 		}
-		for _, waiter := range pub.queue {
-			close(waiter)
-		}
-		pub.queue = nil
+		close(pub.stopped)
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addRemovedLocked(pub)
 		}
@@ -246,13 +214,7 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 				pub.name, pub.settings.Priority)
 		}
 	} else {
-		if len(pub.queue) > int(pub.settings.QueueSize) {
-			for i := int(pub.settings.QueueSize); i < len(pub.queue); i++ {
-				close(pub.queue[i])
-				pub.queue[i] = nil
-			}
-			pub.queue = pub.queue[:int(pub.settings.QueueSize)]
-		}
+		// FIXME: how do we cancel requests over queue size?
 		for watcher := range pub.owner.pubWatchers {
 			watcher.addChangedLocked(pub)
 		}
