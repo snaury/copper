@@ -55,14 +55,24 @@ type serverPublication struct {
 var _ endpointReference = &serverPublication{}
 
 func (pub *serverPublication) takeEndpointPubLocked() *localEndpoint {
+	var best *localEndpoint
+	var active uint32
 	for endpoint := range pub.ready {
-		endpoint.active++
-		if endpoint.active == endpoint.settings.Concurrency {
-			delete(pub.ready, endpoint)
+		if best == nil || active > endpoint.active {
+			best = endpoint
+			active = endpoint.active
+			if active == 0 {
+				break
+			}
 		}
-		return endpoint
 	}
-	return nil
+	if best != nil {
+		best.active++
+		if best.active == best.settings.Concurrency {
+			delete(pub.ready, best)
+		}
+	}
+	return best
 }
 
 func (pub *serverPublication) releaseEndpointPubLocked(endpoint *localEndpoint) {
