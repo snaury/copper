@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 
+	_ "net/http/pprof"
+
 	"github.com/snaury/copper"
 )
 
@@ -59,6 +61,7 @@ func main() {
 	}
 
 	if config.CPU != 0 {
+		log.Printf("Setting GOMAXPROCS to %d", config.CPU)
 		runtime.GOMAXPROCS(config.CPU)
 	}
 

@@ -269,6 +269,13 @@ func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	status := func() handleRequestStatus {
 		service := req.Header.Get("X-Copper-Service")
 		if len(service) == 0 {
+			handler, pattern := http.DefaultServeMux.Handler(req)
+			if pattern != "" {
+				// If there is a pattern match, then we have a registered
+				// url at that location, use it directly.
+				handler.ServeHTTP(rw, req)
+				return handleRequestStatusDone
+			}
 			service = extractHTTPServiceName(req)
 			if len(service) == 0 {
 				return handleRequestStatusNoRoute
