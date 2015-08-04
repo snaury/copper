@@ -76,8 +76,9 @@ class TestReader(object):
     def __init__(self, data):
         self.data = data
 
-    def peek(self):
-        return self.data
+    @property
+    def eof(self):
+        return not self.data
 
     def read(self, n):
         if len(self.data) < n:

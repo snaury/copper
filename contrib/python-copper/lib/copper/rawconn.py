@@ -7,6 +7,7 @@ from gevent import Timeout
 from gevent.hub import Waiter
 from gevent.hub import get_hub
 from gevent.event import Event
+from collections import deque
 from socket import error as socket_error
 from .frames import (
     Frame,
@@ -40,9 +41,32 @@ __all__ = [
 
 INACTIVITY_TIMEOUT = 60
 DEFAULT_STREAM_WINDOW = 65536
-MAX_STREAM_BUFFER = 65536
+DEFAULT_STREAM_WRITE_BUFFER = 1024*1024
 
 log = logging.getLogger(__name__)
+
+def take_from_deque(d, size):
+    """Takes up to size bytes from the deque"""
+    if not d:
+        return ''
+    if len(d[0]) >= size:
+        chunk = d.popleft()
+        if len(chunk) > size:
+            d.appendleft(chunk[size:])
+            chunk = chunk[:size]
+        return chunk
+    elif len(d) == 1:
+        return d.popleft()
+    result = []
+    remaining = size
+    while d and remaining > 0:
+        chunk = d.popleft()
+        if len(chunk) > remaining:
+            d.appendleft(chunk[remaining:])
+            chunk = chunk[:remaining]
+        remaining -= len(chunk)
+        result.append(chunk)
+    return ''.join(result)
 
 class Condition(object):
     def __init__(self):
@@ -58,30 +82,32 @@ class Condition(object):
         self._event.wait()
 
 class _RawConnReader(object):
-    def __init__(self, sock, bufsize=4096):
+    def __init__(self, sock, chunk_size=4096):
         self.sock = sock
-        self.buffer = ''
-        self.bufsize = bufsize
+        self.size = 0
+        self.buffer = deque()
+        self.chunk_size = chunk_size
 
-    def peek(self):
+    @property
+    def eof(self):
         if not self.buffer:
-            chunk = self.sock.recv(self.bufsize)
+            chunk = self.sock.recv(self.chunk_size)
             if not chunk:
                 return ''
-            self.buffer = chunk
-        return self.buffer
+            self.buffer.append(chunk)
+            self.size += len(chunk)
+        return not self.buffer
 
     def read(self, n):
-        while len(self.buffer) < n:
-            chunk = self.sock.recv(self.bufsize)
+        while self.size < n:
+            chunk = self.sock.recv(self.chunk_size)
             if not chunk:
-                raise EOFError('read(%r) stopped short after %d bytes' % (n, len(self.buffer)))
-            self.buffer += chunk
-        if len(self.buffer) > n:
-            result, self.buffer = self.buffer[:n], self.buffer[n:]
-        else:
-            result, self.buffer = self.buffer, ''
-        return result
+                raise EOFError('read(%r) stopped short after %d bytes' % (n, self.size))
+            self.buffer.append(chunk)
+            self.size += len(chunk)
+        chunk = take_from_deque(self.buffer, n)
+        self.size -= len(chunk)
+        return chunk
 
     def read_frame(self):
         frame = Frame.load(self)
@@ -89,24 +115,35 @@ class _RawConnReader(object):
         return frame
 
 class _RawConnWriter(object):
-    def __init__(self, sock, bufsize=4096):
+    def __init__(self, sock, chunk_size=4096):
         self.sock = sock
-        self.buffer = ''
-        self.bufsize = bufsize
+        self.size = 0
+        self.buffer = deque()
+        self.chunk_size = chunk_size
         self.sent_marker = None
 
     def write(self, data):
-        self.buffer += data
-        while len(self.buffer) >= self.bufsize:
+        assert isinstance(data, bytes)
+        self.buffer.append(data)
+        self.size += len(data)
+        while self.size > self.chunk_size:
             self.sent_marker = object()
-            n = self.sock.send(self.buffer)
-            self.buffer = self.buffer[n:]
+            chunk = take_from_deque(self.buffer, self.chunk_size)
+            self.size -= len(chunk)
+            n = self.sock.send(chunk)
+            if n < len(chunk):
+                self.buffer.appendleft(chunk[n:])
+                self.size += len(chunk)-n
 
     def flush(self):
         while self.buffer:
             self.sent_marker = object()
-            n = self.sock.send(self.buffer)
-            self.buffer = self.buffer[n:]
+            chunk = take_from_deque(self.buffer, self.chunk_size)
+            self.size -= len(chunk)
+            n = self.sock.send(chunk)
+            if n < len(chunk):
+                self.buffer.appendleft(chunk[n:])
+                self.size += len(chunk)-n
 
     def write_frame(self, frame):
         #print 'WRITE(%s): %r' % (self.sock.getsockname(), frame)
@@ -449,11 +486,13 @@ class RawStream(object):
         self._stream_id = stream_id
         self._is_outgoing = False
         self._error = None
-        self._readbuf = ''
+        self._readbuf = deque()
+        self._readsize = 0
         self._readleft = conn._local_stream_window
         self._readincrement = 0
         self._read_error = None
-        self._writebuf = ''
+        self._writebuf = deque()
+        self._writesize = 0
         self._writeleft = conn._remote_stream_window
         self._write_error = None
         self._seen_eof = False
@@ -470,6 +509,7 @@ class RawStream(object):
         self._read_closed_event = Event()
         self._write_closed_event = Event()
         self._acknowledged_event = Event()
+        self.max_write_buffer_size = DEFAULT_STREAM_WRITE_BUFFER
         conn._streams[stream_id] = self
 
     @classmethod
@@ -501,21 +541,24 @@ class RawStream(object):
         self._conn._add_data_stream(self)
 
     def _clear_write_buffer(self):
-        self._writebuf = ''
+        self._writebuf.clear()
+        self._writesize = 0
         self._flush_cond.broadcast()
         if self._need_eof:
             self._schedule_ctrl()
 
     def _prepare_data(self, maxsize=0xffffff):
-        n = len(self._writebuf)
+        n = self._writesize
         if n > self._writeleft:
             n = self._writeleft
         if n > maxsize:
             n = maxsize
         if n > 0:
-            data, self._writebuf = self._writebuf[:n], self._writebuf[n:]
+            data = take_from_deque(self._writebuf, n)
+            assert len(data) == n
+            self._writesize -= n
             self._writeleft -= n
-            if len(self._writebuf) < MAX_STREAM_BUFFER:
+            if self.max_write_buffer_size is not None and self._writesize < self.max_write_buffer_size:
                 self._write_cond.broadcast()
             return data
         return ''
@@ -640,9 +683,10 @@ class RawStream(object):
             self._acknowledged_event.set()
         if frame.data:
             if len(frame.data) > self._readleft:
-                raise WindowOverflowError('stream 0x%08x received %d+%d bytes, which is more than %d bytes window' % (self._stream_id, len(self._readbuf), len(frame.data), self._readleft))
+                raise WindowOverflowError('stream 0x%08x received %d+%d bytes, which is more than %d bytes window' % (self._stream_id, self._readsize, len(frame.data), self._readleft))
             if self._read_error is None:
-                self._readbuf += frame.data
+                self._readbuf.append(frame.data)
+                self._readsize += len(frame.data)
                 self._read_cond.broadcast()
             self._readleft -= len(frame.data)
         if frame.flags & FLAG_DATA_EOF:
@@ -727,7 +771,7 @@ class RawStream(object):
     def close_write(self):
         self._set_write_error(StreamClosedError())
 
-    def close_write_error(self):
+    def close_write_error(self, error):
         if error is None or isinstance(error, EOFError):
             error = StreamClosedError()
         self._set_write_error(error)
@@ -739,16 +783,29 @@ class RawStream(object):
                     return ''
                 raise self._read_error
             self._read_cond.wait()
-        return self._readbuf
+        if len(self._readbuf) > 1:
+            result = ''.join(self._readbuf)
+            self._readbuf.clear()
+            self._readbuf.append(result)
+        return self._readbuf[0]
 
     def discard(self, n):
         if n <= 0:
             return 0
-        elif len(self._readbuf) <= n:
-            n = len(self._readbuf)
-            self._readbuf = ''
+        elif self._readsize <= n:
+            n = self._readsize
+            self._readbuf.clear()
+            self._readsize = 0
         else:
-            self._readbuf = self._readbuf[n:]
+            remaining = n
+            while self._readbuf and remaining > 0:
+                chunk = self._readbuf.popleft()
+                if len(chunk) > remaining:
+                    self._readbuf.appendleft(chunk[remaining:])
+                    chunk = chunk[:remaining]
+                self._readsize -= len(chunk)
+                remaining -= len(chunk)
+            n -= remaining
         if self._read_error is None:
             self._readincrement += n
             self._schedule_ctrl()
@@ -766,83 +823,93 @@ class RawStream(object):
                     return ''
                 raise self._read_error
             self._read_cond.wait()
-        if len(self._readbuf) <= bufsize:
-            data, self._readbuf = self._readbuf, ''
-        else:
-            data, self._readbuf = self._readbuf[:bufsize], self._readbuf[bufsize:]
+        data = take_from_deque(self._readbuf, bufsize)
+        self._readsize -= len(data)
         if self._read_error is None:
             self._readincrement += len(data)
             self._schedule_ctrl()
         return data
 
     def read(self, n=-1):
-        data = ''
+        result = []
         while n != 0:
             while not self._readbuf:
                 if self._read_error is not None:
                     if isinstance(self._read_error, EOFError):
-                        return data
+                        return ''.join(result)
                     raise self._read_error
                 self._read_cond.wait()
-            if n < 0 or len(self._readbuf) <= n:
-                chunk, self._readbuf = self._readbuf, ''
-            else:
-                chunk, self._readbuf = self._readbuf[:n], self._readbuf[n:]
+            chunk = self._readbuf.popleft()
+            if n > 0 and len(chunk) > n:
+                self._readbuf.appendleft(chunk[n:])
+                chunk = chunk[:n]
+            self._readsize -= len(chunk)
             if self._read_error is None:
                 self._readincrement += len(chunk)
                 self._schedule_ctrl()
-            data += chunk
             if n > 0:
                 n -= len(chunk)
-        return data
+            result.append(chunk)
+        return ''.join(result)
 
     def readline(self, n=-1):
-        data = ''
+        result = []
         while n != 0:
             while not self._readbuf:
                 if self._read_error is not None:
                     if isinstance(self._read_error, EOFError):
-                        return data
+                        return ''.join(result)
                     raise self._read_error
                 self._read_cond.wait()
-            size = self._readbuf.find('\n') + 1
+            chunk = self._readbuf.popleft()
+            size = chunk.find('\n') + 1
             if size > 0:
                 stop = True
             else:
-                size = len(self._readbuf)
+                size = len(chunk)
                 stop = False
             if n > 0 and size >= n:
                 size = n
                 stop = True
-            chunk, self._readbuf = self._readbuf[:size], self._readbuf[size:]
+            if len(chunk) > size:
+                self._readbuf.appendleft(chunk[size:])
+                chunk = chunk[:size]
+            self._readsize -= len(chunk)
             if self._read_error is None:
                 self._readincrement += size
                 self._schedule_ctrl()
-            data += chunk
+            result.append(chunk)
             if stop:
                 break
             if n > 0:
                 n -= size
-        return data
+        return ''.join(result)
 
     def send(self, data):
-        while self._write_error is None and len(self._writebuf) >= MAX_STREAM_BUFFER:
+        if not isinstance(data, (bytes, memoryview)):
+            data = memoryview(data)
+        while self._write_error is None and self.max_write_buffer_size is not None and self._writesize >= self.max_write_buffer_size:
             self._write_cond.wait()
         if self._write_error is not None:
             raise self._write_error
-        left = MAX_STREAM_BUFFER - len(self._writebuf)
-        chunk = data[:left]
-        self._writebuf += chunk
+        if self.max_write_buffer_size is not None:
+            data = data[:self.max_write_buffer_size-self._writesize]
+        if isinstance(data, memoryview):
+            data = data.tobytes()
+        self._writebuf.append(data)
+        self._writesize += len(data)
         if self._writeleft > 0:
             self._schedule_data()
-        return len(chunk)
+        return len(data)
 
-    def write(self, data):
+    def sendall(self, data):
+        if not isinstance(data, memoryview):
+            data = memoryview(data)
         while data:
             n = self.send(data)
             data = data[n:]
 
-    sendall = write
+    write = sendall
 
     def getpeername(self):
         return self._conn._sock.getpeername()

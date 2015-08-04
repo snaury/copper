@@ -10,7 +10,6 @@ from .errors import (
 __all__ = [
     'Frame',
     'PingFrame',
-    'OpenFrame',
     'DataFrame',
     'ResetFrame',
     'WindowFrame',
@@ -64,7 +63,7 @@ class Frame(object):
 
     @classmethod
     def load(cls, reader):
-        if not reader.peek():
+        if reader.eof:
             return None
         header = Header.load(reader)
         impl = cls.frame_classes.get(header.kind)

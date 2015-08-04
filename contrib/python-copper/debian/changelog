@@ -1,8 +1,9 @@
-python-copper (0.0.4) UNRELEASED; urgency=medium
+python-copper (0.0.5) unstable; urgency=medium
 
   * Get rid of connection window concept
+  * Speed up buffering using collections.deque
 
- -- Alexey Borzenkov <snaury@gmail.com>  Mon, 03 Aug 2015 23:42:49 +0300
+ -- Alexey Borzenkov <snaury@gmail.com>  Tue, 04 Aug 2015 13:39:14 +0300
 
 python-copper (0.0.3) unstable; urgency=medium
 
