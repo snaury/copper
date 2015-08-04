@@ -18,24 +18,6 @@ type localEndpoint struct {
 	settings PublishSettings
 }
 
-var _ endpointReference = &localEndpoint{}
-
-func (endpoint *localEndpoint) getEndpointsRLocked() []Endpoint {
-	return nil
-}
-
-func (endpoint *localEndpoint) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
-	endpoint.owner.mu.RUnlock()
-	defer endpoint.owner.mu.RLock()
-	remote, err := rpcNewStream(endpoint.key.client.conn, endpoint.key.targetID)
-	if err != nil {
-		// this client has already disconnected
-		return handleRequestStatusImpossible
-	}
-	defer remote.Close()
-	return callback(remote)
-}
-
 type serverPublication struct {
 	mu       sync.Mutex
 	owner    *server
@@ -54,7 +36,8 @@ type serverPublication struct {
 
 var _ endpointReference = &serverPublication{}
 
-func (pub *serverPublication) takeEndpointPubLocked() *localEndpoint {
+func (pub *serverPublication) takeEndpointRLocked() *localEndpoint {
+	pub.mu.Lock()
 	var best *localEndpoint
 	var active uint32
 	for endpoint := range pub.ready {
@@ -72,28 +55,35 @@ func (pub *serverPublication) takeEndpointPubLocked() *localEndpoint {
 			delete(pub.ready, best)
 		}
 	}
+	pub.mu.Unlock()
 	return best
 }
 
-func (pub *serverPublication) releaseEndpointPubLocked(endpoint *localEndpoint) {
+func (pub *serverPublication) releaseEndpointRLocked(endpoint *localEndpoint) {
 	if endpoint.pub == pub {
+		pub.mu.Lock()
 		endpoint.active--
 		endpoint.pub.ready[endpoint] = struct{}{}
-		endpoint.pub.wakeupWaitersPubLocked(1)
+		endpoint.pub.wakeupWaitersLocked(1)
+		pub.mu.Unlock()
 	}
 }
 
-func (pub *serverPublication) waitInQueuePubLocked() {
+func (pub *serverPublication) queueWaiterRLocked() <-chan struct{} {
+	pub.mu.Lock()
+	if len(pub.queue) >= int(pub.settings.QueueSize) {
+		pub.mu.Unlock()
+		return nil
+	}
 	waiter := make(chan struct{})
 	pub.queue = append(pub.queue, waiter)
 	pub.mu.Unlock()
-	pub.owner.mu.RUnlock()
-	<-waiter
-	pub.owner.mu.RLock()
-	pub.mu.Lock()
+	return waiter
 }
 
-func (pub *serverPublication) wakeupWaitersPubLocked(n int) {
+// Wakes up up to n waiters in the queue
+// Either publication or server must be write locked
+func (pub *serverPublication) wakeupWaitersLocked(n int) int {
 	if n > len(pub.queue) {
 		n = len(pub.queue)
 	}
@@ -107,6 +97,7 @@ func (pub *serverPublication) wakeupWaitersPubLocked(n int) {
 		}
 		pub.queue = pub.queue[:live]
 	}
+	return n
 }
 
 func (pub *serverPublication) getEndpointsRLocked() []Endpoint {
@@ -120,27 +111,36 @@ func (pub *serverPublication) getEndpointsRLocked() []Endpoint {
 }
 
 func (pub *serverPublication) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
-	pub.mu.Lock()
 	for len(pub.endpoints) > 0 {
-		endpoint := pub.takeEndpointPubLocked()
+		endpoint := pub.takeEndpointRLocked()
 		if endpoint != nil {
-			pub.mu.Unlock()
-			status := endpoint.handleRequestRLocked(callback)
-			pub.mu.Lock()
-			pub.releaseEndpointPubLocked(endpoint)
+			status := pub.handleRequestWithRUnlock(endpoint.key, callback)
+			pub.releaseEndpointRLocked(endpoint)
 			// FIXME: process handleRequestStatusImpossible?
-			pub.mu.Unlock()
 			return status
 		}
-		if len(pub.queue) >= int(pub.settings.QueueSize) {
+		waiter := pub.queueWaiterRLocked()
+		if waiter == nil {
 			// Queue for this publication is already full
-			pub.mu.Unlock()
 			return handleRequestStatusOverCapacity
 		}
-		pub.waitInQueuePubLocked()
+		pub.owner.mu.RUnlock()
+		<-waiter
+		pub.owner.mu.RLock()
 	}
-	pub.mu.Unlock()
 	return handleRequestStatusNoRoute
+}
+
+func (pub *serverPublication) handleRequestWithRUnlock(key localEndpointKey, callback handleRequestCallback) handleRequestStatus {
+	pub.owner.mu.RUnlock()
+	defer pub.owner.mu.RLock()
+	remote, err := rpcNewStream(key.client.conn, key.targetID)
+	if err != nil {
+		// this client has already disconnected
+		return handleRequestStatusImpossible
+	}
+	defer remote.Close()
+	return callback(remote)
 }
 
 func (s *server) publishLocked(name string, key localEndpointKey, settings PublishSettings) (*localEndpoint, error) {
@@ -199,7 +199,7 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 	pub.endpoints[endpoint.key] = endpoint
 	pub.ready[endpoint] = struct{}{}
 
-	pub.wakeupWaitersPubLocked(int(settings.Concurrency))
+	pub.wakeupWaitersLocked(int(settings.Concurrency))
 
 	for watcher := range pub.owner.pubWatchers {
 		watcher.addChangedLocked(pub)
