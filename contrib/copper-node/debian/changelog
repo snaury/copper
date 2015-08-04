@@ -3,6 +3,7 @@ copper-node (0.0.9) UNRELEASED; urgency=medium
   * Switch server to sync.RWMutex, handle requests under RLock
   * Get rid of connection window concept
   * Choose the least active endpoint in publications
+  * Pass endpoints directly to waiters
 
  -- Alexey Borzenkov <snaury@gmail.com>  Mon, 03 Aug 2015 19:13:43 +0300
 

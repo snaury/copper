@@ -29,15 +29,14 @@ type serverPublication struct {
 	settings  PublishSettings
 
 	ready map[*localEndpoint]struct{}
-	queue []chan struct{}
+	queue []chan *localEndpoint
 
 	subscriptions map[*serverSubscription]struct{}
 }
 
 var _ endpointReference = &serverPublication{}
 
-func (pub *serverPublication) takeEndpointRLocked() *localEndpoint {
-	pub.mu.Lock()
+func (pub *serverPublication) takeEndpointLocked() *localEndpoint {
 	var best *localEndpoint
 	var active uint32
 	for endpoint := range pub.ready {
@@ -55,6 +54,12 @@ func (pub *serverPublication) takeEndpointRLocked() *localEndpoint {
 			delete(pub.ready, best)
 		}
 	}
+	return best
+}
+
+func (pub *serverPublication) takeEndpointRLocked() *localEndpoint {
+	pub.mu.Lock()
+	best := pub.takeEndpointLocked()
 	pub.mu.Unlock()
 	return best
 }
@@ -62,20 +67,29 @@ func (pub *serverPublication) takeEndpointRLocked() *localEndpoint {
 func (pub *serverPublication) releaseEndpointRLocked(endpoint *localEndpoint) {
 	if endpoint.pub == pub {
 		pub.mu.Lock()
-		endpoint.active--
-		endpoint.pub.ready[endpoint] = struct{}{}
-		endpoint.pub.wakeupWaitersLocked(1)
+		if len(pub.queue) > 0 {
+			// transfer this endpoint to someone else
+			waiter := pub.queue[0]
+			copy(pub.queue, pub.queue[1:])
+			pub.queue[len(pub.queue)-1] = nil
+			pub.queue = pub.queue[:len(pub.queue)-1]
+			waiter <- endpoint
+			close(waiter)
+		} else {
+			endpoint.active--
+			endpoint.pub.ready[endpoint] = struct{}{}
+		}
 		pub.mu.Unlock()
 	}
 }
 
-func (pub *serverPublication) queueWaiterRLocked() <-chan struct{} {
+func (pub *serverPublication) queueWaiterRLocked() <-chan *localEndpoint {
 	pub.mu.Lock()
 	if len(pub.queue) >= int(pub.settings.QueueSize) {
 		pub.mu.Unlock()
 		return nil
 	}
-	waiter := make(chan struct{})
+	waiter := make(chan *localEndpoint, 1)
 	pub.queue = append(pub.queue, waiter)
 	pub.mu.Unlock()
 	return waiter
@@ -89,6 +103,12 @@ func (pub *serverPublication) wakeupWaitersLocked(n int) int {
 	}
 	if n > 0 {
 		for i := 0; i < n; i++ {
+			endpoint := pub.takeEndpointLocked()
+			if endpoint == nil {
+				n = i
+				break
+			}
+			pub.queue[i] <- endpoint
 			close(pub.queue[i])
 		}
 		live := copy(pub.queue, pub.queue[n:])
@@ -113,20 +133,28 @@ func (pub *serverPublication) getEndpointsRLocked() []Endpoint {
 func (pub *serverPublication) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
 	for len(pub.endpoints) > 0 {
 		endpoint := pub.takeEndpointRLocked()
-		if endpoint != nil {
-			status := pub.handleRequestWithRUnlock(endpoint.key, callback)
-			pub.releaseEndpointRLocked(endpoint)
-			// FIXME: process handleRequestStatusImpossible?
-			return status
+		if endpoint == nil {
+			waiter := pub.queueWaiterRLocked()
+			if waiter == nil {
+				// Queue for this publication is already full
+				return handleRequestStatusOverCapacity
+			}
+			pub.owner.mu.RUnlock()
+			endpoint = <-waiter
+			pub.owner.mu.RLock()
+			if endpoint == nil {
+				// Queue overflowed due to unpublish while we waited
+				return handleRequestStatusOverCapacity
+			}
+			if endpoint.pub == nil {
+				// This endpoint got unpublished while we waited
+				continue
+			}
 		}
-		waiter := pub.queueWaiterRLocked()
-		if waiter == nil {
-			// Queue for this publication is already full
-			return handleRequestStatusOverCapacity
-		}
-		pub.owner.mu.RUnlock()
-		<-waiter
-		pub.owner.mu.RLock()
+		status := pub.handleRequestWithRUnlock(endpoint.key, callback)
+		pub.releaseEndpointRLocked(endpoint)
+		// FIXME: process handleRequestStatusImpossible?
+		return status
 	}
 	return handleRequestStatusNoRoute
 }
