@@ -38,21 +38,26 @@ func newServerClient(s *server, conn net.Conn, allowChanges bool) *serverClient 
 }
 
 func (c *serverClient) handleRequestRLockedWith(client Stream, endpoint endpointReference) error {
-	status := endpoint.handleRequestRLocked(func(remote Stream) handleRequestStatus {
-		passthruBoth(client, remote)
-		return handleRequestStatusDone
-	}, client.Closed())
-	switch status {
-	case handleRequestStatusDone:
-		return nil
-	case handleRequestStatusImpossible, handleRequestStatusNoRoute:
-		// request failed or couldn't be routed
-		return ENOROUTE
-	case handleRequestStatusOverCapacity:
-		// there is not enough capacity to handle the request
-		return EOVERCAPACITY
-	default:
-		return fmt.Errorf("unhandled request status: %d", status)
+	for {
+		status := endpoint.handleRequestRLocked(func(remote Stream) handleRequestStatus {
+			passthruBoth(client, remote)
+			return handleRequestStatusDone
+		}, client.Closed())
+		switch status {
+		case handleRequestStatusDone:
+			return nil
+		case handleRequestStatusRetry:
+			// an attempt failed early and may be retried
+			continue
+		case handleRequestStatusNoRoute:
+			// request failed or couldn't be routed
+			return ENOROUTE
+		case handleRequestStatusOverCapacity:
+			// there is not enough capacity to handle the request
+			return EOVERCAPACITY
+		default:
+			return fmt.Errorf("unhandled request status: %d", status)
+		}
 	}
 }
 

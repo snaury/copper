@@ -36,17 +36,28 @@ func (remote *serverPeerRemote) getEndpointsRLocked() []Endpoint {
 }
 
 func (remote *serverPeerRemote) handleRequestRLocked(callback handleRequestCallback, cancel <-chan struct{}) handleRequestStatus {
-	if peer := remote.peer; peer != nil {
-		peer.owner.mu.RUnlock()
-		defer peer.owner.mu.RLock()
-		stream, err := rpcNewStream(remote.client, remote.targetID)
-		if err != nil {
-			return handleRequestStatusImpossible
-		}
-		defer stream.Close()
-		return callback(stream)
+	peer := remote.peer
+	if peer == nil {
+		return handleRequestStatusNoRoute
 	}
-	return handleRequestStatusNoRoute
+	peer.owner.mu.RUnlock()
+	defer peer.owner.mu.RLock()
+	if isCancelled(cancel) {
+		// The request is cancelled, so don't bother wasting a stream
+		return handleRequestStatusDone
+	}
+	stream, err := rpcNewStream(remote.client, remote.targetID)
+	if err != nil {
+		// If there was any error during establishing the stream it means that
+		// the client either disconnected or cannot accept new streams. In
+		// either case it gets forcefully removed.
+		peer.owner.mu.Lock()
+		defer peer.owner.mu.Unlock()
+		remote.removeLocked()
+		return handleRequestStatusRetry
+	}
+	defer stream.Close()
+	return callback(stream)
 }
 
 type serverPeer struct {

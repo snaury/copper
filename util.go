@@ -41,3 +41,12 @@ func toHandlerFunc(handler func(stream Stream) error) Handler {
 	}
 	return nil
 }
+
+func isCancelled(cancel <-chan struct{}) bool {
+	select {
+	case <-cancel:
+		return true
+	default:
+		return false
+	}
+}

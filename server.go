@@ -42,15 +42,17 @@ type handleRequestStatus int
 const (
 	// Request was handled and the stream consumed
 	handleRequestStatusDone handleRequestStatus = iota
-	// There was an attempt to handle the request, but it was impossible, and
-	// future requests are unlikely to succeed. While the stream was not
-	// consumed this status implies that locks had been unlocked and
-	// configuration has changed.
-	handleRequestStatusImpossible
-	// There was not enough capacity to handle the request
-	handleRequestStatusOverCapacity
+	// There was an attempt to handle the request, but it failed early, and
+	// future requests on the same path could not succeed. While the stream was
+	// not consumed this status implies there was a moment with unlocked locks
+	// and state might have changed. It is mandatory that something had been
+	// removed before returning this status, so the request may be safely
+	// retried and not loop forever.
+	handleRequestStatusRetry
 	// There was no route to send the request to
 	handleRequestStatusNoRoute
+	// There was not enough capacity to handle the request
+	handleRequestStatusOverCapacity
 )
 
 type handleRequestCallback func(remote Stream) handleRequestStatus

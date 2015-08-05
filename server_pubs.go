@@ -95,7 +95,7 @@ func (pub *serverPublication) queueWaiterRLocked() <-chan *localEndpoint {
 	return waiter
 }
 
-func (pub *serverPublication) cancelWaiterRLocked(waiter <-chan *localEndpoint) *localEndpoint {
+func (pub *serverPublication) cancelWaiterRLocked(waiter <-chan *localEndpoint) {
 	pub.mu.Lock()
 	for index, candidate := range pub.queue {
 		if candidate == waiter {
@@ -103,14 +103,18 @@ func (pub *serverPublication) cancelWaiterRLocked(waiter <-chan *localEndpoint) 
 			pub.queue[len(pub.queue)-1] = nil
 			pub.queue = pub.queue[:len(pub.queue)-1]
 			pub.mu.Unlock()
-			return nil
+			return
 		}
 	}
 	pub.mu.Unlock()
-	return <-waiter // not in the queue: either succeeded or failed
+	// Waiter is not in the queue, so it either succeeded or got unpublished
+	if endpoint := <-waiter; endpoint != nil {
+		// It succeeded, but since we are cancelled it needs to be released
+		pub.releaseEndpointRLocked(endpoint)
+	}
 }
 
-// Wakes up up to n waiters in the queue
+// Wakes up at most n waiters in the queue
 // Either publication or server must be write locked
 func (pub *serverPublication) wakeupWaitersLocked(n int) int {
 	if n > len(pub.queue) {
@@ -146,58 +150,62 @@ func (pub *serverPublication) getEndpointsRLocked() []Endpoint {
 }
 
 func (pub *serverPublication) handleRequestRLocked(callback handleRequestCallback, cancel <-chan struct{}) handleRequestStatus {
-	for len(pub.endpoints) > 0 {
-		endpoint := pub.takeEndpointRLocked()
-		if endpoint == nil {
-			waiter := pub.queueWaiterRLocked()
-			if waiter == nil {
-				// Queue for this publication is already full
-				return handleRequestStatusOverCapacity
-			}
-			pub.owner.mu.RUnlock()
-			select {
-			case endpoint = <-waiter:
-				pub.owner.mu.RLock()
-			case <-cancel:
-				pub.owner.mu.RLock()
-				endpoint = pub.cancelWaiterRLocked(waiter)
-				if endpoint != nil {
-					// We've got an endpoint, but don't need it anymore
-					pub.releaseEndpointRLocked(endpoint)
-				}
-				return handleRequestStatusDone
-			}
+	if len(pub.endpoints) == 0 {
+		return handleRequestStatusNoRoute
+	}
+	endpoint := pub.takeEndpointRLocked()
+	if endpoint == nil {
+		if isCancelled(cancel) {
+			// Don't even try to wait if the request is cancelled
+			return handleRequestStatusDone
+		}
+		waiter := pub.queueWaiterRLocked()
+		if waiter == nil {
+			// Queue for this publication is already full
+			return handleRequestStatusOverCapacity
+		}
+		pub.owner.mu.RUnlock()
+		select {
+		case endpoint = <-waiter:
+			pub.owner.mu.RLock()
 			if endpoint == nil {
 				// Queue overflowed due to unpublish while we waited
+				if len(pub.endpoints) == 0 {
+					// Bubble up and try a different path, since there are no
+					// endpoints left in this publication and it should be
+					// removed by now.
+					return handleRequestStatusRetry
+				}
 				return handleRequestStatusOverCapacity
 			}
 			if endpoint.pub == nil {
-				// This endpoint got unpublished while we waited
-				continue
+				// Bubble up and try a different path, since this endpoint got
+				// unpublished while we were waking up on the waiter.
+				return handleRequestStatusRetry
 			}
-		}
-		select {
 		case <-cancel:
-			// We've got an endpoint, but the request got cancelled
-			pub.releaseEndpointRLocked(endpoint)
+			// The request got cancelled while we waited
+			pub.owner.mu.RLock()
+			pub.cancelWaiterRLocked(waiter)
 			return handleRequestStatusDone
-		default:
 		}
-		status := pub.handleRequestWithRUnlock(endpoint.key, callback)
-		pub.releaseEndpointRLocked(endpoint)
-		// FIXME: process handleRequestStatusImpossible?
-		return status
 	}
-	return handleRequestStatusNoRoute
-}
-
-func (pub *serverPublication) handleRequestWithRUnlock(key localEndpointKey, callback handleRequestCallback) handleRequestStatus {
+	defer pub.releaseEndpointRLocked(endpoint)
 	pub.owner.mu.RUnlock()
 	defer pub.owner.mu.RLock()
-	remote, err := rpcNewStream(key.client.conn, key.targetID)
+	if isCancelled(cancel) {
+		// The request is cancelled, so don't bother wasting a stream
+		return handleRequestStatusDone
+	}
+	remote, err := rpcNewStream(endpoint.key.client.conn, endpoint.key.targetID)
 	if err != nil {
-		// this client has already disconnected
-		return handleRequestStatusImpossible
+		// If there was any error during establishing the stream it means that
+		// the client either disconnected or cannot accept new streams. In
+		// either case it gets forcefully unpublished.
+		pub.owner.mu.Lock()
+		defer pub.owner.mu.Unlock()
+		endpoint.unpublishLocked()
+		return handleRequestStatusRetry
 	}
 	defer remote.Close()
 	return callback(remote)
