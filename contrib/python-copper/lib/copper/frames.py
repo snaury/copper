@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import time
 import struct
 from .errors import (
     CopperError,
@@ -6,6 +7,8 @@ from .errors import (
     InvalidFrameError,
     InternalError,
 )
+from collections import deque
+from .util import take_from_deque
 
 __all__ = [
     'Frame',
@@ -14,6 +17,7 @@ __all__ = [
     'ResetFrame',
     'WindowFrame',
     'SettingsFrame',
+    'FrameReader',
 ]
 
 FRAME_HEADER_FMT = struct.Struct('>IIB')
@@ -269,3 +273,74 @@ class SettingsFrame(Frame):
         Header(0, 6 * len(self.values), self.flags, self.ID).dump(writer)
         for sid, value in sorted(self.values.items()):
             writer.write(self.FMT.pack(sid, value))
+
+class FrameReader(object):
+    def __init__(self, sock, chunk_size=8192):
+        self.sock = sock
+        self.size = 0
+        self.buffer = deque()
+        self.chunk_size = chunk_size
+
+    def _recv(self, n):
+        return self.sock.recv(n)
+
+    @property
+    def eof(self):
+        if not self.buffer:
+            chunk = self._recv(self.chunk_size)
+            if chunk:
+                self.buffer.append(chunk)
+                self.size += len(chunk)
+        return not self.buffer
+
+    def read(self, n):
+        while self.size < n:
+            chunk = self._recv(max(self.chunk_size, n - self.size))
+            if not chunk:
+                raise EOFError('read(%r) stopped short after %d bytes' % (n, self.size))
+            self.buffer.append(chunk)
+            self.size += len(chunk)
+        chunk = take_from_deque(self.buffer, n)
+        self.size -= len(chunk)
+        return chunk
+
+    def read_frame(self):
+        frame = Frame.load(self)
+        #print 'READ(%s): %r' % (self.sock.getsockname(), frame)
+        return frame
+
+class FrameWriter(object):
+    def __init__(self, sock, chunk_size=8192):
+        self.sock = sock
+        self.size = 0
+        self.buffer = []
+        self.chunk_size = chunk_size
+        self.last_send_time = time.time()
+
+    def _send(self, data):
+        data = memoryview(data)
+        while data:
+            self.last_send_time = time.time()
+            n = self.sock.send(data)
+            data = data[n:]
+
+    def flush(self):
+        if self.buffer:
+            data = ''.join(self.buffer)
+            self.buffer[:] = ()
+            self.size = 0
+            self._send(data)
+
+    def write(self, data):
+        assert isinstance(data, bytes)
+        if not self.buffer and len(data) > self.chunk_size:
+            self._send(data)
+            return
+        self.buffer.append(data)
+        self.size += len(data)
+        if self.size > self.chunk_size:
+            self.flush()
+
+    def write_frame(self, frame):
+        #print 'WRITE(%s): %r' % (self.sock.getsockname(), frame)
+        frame.dump(self)

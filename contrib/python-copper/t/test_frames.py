@@ -12,6 +12,8 @@ from copper.frames import (
     FLAG_RESET_READ,
     FLAG_RESET_WRITE,
     FLAG_SETTINGS_ACK,
+    FrameReader,
+    FrameWriter,
 )
 from copper.errors import (
     InternalError,
@@ -72,19 +74,13 @@ BINARY = to_binary([
     0x00, 0x00, 0x00, 0x01,
 ])
 
-class TestReader(object):
+class TestReader(FrameReader):
     def __init__(self, data):
-        self.data = data
+        FrameReader.__init__(self, data)
 
-    @property
-    def eof(self):
-        return not self.data
-
-    def read(self, n):
-        if len(self.data) < n:
-            raise EOFError()
-        data, self.data = self.data[:n], self.data[n:]
-        return data
+    def _recv(self, n):
+        chunk, self.sock = self.sock[:n], self.sock[n:]
+        return chunk
 
 def test_decode_frames():
     frames = list(FRAMES)
@@ -98,18 +94,16 @@ def test_decode_frames():
         assert frame == expected
     assert not frames, 'Expected frame %r' % (frames[0],)
 
-class TestWriter(object):
+class TestWriter(FrameWriter):
     def __init__(self):
-        self.data = ''
+        FrameWriter.__init__(self, '')
 
-    def write(self, data):
-        self.data += data
-
-    def flush(self):
-        pass
+    def _send(self, data):
+        self.sock += data
 
 def test_encode_frames():
     writer = TestWriter()
     for frame in FRAMES:
         frame.dump(writer)
-    assert writer.data.encode('hex') == BINARY.encode('hex')
+    writer.flush()
+    assert writer.sock.encode('hex') == BINARY.encode('hex')

@@ -23,6 +23,8 @@ from .frames import (
     FLAG_RESET_READ,
     FLAG_RESET_WRITE,
     FLAG_SETTINGS_ACK,
+    FrameReader,
+    FrameWriter,
 )
 from .errors import (
     NoTargetError,
@@ -33,6 +35,10 @@ from .errors import (
     InvalidFrameError,
     InvalidStreamError,
     WindowOverflowError,
+)
+from .util import (
+    Condition,
+    take_from_deque,
 )
 
 __all__ = [
@@ -45,116 +51,12 @@ DEFAULT_STREAM_WRITE_BUFFER = 1024*1024
 
 log = logging.getLogger(__name__)
 
-def take_from_deque(d, size):
-    """Takes up to size bytes from the deque"""
-    if not d:
-        return ''
-    if len(d[0]) >= size:
-        chunk = d.popleft()
-        if len(chunk) > size:
-            d.appendleft(chunk[size:])
-            chunk = chunk[:size]
-        return chunk
-    elif len(d) == 1:
-        return d.popleft()
-    result = []
-    remaining = size
-    while d and remaining > 0:
-        chunk = d.popleft()
-        if len(chunk) > remaining:
-            d.appendleft(chunk[remaining:])
-            chunk = chunk[:remaining]
-        remaining -= len(chunk)
-        result.append(chunk)
-    return ''.join(result)
-
-class Condition(object):
-    def __init__(self):
-        self._event = Event()
-
-    def broadcast(self):
-        try:
-            self._event.set()
-        finally:
-            self._event.clear()
-
-    def wait(self):
-        self._event.wait()
-
-class _RawConnReader(object):
-    def __init__(self, sock, chunk_size=4096):
-        self.sock = sock
-        self.size = 0
-        self.buffer = deque()
-        self.chunk_size = chunk_size
-
-    @property
-    def eof(self):
-        if not self.buffer:
-            chunk = self.sock.recv(self.chunk_size)
-            if not chunk:
-                return ''
-            self.buffer.append(chunk)
-            self.size += len(chunk)
-        return not self.buffer
-
-    def read(self, n):
-        while self.size < n:
-            chunk = self.sock.recv(self.chunk_size)
-            if not chunk:
-                raise EOFError('read(%r) stopped short after %d bytes' % (n, self.size))
-            self.buffer.append(chunk)
-            self.size += len(chunk)
-        chunk = take_from_deque(self.buffer, n)
-        self.size -= len(chunk)
-        return chunk
-
-    def read_frame(self):
-        frame = Frame.load(self)
-        #print 'READ(%s): %r' % (self.sock.getsockname(), frame)
-        return frame
-
-class _RawConnWriter(object):
-    def __init__(self, sock, chunk_size=4096):
-        self.sock = sock
-        self.size = 0
-        self.buffer = deque()
-        self.chunk_size = chunk_size
-        self.sent_marker = None
-
-    def write(self, data):
-        assert isinstance(data, bytes)
-        self.buffer.append(data)
-        self.size += len(data)
-        while self.size > self.chunk_size:
-            self.sent_marker = object()
-            chunk = take_from_deque(self.buffer, self.chunk_size)
-            self.size -= len(chunk)
-            n = self.sock.send(chunk)
-            if n < len(chunk):
-                self.buffer.appendleft(chunk[n:])
-                self.size += len(chunk)-n
-
-    def flush(self):
-        while self.buffer:
-            self.sent_marker = object()
-            chunk = take_from_deque(self.buffer, self.chunk_size)
-            self.size -= len(chunk)
-            n = self.sock.send(chunk)
-            if n < len(chunk):
-                self.buffer.appendleft(chunk[n:])
-                self.size += len(chunk)-n
-
-    def write_frame(self, frame):
-        #print 'WRITE(%s): %r' % (self.sock.getsockname(), frame)
-        frame.dump(self)
-
 class RawConn(object):
     def __init__(self, sock, handler=None, is_server=False):
         self._sock = sock
         self._handler = handler
-        self._reader = _RawConnReader(sock)
-        self._writer = _RawConnWriter(sock)
+        self._reader = FrameReader(sock)
+        self._writer = FrameWriter(sock)
         self._closed = False
         self._shutdown = False
         self._failure = None
@@ -410,7 +312,6 @@ class RawConn(object):
     def _write_frames(self):
         while True:
             self._write_ready.clear()
-            sent_marker = self._writer.sent_marker
             send_detected = False
             if self._failure_out is not None:
                 self._writer.write_frame(ResetFrame(0, 0, self._failure_out))
@@ -420,30 +321,20 @@ class RawConn(object):
                 ping_acks, self._ping_acks = self._ping_acks, []
                 for value in ping_acks:
                     self._writer.write_frame(PingFrame(FLAG_PING_ACK, value))
-                if sent_marker is not self._writer.sent_marker:
-                    continue
+                continue
             if self._ping_reqs:
                 ping_reqs, self._ping_reqs = self._ping_reqs, []
                 for value in ping_reqs:
                     self._writer.write_frame(PingFrame(0, value))
-                if sent_marker is not self._writer.sent_marker:
-                    continue
+                continue
             # TODO: settings frames
-            while self._ctrl_streams:
+            if self._ctrl_streams:
                 stream = self._ctrl_streams.pop()
                 stream._send_ctrl(self._writer)
-                if sent_marker is not self._writer.sent_marker:
-                    send_detected = True
-                    break
-            if send_detected:
                 continue
-            while self._data_streams:
+            if self._data_streams:
                 stream = self._data_streams.pop()
                 stream._send_data(self._writer)
-                if sent_marker is not self._writer.sent_marker:
-                    send_detected = True
-                    break
-            if send_detected:
                 continue
             if self._write_ready.is_set():
                 # signal channel active, must try again
@@ -452,26 +343,23 @@ class RawConn(object):
             break
         return True
 
+    @property
+    def _next_mandatory_send_time(self):
+        return self._writer.last_send_time + INACTIVITY_TIMEOUT * 2 // 3
+
     def _write_loop(self):
-        nextdata = time.time() + INACTIVITY_TIMEOUT * 2 // 3
         while True:
-            datarequired = True
-            delay = nextdata - time.time()
+            delay = self._next_mandatory_send_time - time.time()
             if delay > 0:
                 with Timeout(delay, False):
                     self._write_ready.wait()
-                    datarequired = False
             try:
-                initial_sent_marker = self._writer.sent_marker
                 if not self._write_frames():
                     break
-                if datarequired and initial_sent_marker is self._writer.sent_marker and not self._writer.buffer:
+                if not self._writer.buffer and self._next_mandatory_send_time <= time.time():
                     # we must send an empty data frame, however we haven't sent anything yet
                     self._writer.write_frame(DataFrame(0, 0, ''))
                 self._writer.flush()
-                if initial_sent_marker is not self._writer.sent_marker:
-                    # we have sent some data, restart the timer
-                    nextdata = time.time() + INACTIVITY_TIMEOUT * 2 // 3
             except:
                 e = sys.exc_info()[1]
                 if not isinstance(e, socket_error):
