@@ -8,6 +8,7 @@ clean:
 	rm -rf $(BUILDDIR)
 
 build:
+	go version
 	mkdir -p $(BUILDDIR)
 	cd ../../cmd/copper-node && go build -o $(BUILDDIR)/copper-node
 
