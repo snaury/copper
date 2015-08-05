@@ -67,6 +67,7 @@ func TestHTTP(t *testing.T) {
 	pub1, err := client.Publish(
 		"http:hello",
 		PublishSettings{
+			Distance:    3,
 			Concurrency: 1,
 			QueueSize:   64,
 		},

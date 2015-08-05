@@ -189,40 +189,60 @@ func (s *server) acceptor(listener net.Listener, allowChanges bool) {
 	}
 }
 
+// Returns true if (priority, distance) is better than (minFoundPriority, minFoundDistance)
+func isBetterEndpoint(priority, minFoundPriority, distance, minFoundDistance uint32) bool {
+	if priority < minFoundPriority {
+		// Lower priority is always better
+		return true
+	}
+	if priority != minFoundPriority {
+		// Higher priority is always worse
+		return false
+	}
+	if minFoundDistance < 2 {
+		// If minFoundDistance is already 0-1, then there is nothing better
+		return false
+	}
+	return distance < minFoundDistance
+}
+
+// Finds the best endpoint with distance in [min, max] range.
+// The rules are the following, in order:
+// - Endpoints with lower priority are preferred to others
+// - Endpoints with distance in [0, 1] are preferred to others (same DC)
+// - Endpoints with the lowest distance >= 2 are preferred (other DCs)
 func (s *server) findEndpointRLocked(name string, minDistance, maxDistance uint32) (endpoint endpointReference) {
-	var minPriority uint32
 	route := s.routeByName[name]
 	if route != nil {
 		return route
 	}
+	var minFoundPriority uint32
+	var minFoundDistance uint32
 	pubs := s.pubsByName[name]
-	if len(pubs) > 0 {
+	if len(pubs) > 0 && minDistance == 0 {
 		for _, pub := range pubs {
-			if pub.settings.Distance < minDistance || pub.settings.Distance > maxDistance {
-				continue
-			}
-			if endpoint == nil || pub.settings.Priority < minPriority {
+			if endpoint == nil || pub.settings.Priority < minFoundPriority {
 				if pub.settings.Priority == 0 {
+					// Priority 0 and distance 0 is the best endpoint
 					return pub
 				}
 				endpoint = pub
-				minPriority = pub.settings.Priority
+				minFoundPriority = pub.settings.Priority
+				minFoundDistance = 0
 			}
 		}
 	}
 	for _, peer := range s.peers {
+		if peer.distance < minDistance || peer.distance > maxDistance {
+			continue
+		}
 		remotes := peer.remotesByName[name]
 		if len(remotes) > 0 {
 			for _, remote := range remotes {
-				if remote.settings.Distance < minDistance || remote.settings.Distance > maxDistance {
-					continue
-				}
-				if endpoint == nil || remote.settings.Priority < minPriority {
-					if remote.settings.Priority == 0 {
-						return remote
-					}
+				if endpoint == nil || isBetterEndpoint(remote.settings.Priority, minFoundPriority, peer.distance, minFoundDistance) {
 					endpoint = remote
-					minPriority = remote.settings.Priority
+					minFoundPriority = remote.settings.Priority
+					minFoundDistance = peer.distance
 				}
 			}
 		}
@@ -283,84 +303,69 @@ func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				return handleRequestStatusNoRoute
 			}
 		}
-		mindistance := uint32(0)
-		maxdistance := uint32(2)
+		minDistance := uint32(0)
+		maxDistance := uint32(2)
 		if value, err := strconv.Atoi(req.Header.Get("X-Copper-MinDistance")); err == nil && value >= 0 {
-			mindistance = uint32(value)
+			minDistance = uint32(value)
 		}
 		if value, err := strconv.Atoi(req.Header.Get("X-Copper-MaxDistance")); err == nil && value >= 0 {
-			maxdistance = uint32(value)
+			maxDistance = uint32(value)
 		}
 		s.mu.RLock()
 		defer s.mu.RUnlock()
-		var endpoint endpointReference
-		if maxdistance >= 2 {
-			if mindistance <= 1 {
-				endpoint = s.findEndpointRLocked("http:"+service, mindistance, 1)
-			}
+		for {
+			endpoint := s.findEndpointRLocked("http:"+service, minDistance, maxDistance)
 			if endpoint == nil {
-				distance := uint32(2)
-				if distance < mindistance {
-					distance = mindistance
-				}
-				for distance <= maxdistance {
-					endpoint = s.findEndpointRLocked("http:"+service, distance, distance)
-					if endpoint != nil || distance == maxdistance {
-						break
-					}
-					distance++
-				}
+				return handleRequestStatusNoRoute
 			}
-		} else {
-			endpoint = s.findEndpointRLocked("http:"+service, mindistance, maxdistance)
-		}
-		if endpoint == nil {
-			return handleRequestStatusNoRoute
-		}
-		return endpoint.handleRequestRLocked(func(remote Stream) handleRequestStatus {
-			outreq := new(http.Request)
-			*outreq = *req
-			modified := false
-			for _, h := range hopHeaders {
-				if len(outreq.Header[h]) > 0 {
-					if !modified {
-						outreq.Header = make(http.Header)
-						copyHeaders(outreq.Header, req.Header)
+			status := endpoint.handleRequestRLocked(func(remote Stream) handleRequestStatus {
+				outreq := new(http.Request)
+				*outreq = *req
+				modified := false
+				for _, h := range hopHeaders {
+					if len(outreq.Header[h]) > 0 {
+						if !modified {
+							outreq.Header = make(http.Header)
+							copyHeaders(outreq.Header, req.Header)
+						}
+						delete(outreq.Header, h)
 					}
-					delete(outreq.Header, h)
 				}
-			}
-			go func() {
-				err := outreq.Write(remote)
-				if err != nil && !isCopperError(err) {
-					// Only close the stream if it was not a copper error.
-					// Otherwise the remote likely closed the stream and is
-					// either sending us response (that might become incomplete
-					// if we reset the stream here), or it failed and reading
-					// response will fail as well.
+				go func() {
+					err := outreq.Write(remote)
+					if err != nil && !isCopperError(err) {
+						// Only close the stream if it was not a copper error.
+						// Otherwise the remote likely closed the stream and is
+						// either sending us response (that might become incomplete
+						// if we reset the stream here), or it failed and reading
+						// response will fail as well.
+						remote.CloseWithError(err)
+					}
+				}()
+				r := bufio.NewReader(remote)
+				res, err := http.ReadResponse(r, outreq)
+				if err == nil && res.StatusCode == 100 {
+					// Skip 100-continue
+					res, err = http.ReadResponse(r, outreq)
+				}
+				if err != nil {
 					remote.CloseWithError(err)
+					text := err.Error()
+					rw.Header().Set("Content-Length", fmt.Sprintf("%d", len(text)))
+					rw.WriteHeader(502)
+					rw.Write([]byte(text))
+				} else {
+					defer res.Body.Close()
+					copyHeaders(rw.Header(), res.Header)
+					rw.WriteHeader(res.StatusCode)
+					io.Copy(rw, res.Body)
 				}
-			}()
-			r := bufio.NewReader(remote)
-			res, err := http.ReadResponse(r, outreq)
-			if err == nil && res.StatusCode == 100 {
-				// Skip 100-continue
-				res, err = http.ReadResponse(r, outreq)
+				return handleRequestStatusDone
+			}, nil)
+			if status != handleRequestStatusRetry {
+				return status
 			}
-			if err != nil {
-				remote.CloseWithError(err)
-				text := err.Error()
-				rw.Header().Set("Content-Length", fmt.Sprintf("%d", len(text)))
-				rw.WriteHeader(502)
-				rw.Write([]byte(text))
-			} else {
-				defer res.Body.Close()
-				copyHeaders(rw.Header(), res.Header)
-				rw.WriteHeader(res.StatusCode)
-				io.Copy(rw, res.Body)
-			}
-			return handleRequestStatusDone
-		}, nil)
+		}
 	}()
 	if status != handleRequestStatusDone {
 		rw.WriteHeader(404)
