@@ -52,19 +52,19 @@ func (o *serverSubscriptionOption) getEndpointsRLocked() []Endpoint {
 	return result
 }
 
-func (o *serverSubscriptionOption) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
+func (o *serverSubscriptionOption) handleRequestRLocked(callback handleRequestCallback, cancel <-chan struct{}) handleRequestStatus {
 	if o.route != nil {
-		return o.route.handleRequestRLocked(callback)
+		return o.route.handleRequestRLocked(callback, cancel)
 	}
 	if len(o.local) > 0 && o.localPriority <= o.remotePriority {
-		return o.local[0].handleRequestRLocked(callback)
+		return o.local[0].handleRequestRLocked(callback, cancel)
 	}
 	if o.remoteCount > 0 {
 		index := 0
 		if o.remoteCount > 1 {
 			index = globalRandom.Intn(o.remoteCount)
 		}
-		return o.remote[index].handleRequestRLocked(callback)
+		return o.remote[index].handleRequestRLocked(callback, cancel)
 	}
 	return handleRequestStatusNoRoute
 }
@@ -188,9 +188,9 @@ func (sub *serverSubscription) getEndpointsRLocked() []Endpoint {
 	return nil
 }
 
-func (sub *serverSubscription) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
+func (sub *serverSubscription) handleRequestRLocked(callback handleRequestCallback, cancel <-chan struct{}) handleRequestStatus {
 	if sub.active < len(sub.options) {
-		return sub.options[sub.active].handleRequestRLocked(callback)
+		return sub.options[sub.active].handleRequestRLocked(callback, cancel)
 	}
 	// TODO: support upstream
 	return handleRequestStatusNoRoute

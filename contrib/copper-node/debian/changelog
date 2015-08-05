@@ -1,3 +1,9 @@
+copper-node (0.0.10) UNRELEASED; urgency=medium
+
+  * Detect when requests are cancelled and remove them from the queue
+
+ -- Alexey Borzenkov <snaury@gmail.com>  Wed, 05 Aug 2015 20:03:18 +0300
+
 copper-node (0.0.9) unstable; urgency=medium
 
   * Switch server to sync.RWMutex, handle requests under RLock

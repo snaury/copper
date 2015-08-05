@@ -35,7 +35,7 @@ func (remote *serverPeerRemote) getEndpointsRLocked() []Endpoint {
 	return nil
 }
 
-func (remote *serverPeerRemote) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
+func (remote *serverPeerRemote) handleRequestRLocked(callback handleRequestCallback, cancel <-chan struct{}) handleRequestStatus {
 	if peer := remote.peer; peer != nil {
 		peer.owner.mu.RUnlock()
 		defer peer.owner.mu.RLock()

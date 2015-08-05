@@ -57,7 +57,7 @@ type handleRequestCallback func(remote Stream) handleRequestStatus
 
 type endpointReference interface {
 	getEndpointsRLocked() []Endpoint
-	handleRequestRLocked(callback handleRequestCallback) handleRequestStatus
+	handleRequestRLocked(callback handleRequestCallback, cancel <-chan struct{}) handleRequestStatus
 }
 
 type lockedRandomSource struct {
@@ -358,7 +358,7 @@ func (s *server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				io.Copy(rw, res.Body)
 			}
 			return handleRequestStatusDone
-		})
+		}, nil)
 	}()
 	if status != handleRequestStatusDone {
 		rw.WriteHeader(404)

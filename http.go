@@ -5,18 +5,34 @@ import (
 	"net/http"
 )
 
+type fakeListenerConn struct {
+	net.Conn
+	listener *fakeListener
+}
+
+func (s *fakeListenerConn) Close() error {
+	err := s.Conn.Close()
+	if err == nil {
+		close(s.listener.closed)
+	}
+	return err
+}
+
 type fakeListener struct {
 	stream   Stream
 	accepted bool
+	closed   chan struct{}
 }
 
 func (l *fakeListener) Accept() (net.Conn, error) {
 	if l.accepted {
-		<-l.stream.Closed()
+		// Wait until close is called on a previously accepted connection
+		<-l.closed
 		return nil, ECLOSED
 	}
 	l.accepted = true
-	return l.stream, nil
+	l.closed = make(chan struct{})
+	return &fakeListenerConn{l.stream, l}, nil
 }
 
 func (l *fakeListener) Close() error {

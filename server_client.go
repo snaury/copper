@@ -41,7 +41,7 @@ func (c *serverClient) handleRequestRLockedWith(client Stream, endpoint endpoint
 	status := endpoint.handleRequestRLocked(func(remote Stream) handleRequestStatus {
 		passthruBoth(client, remote)
 		return handleRequestStatusDone
-	})
+	}, client.Closed())
 	switch status {
 	case handleRequestStatusDone:
 		return nil

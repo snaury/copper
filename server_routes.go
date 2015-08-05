@@ -32,7 +32,7 @@ func (r *serverRoute) getEndpointsRLocked() []Endpoint {
 	return result
 }
 
-func (r *serverRoute) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
+func (r *serverRoute) handleRequestRLocked(callback handleRequestCallback, cancel <-chan struct{}) handleRequestStatus {
 	sum := int64(0)
 	for _, c := range r.cases {
 		if c.weight > 0 && c.sub.isActiveRLocked() {
@@ -47,7 +47,7 @@ func (r *serverRoute) handleRequestRLocked(callback handleRequestCallback) handl
 	for _, c := range r.cases {
 		if c.weight > 0 && c.sub.isActiveRLocked() {
 			if bin < int64(c.weight) {
-				return c.sub.handleRequestRLocked(callback)
+				return c.sub.handleRequestRLocked(callback, cancel)
 			}
 			bin -= int64(c.weight)
 		}

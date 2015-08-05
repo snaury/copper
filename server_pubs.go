@@ -65,7 +65,7 @@ func (pub *serverPublication) takeEndpointRLocked() *localEndpoint {
 }
 
 func (pub *serverPublication) releaseEndpointRLocked(endpoint *localEndpoint) {
-	if endpoint.pub == pub {
+	if endpoint.pub != nil {
 		pub.mu.Lock()
 		if len(pub.queue) > 0 {
 			// transfer this endpoint to someone else
@@ -93,6 +93,21 @@ func (pub *serverPublication) queueWaiterRLocked() <-chan *localEndpoint {
 	pub.queue = append(pub.queue, waiter)
 	pub.mu.Unlock()
 	return waiter
+}
+
+func (pub *serverPublication) cancelWaiterRLocked(waiter <-chan *localEndpoint) *localEndpoint {
+	pub.mu.Lock()
+	for index, candidate := range pub.queue {
+		if candidate == waiter {
+			copy(pub.queue[index:], pub.queue[index+1:])
+			pub.queue[len(pub.queue)-1] = nil
+			pub.queue = pub.queue[:len(pub.queue)-1]
+			pub.mu.Unlock()
+			return nil
+		}
+	}
+	pub.mu.Unlock()
+	return <-waiter // not in the queue: either succeeded or failed
 }
 
 // Wakes up up to n waiters in the queue
@@ -130,7 +145,7 @@ func (pub *serverPublication) getEndpointsRLocked() []Endpoint {
 	}
 }
 
-func (pub *serverPublication) handleRequestRLocked(callback handleRequestCallback) handleRequestStatus {
+func (pub *serverPublication) handleRequestRLocked(callback handleRequestCallback, cancel <-chan struct{}) handleRequestStatus {
 	for len(pub.endpoints) > 0 {
 		endpoint := pub.takeEndpointRLocked()
 		if endpoint == nil {
@@ -140,8 +155,18 @@ func (pub *serverPublication) handleRequestRLocked(callback handleRequestCallbac
 				return handleRequestStatusOverCapacity
 			}
 			pub.owner.mu.RUnlock()
-			endpoint = <-waiter
-			pub.owner.mu.RLock()
+			select {
+			case endpoint = <-waiter:
+				pub.owner.mu.RLock()
+			case <-cancel:
+				pub.owner.mu.RLock()
+				endpoint = pub.cancelWaiterRLocked(waiter)
+				if endpoint != nil {
+					// We've got an endpoint, but don't need it anymore
+					pub.releaseEndpointRLocked(endpoint)
+				}
+				return handleRequestStatusDone
+			}
 			if endpoint == nil {
 				// Queue overflowed due to unpublish while we waited
 				return handleRequestStatusOverCapacity
@@ -150,6 +175,13 @@ func (pub *serverPublication) handleRequestRLocked(callback handleRequestCallbac
 				// This endpoint got unpublished while we waited
 				continue
 			}
+		}
+		select {
+		case <-cancel:
+			// We've got an endpoint, but the request got cancelled
+			pub.releaseEndpointRLocked(endpoint)
+			return handleRequestStatusDone
+		default:
 		}
 		status := pub.handleRequestWithRUnlock(endpoint.key, callback)
 		pub.releaseEndpointRLocked(endpoint)

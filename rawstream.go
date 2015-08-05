@@ -513,6 +513,9 @@ func (s *rawStream) setReadErrorLocked(err error) error {
 	if preverror == nil {
 		s.read.err = err
 		close(s.read.closed)
+		if s.write.err != nil {
+			close(s.closed)
+		}
 		if s.flags&flagStreamSeenAck == 0 {
 			close(s.read.acked)
 		}
@@ -532,6 +535,9 @@ func (s *rawStream) setWriteErrorLocked(err error) error {
 	if preverror == nil {
 		s.write.err = err
 		close(s.write.closed)
+		if s.read.err != nil {
+			close(s.closed)
+		}
 		s.flags |= flagStreamNeedEOF
 		if s.write.buf.size == s.write.wired {
 			// We had no pending data, but now we need to send EOF/RESET, which
@@ -551,7 +557,6 @@ func (s *rawStream) closeWithErrorLocked(err error) error {
 	preverror := s.err
 	if preverror == nil {
 		s.err = err
-		close(s.closed)
 		s.setReadErrorLocked(err)
 		s.setWriteErrorLocked(err)
 	}
