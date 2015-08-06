@@ -17,6 +17,7 @@ type serverPeerRemote struct {
 	client   *clientConn
 	targetID int64
 	name     string
+	distance uint32
 	settings PublishSettings
 
 	subscriptions map[*serverSubscription]struct{}
@@ -257,7 +258,7 @@ func (peer *serverPeer) processChanges(client *clientConn, changes ServiceChange
 }
 
 func (peer *serverPeer) addRemoteLocked(change ServiceChange) {
-	if change.Settings.Distance < peer.distance {
+	if change.Settings.MaxDistance < peer.distance {
 		// We are not allowed to reach this service
 		if remote := peer.remotesByTarget[change.TargetID]; remote != nil {
 			// Forget this remote and remove from all subscriptions
@@ -268,9 +269,6 @@ func (peer *serverPeer) addRemoteLocked(change ServiceChange) {
 		}
 		return
 	}
-
-	// Change distance to the peer distance, not the maximum allowed distance
-	change.Settings.Distance = peer.distance
 
 	// Check if we already had this remote registered
 	if remote := peer.remotesByTarget[change.TargetID]; remote != nil {
@@ -291,6 +289,7 @@ func (peer *serverPeer) addRemoteLocked(change ServiceChange) {
 		client:   peer.client,
 		targetID: change.TargetID,
 		name:     change.Name,
+		distance: peer.distance,
 		settings: change.Settings,
 
 		subscriptions: make(map[*serverSubscription]struct{}),

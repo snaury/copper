@@ -170,7 +170,7 @@ func (m *SubscribeOption) GetMaxDistance() uint32 {
 
 type PublishSettings struct {
 	Priority         *uint32 `protobuf:"varint,1,opt,name=priority" json:"priority,omitempty"`
-	Distance         *uint32 `protobuf:"varint,2,opt,name=distance" json:"distance,omitempty"`
+	MaxDistance      *uint32 `protobuf:"varint,2,opt,name=max_distance" json:"max_distance,omitempty"`
 	Concurrency      *uint32 `protobuf:"varint,3,opt,name=concurrency" json:"concurrency,omitempty"`
 	QueueSize        *uint32 `protobuf:"varint,4,opt,name=queue_size" json:"queue_size,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
@@ -187,9 +187,9 @@ func (m *PublishSettings) GetPriority() uint32 {
 	return 0
 }
 
-func (m *PublishSettings) GetDistance() uint32 {
-	if m != nil && m.Distance != nil {
-		return *m.Distance
+func (m *PublishSettings) GetMaxDistance() uint32 {
+	if m != nil && m.MaxDistance != nil {
+		return *m.MaxDistance
 	}
 	return 0
 }

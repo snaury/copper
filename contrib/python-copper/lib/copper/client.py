@@ -401,7 +401,7 @@ class Client(object):
         self._subscriptions[sub] = request
         return sub
 
-    def publish(self, name, handler, priority=0, distance=2, concurrency=1, queue_size=64):
+    def publish(self, name, handler, priority=0, max_distance=2, concurrency=1, queue_size=64):
         target_id = self._next_target_id
         self._next_target_id += 1
         self._handlers[target_id] = handler
@@ -410,7 +410,7 @@ class Client(object):
             request.name = name
             request.target_id = target_id
             request.settings.priority = priority
-            request.settings.distance = distance
+            request.settings.max_distance = max_distance
             request.settings.concurrency = concurrency
             request.settings.queue_size = queue_size
             pub = self.Publication(self, target_id)

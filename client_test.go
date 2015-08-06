@@ -66,7 +66,7 @@ func TestPublishChanges(t *testing.T) {
 				Name:     "test:myservice",
 				Settings: PublishSettings{
 					Priority:    1,
-					Distance:    2,
+					MaxDistance: 2,
 					Concurrency: 3,
 				},
 			},
@@ -109,7 +109,7 @@ func TestPublishChanges(t *testing.T) {
 				"test:myservice",
 				PublishSettings{
 					Priority:    1,
-					Distance:    2,
+					MaxDistance: 2,
 					Concurrency: 3,
 				},
 				nil,
@@ -148,7 +148,7 @@ func TestPublishPriorities(t *testing.T) {
 				Name:     "test:myservice",
 				Settings: PublishSettings{
 					Priority:    0,
-					Distance:    1,
+					MaxDistance: 1,
 					Concurrency: 2,
 				},
 			},
@@ -161,7 +161,7 @@ func TestPublishPriorities(t *testing.T) {
 				Name:     "test:myservice",
 				Settings: PublishSettings{
 					Priority:    1,
-					Distance:    2,
+					MaxDistance: 2,
 					Concurrency: 3,
 				},
 			},
@@ -235,7 +235,7 @@ func TestPublishPriorities(t *testing.T) {
 				"test:myservice",
 				PublishSettings{
 					Priority:    0,
-					Distance:    1,
+					MaxDistance: 1,
 					Concurrency: 2,
 				},
 				nil,
@@ -254,7 +254,7 @@ func TestPublishPriorities(t *testing.T) {
 				"test:myservice",
 				PublishSettings{
 					Priority:    1,
-					Distance:    2,
+					MaxDistance: 2,
 					Concurrency: 3,
 				},
 				nil,
@@ -349,7 +349,7 @@ func TestSubscribePriorities(t *testing.T) {
 				"test:myservice",
 				PublishSettings{
 					Priority:    0,
-					Distance:    1,
+					MaxDistance: 1,
 					Concurrency: 2,
 				},
 				nil,
@@ -363,7 +363,7 @@ func TestSubscribePriorities(t *testing.T) {
 				"test:myservice",
 				PublishSettings{
 					Priority:    1,
-					Distance:    2,
+					MaxDistance: 2,
 					Concurrency: 3,
 				},
 				nil,
@@ -486,7 +486,7 @@ func TestSubscribeEndpoints(t *testing.T) {
 		},
 		"test:myservice",
 		PublishSettings{
-			Distance:    1,
+			MaxDistance: 1,
 			Concurrency: 2,
 		},
 	)
@@ -620,7 +620,7 @@ func runClientServerStream(clientfunc func(stream Stream) error, serverfunc func
 		serverfunc,
 		"test:myservice",
 		PublishSettings{
-			Distance:    0,
+			MaxDistance: 0,
 			Concurrency: 1,
 		},
 	)
@@ -863,7 +863,7 @@ func TestClientServerPeers(t *testing.T) {
 			"test:myservice1",
 			PublishSettings{
 				Concurrency: 1,
-				Distance:    1,
+				MaxDistance: 1,
 			},
 			nil,
 		)
@@ -876,7 +876,7 @@ func TestClientServerPeers(t *testing.T) {
 			"test:myservice2",
 			PublishSettings{
 				Concurrency: 1,
-				Distance:    0,
+				MaxDistance: 0,
 			},
 			nil,
 		)

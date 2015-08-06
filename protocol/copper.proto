@@ -14,7 +14,7 @@ message SubscribeOption {
 
 message PublishSettings {
     optional uint32 priority = 1;
-    optional uint32 distance = 2;
+    optional uint32 max_distance = 2;
     optional uint32 concurrency = 3;
     optional uint32 queue_size = 4;
 }

@@ -64,7 +64,7 @@ type Subscription interface {
 // service and how many concurrent streams an instance is able to handle.
 type PublishSettings struct {
 	Priority    uint32
-	Distance    uint32
+	MaxDistance uint32
 	Concurrency uint32
 	QueueSize   uint32
 }

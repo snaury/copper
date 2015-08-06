@@ -92,11 +92,11 @@ def test_client_reconnect_active(copper_client):
                 may_respond.set()
                 assert stream.read() == 'Hello, world!'
 
-def assert_change_eq(change, target_id, name, priority, distance, concurrency, queue_size):
+def assert_change_eq(change, target_id, name, priority, max_distance, concurrency, queue_size):
     assert change.target_id == target_id
     assert change.name == name
     assert change.settings.priority == priority
-    assert change.settings.distance == distance
+    assert change.settings.max_distance == max_distance
     assert change.settings.concurrency == concurrency
     assert change.settings.queue_size == queue_size
 

@@ -25,8 +25,9 @@ type serverPublication struct {
 	targetID int64
 
 	endpoints map[localEndpointKey]*localEndpoint
-	distances map[uint32]int
 	settings  PublishSettings
+
+	maxDistanceCounts map[uint32]int
 
 	ready map[*localEndpoint]struct{}
 	queue []chan *localEndpoint
@@ -226,8 +227,9 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 			targetID: s.allocateTargetID(),
 
 			endpoints: make(map[localEndpointKey]*localEndpoint),
-			distances: make(map[uint32]int),
 			settings:  settings,
+
+			maxDistanceCounts: make(map[uint32]int),
 
 			ready: make(map[*localEndpoint]struct{}),
 
@@ -248,13 +250,13 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 		if pub.settings.QueueSize+settings.QueueSize < pub.settings.QueueSize {
 			return nil, fmt.Errorf("new endpoint with target=%d overflows maximum queue size", key.targetID)
 		}
-		if pub.settings.Distance < settings.Distance {
-			pub.settings.Distance = settings.Distance
+		if pub.settings.MaxDistance < settings.MaxDistance {
+			pub.settings.MaxDistance = settings.MaxDistance
 		}
 		pub.settings.Concurrency += settings.Concurrency
 		pub.settings.QueueSize += settings.QueueSize
 	}
-	pub.distances[settings.Distance]++
+	pub.maxDistanceCounts[settings.MaxDistance]++
 
 	endpoint := &localEndpoint{
 		owner:    s,
@@ -275,7 +277,7 @@ func (s *server) publishLocked(name string, key localEndpointKey, settings Publi
 
 	if log := DebugLog(); log != nil {
 		log.Printf("Service %s(priority=%d): published locally (total: endpoints=%d, concurrency=%d, queue_size=%d, max_distance=%d)",
-			pub.name, pub.settings.Priority, len(pub.endpoints), pub.settings.Concurrency, pub.settings.QueueSize, pub.settings.Distance)
+			pub.name, pub.settings.Priority, len(pub.endpoints), pub.settings.Concurrency, pub.settings.QueueSize, pub.settings.MaxDistance)
 	}
 
 	return endpoint, nil
@@ -289,11 +291,11 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 	endpoint.pub = nil
 
 	delete(pub.ready, endpoint)
-	if decrementCounterUint32(pub.distances, endpoint.settings.Distance) {
-		pub.settings.Distance = 0
-		for distance := range pub.distances {
-			if pub.settings.Distance < distance {
-				pub.settings.Distance = distance
+	if decrementCounterUint32(pub.maxDistanceCounts, endpoint.settings.MaxDistance) {
+		pub.settings.MaxDistance = 0
+		for maxDistance := range pub.maxDistanceCounts {
+			if pub.settings.MaxDistance < maxDistance {
+				pub.settings.MaxDistance = maxDistance
 			}
 		}
 	}
@@ -336,7 +338,7 @@ func (endpoint *localEndpoint) unpublishLocked() error {
 		}
 		if log := DebugLog(); log != nil {
 			log.Printf("Service %s(priority=%d): unpublished locally (total: endpoints=%d, concurrency=%d, queue_size=%d, max_distance=%d)",
-				pub.name, pub.settings.Priority, len(pub.endpoints), pub.settings.Concurrency, pub.settings.QueueSize, pub.settings.Distance)
+				pub.name, pub.settings.Priority, len(pub.endpoints), pub.settings.Concurrency, pub.settings.QueueSize, pub.settings.MaxDistance)
 		}
 	}
 	return nil

@@ -57,7 +57,7 @@ func rpcEndpointsToProto(endpoints []Endpoint) []*protocol.Endpoint {
 func rpcProtoToPublishSettings(settings *protocol.PublishSettings) PublishSettings {
 	return PublishSettings{
 		Priority:    settings.GetPriority(),
-		Distance:    settings.GetDistance(),
+		MaxDistance: settings.GetMaxDistance(),
 		Concurrency: settings.GetConcurrency(),
 		QueueSize:   settings.GetQueueSize(),
 	}
@@ -66,7 +66,7 @@ func rpcProtoToPublishSettings(settings *protocol.PublishSettings) PublishSettin
 func rpcPublishSettingsToProto(settings PublishSettings) *protocol.PublishSettings {
 	return &protocol.PublishSettings{
 		Priority:    proto.Uint32(settings.Priority),
-		Distance:    proto.Uint32(settings.Distance),
+		MaxDistance: proto.Uint32(settings.MaxDistance),
 		Concurrency: proto.Uint32(settings.Concurrency),
 		QueueSize:   proto.Uint32(settings.QueueSize),
 	}

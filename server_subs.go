@@ -144,7 +144,7 @@ func (o *serverSubscriptionOption) removePublicationLocked(pub *serverPublicatio
 }
 
 func (o *serverSubscriptionOption) addRemoteLocked(remote *serverPeerRemote) bool {
-	if o.option.MinDistance <= remote.settings.Distance && remote.settings.Distance <= o.option.MaxDistance {
+	if o.option.MinDistance <= remote.distance && remote.distance <= o.option.MaxDistance {
 		// this remote falls under this option's filter
 		o.remote = append(o.remote, remote)
 		return true
@@ -153,7 +153,7 @@ func (o *serverSubscriptionOption) addRemoteLocked(remote *serverPeerRemote) boo
 }
 
 func (o *serverSubscriptionOption) removeRemoteLocked(remote *serverPeerRemote) bool {
-	if o.option.MinDistance <= remote.settings.Distance && remote.settings.Distance <= o.option.MaxDistance {
+	if o.option.MinDistance <= remote.distance && remote.distance <= o.option.MaxDistance {
 		// this remote falls under this option's filter
 		for index, value := range o.remote {
 			if value == remote {
