@@ -1,3 +1,9 @@
+python-copper (0.0.7) unstable; urgency=medium
+
+  * Renamed distance to max_distance in Client.publish
+
+ -- Alexey Borzenkov <snaury@gmail.com>  Thu, 06 Aug 2015 11:36:41 +0300
+
 python-copper (0.0.6) unstable; urgency=medium
 
   * Improved buffering in Python code
