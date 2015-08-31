@@ -39,6 +39,8 @@ setup(
     author = 'Alexey Borzenkov',
     author_email = 'snaury@gmail.com',
     description = 'Copper client library',
+    url = 'https://github.com/snaury/copper',
+    license = 'MIT License',
     package_dir = {'': 'lib'},
     packages = ['copper'],
     install_requires = ['setuptools', 'protobuf', 'gevent'],

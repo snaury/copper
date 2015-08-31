@@ -1,1 +1,10 @@
-TODO
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Source: https://github.com/snaury/copper
+
+Files: *
+Copyright: 2015 Alexey Borzenkov
+License: Expat
+
+Files: debian/*
+Copyright: 2015 Alexey Borzenkov
+License: GPL-2+
