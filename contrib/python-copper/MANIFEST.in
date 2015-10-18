@@ -1,0 +1,4 @@
+include lib/copper/*.py
+exclude lib/copper/copper_pb2.py
+include copper.proto
+include setup.py
