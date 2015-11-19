@@ -1,3 +1,9 @@
+python-copper (0.0.8) UNRELEASED; urgency=medium
+
+  * Don't fail when shutdown succeeds too fast
+
+ -- Alexey Borzenkov <snaury@gmail.com>  Fri, 20 Nov 2015 02:32:44 +0300
+
 python-copper (0.0.7) unstable; urgency=medium
 
   * Renamed distance to max_distance in Client.publish

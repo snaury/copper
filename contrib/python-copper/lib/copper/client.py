@@ -364,9 +364,9 @@ class Client(object):
     def shutdown(self, unpublish=True):
         self._shutdown = True
         self._connected_cond.broadcast()
+        if unpublish and self._conn is not None:
+            self._unpublish_all()
         if self._conn is not None:
-            if unpublish:
-                self._unpublish_all()
             self._conn.shutdown()
 
     def ping(self, value):

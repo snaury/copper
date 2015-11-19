@@ -33,7 +33,7 @@ class PyTest(TestCommand):
 
 setup(
     name = 'copper',
-    version = '0.0.1',
+    version = '0.0.8',
     author = 'Alexey Borzenkov',
     author_email = 'snaury@gmail.com',
     description = 'Copper client library',
