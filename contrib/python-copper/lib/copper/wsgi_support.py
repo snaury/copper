@@ -7,6 +7,18 @@ __all__ = [
     'wsgi',
 ]
 
+class FakeLog(object):
+    """Fake file-like object for logging"""
+
+    def flush(self):
+        pass
+
+    def write(self, data):
+        pass
+
+    def writelines(self, lines):
+        pass
+
 class FakeServer(object):
     """This is a fake WSGIServer for WSGIHandler"""
 
@@ -20,10 +32,17 @@ class FakeServer(object):
         'wsgi.multiprocess': False,
     }
 
-    def __init__(self, application, log=None):
-        self.application = application
+    def __init__(self, application, log=None, error_log=None):
         self.loop = get_hub().loop
-        self.log = log
+        self.application = application
+        if log is None:
+            self.log = FakeLog()
+        else:
+            self.log = log
+        if error_log is None:
+            self.error_log = FakeLog()
+        else:
+            self.error_log = error_log
 
     def get_environ(self):
         environ = self.base_env.copy()
