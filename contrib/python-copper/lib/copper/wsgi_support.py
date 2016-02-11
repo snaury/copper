@@ -32,22 +32,16 @@ class FakeServer(object):
         'wsgi.multiprocess': False,
     }
 
-    def __init__(self, application, log=None, error_log=None):
+    def __init__(self, application):
         self.loop = get_hub().loop
         self.application = application
-        if log is None:
-            self.log = FakeLog()
-        else:
-            self.log = log
-        if error_log is None:
-            self.error_log = FakeLog()
-        else:
-            self.error_log = error_log
+        self.log = FakeLog()
+        self.error_log = sys.stderr
 
     def get_environ(self):
         environ = self.base_env.copy()
         environ['wsgi.url_scheme'] = 'http'
-        environ['wsgi.errors'] = sys.stderr
+        environ['wsgi.errors'] = self.error_log
         return environ
 
 class FakeFile(object):
