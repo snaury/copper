@@ -1,9 +1,9 @@
-python-copper (0.0.8) UNRELEASED; urgency=medium
+python-copper (0.0.8) unstable; urgency=medium
 
   * Don't fail when shutdown succeeds too fast
   * Fix wsgi support on gevent 1.1
 
- -- Alexey Borzenkov <snaury@gmail.com>  Fri, 20 Nov 2015 02:32:44 +0300
+ -- Alexey Borzenkov <snaury@gmail.com>  Fri, 12 Feb 2016 18:25:29 +0300
 
 python-copper (0.0.7) unstable; urgency=medium
 
