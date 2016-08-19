@@ -92,18 +92,18 @@ class CopperHTTPHandler(AbstractHTTPHandler):
         self.default_path = default_path
 
     def copper_open(self, req):
-        host = req.get_host()
-        if not host:
-            req.host = self.default_path
         return self.do_open(CopperHTTPConnection, req)
 
-    def docker_request(self, req):
+    def copper_request(self, req):
         host = req.get_host()
         if not host:
             req.host = self.default_path
+        # Go 1.7+ does not support malformed Host header
+        if not req.has_header('Host'):
+            req.add_unredirected_header('Host', 'copper')
         return self.do_request_(req)
 
-    def docker_response(self, req, res):
+    def copper_response(self, req, res):
         return res
 
 @pytest.fixture
