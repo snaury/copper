@@ -10,14 +10,14 @@ import (
 )
 
 func rpcWrapServer(stream Stream, server lowLevelServer) error {
-	rtype, err := rpcReadRequestType(stream)
-	if err != nil {
+	rtype, readerr := rpcReadRequestType(stream)
+	if readerr != nil {
 		return EINVALID
 	}
 	switch rtype {
 	case protocol.RequestType_NewStream:
 		var buf [8]byte
-		_, err = stream.Read(buf[0:8])
+		_, err := stream.Read(buf[0:8])
 		if err != nil {
 			return EINVALID
 		}
@@ -25,7 +25,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		return server.handleNewStream(int64(targetID), stream)
 	case protocol.RequestType_Subscribe:
 		var request protocol.SubscribeRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}
@@ -41,7 +41,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		})
 	case protocol.RequestType_GetEndpoints:
 		var request protocol.GetEndpointsRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}
@@ -54,7 +54,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		})
 	case protocol.RequestType_StreamEndpoints:
 		var request protocol.StreamEndpointsRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}
@@ -87,7 +87,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		}
 	case protocol.RequestType_Unsubscribe:
 		var request protocol.UnsubscribeRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}
@@ -98,7 +98,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		return rpcWriteMessage(stream, &protocol.UnsubscribeResponse{})
 	case protocol.RequestType_Publish:
 		var request protocol.PublishRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}
@@ -113,7 +113,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		return rpcWriteMessage(stream, &protocol.PublishResponse{})
 	case protocol.RequestType_Unpublish:
 		var request protocol.UnpublishRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}
@@ -124,7 +124,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		return rpcWriteMessage(stream, &protocol.UnpublishResponse{})
 	case protocol.RequestType_SetRoute:
 		var request protocol.SetRouteRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}
@@ -135,7 +135,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		return rpcWriteMessage(stream, &protocol.SetRouteResponse{})
 	case protocol.RequestType_ListRoutes:
 		var request protocol.ListRoutesRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}
@@ -148,7 +148,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		})
 	case protocol.RequestType_LookupRoute:
 		var request protocol.LookupRouteRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}
@@ -161,7 +161,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 		})
 	case protocol.RequestType_StreamServices:
 		var request protocol.StreamServicesRequest
-		err = rpcReadMessage(stream, &request)
+		err := rpcReadMessage(stream, &request)
 		if err != nil {
 			return EINVALID
 		}

@@ -73,7 +73,6 @@ func TestRawConnStreams(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer close(serverReady)
-		var err error
 		defer wg.Done()
 		closeErrors := map[int64]error{
 			1: nil,
