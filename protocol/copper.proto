@@ -1,48 +1,48 @@
-syntax = "proto2";
+syntax = "proto3";
 
 package protocol;
 
 message Endpoint {
-    required string network = 1;
-    required string address = 2;
-    optional sint64 target_id = 3;
+    string network = 1;
+    string address = 2;
+    sint64 target_id = 3;
 }
 
 message SubscribeOption {
-    required string service = 1;
-    optional uint32 min_distance = 2;
-    optional uint32 max_distance = 3;
+    string service = 1;
+    uint32 min_distance = 2;
+    uint32 max_distance = 3;
 }
 
 message PublishSettings {
-    optional uint32 priority = 1;
-    optional uint32 max_distance = 2;
-    optional uint32 concurrency = 3;
-    optional uint32 queue_size = 4;
+    uint32 priority = 1;
+    uint32 max_distance = 2;
+    uint32 concurrency = 3;
+    uint32 queue_size = 4;
 }
 
 message Route {
     repeated SubscribeOption options = 1;
-    required uint32 weight = 2;
+    uint32 weight = 2;
 }
 
 message ServiceChange {
-    required sint64 target_id = 1;
-    required string name = 2;
-    required PublishSettings settings = 3;
+    sint64 target_id = 1;
+    string name = 2;
+    PublishSettings settings = 3;
 }
 
 message SubscribeRequest {
     repeated SubscribeOption options = 1;
-    optional bool disable_routes = 2;
+    bool disable_routes = 2;
 }
 
 message SubscribeResponse {
-    required sint64 target_id = 1;
+    sint64 target_id = 1;
 }
 
 message GetEndpointsRequest {
-    required sint64 target_id = 1;
+    sint64 target_id = 1;
 }
 
 message GetEndpointsResponse {
@@ -50,7 +50,7 @@ message GetEndpointsResponse {
 }
 
 message StreamEndpointsRequest {
-    required sint64 target_id = 1;
+    sint64 target_id = 1;
 }
 
 message StreamEndpointsResponse {
@@ -59,7 +59,7 @@ message StreamEndpointsResponse {
 }
 
 message UnsubscribeRequest {
-    required sint64 target_id = 1;
+    sint64 target_id = 1;
 }
 
 message UnsubscribeResponse {
@@ -67,9 +67,9 @@ message UnsubscribeResponse {
 }
 
 message PublishRequest {
-    required sint64 target_id = 1;
-    required string name = 2;
-    required PublishSettings settings = 3;
+    sint64 target_id = 1;
+    string name = 2;
+    PublishSettings settings = 3;
 }
 
 message PublishResponse {
@@ -77,7 +77,7 @@ message PublishResponse {
 }
 
 message UnpublishRequest {
-    required sint64 target_id = 1;
+    sint64 target_id = 1;
 }
 
 message UnpublishResponse {
@@ -85,7 +85,7 @@ message UnpublishResponse {
 }
 
 message SetRouteRequest {
-    required string name = 1;
+    string name = 1;
     repeated Route routes = 2;
 }
 
@@ -102,7 +102,7 @@ message ListRoutesResponse {
 }
 
 message LookupRouteRequest {
-    required string name = 1;
+    string name = 1;
 }
 
 message LookupRouteResponse {

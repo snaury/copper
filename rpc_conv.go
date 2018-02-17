@@ -1,7 +1,6 @@
 package copper
 
 import (
-	"github.com/golang/protobuf/proto"
 	"github.com/snaury/copper/protocol"
 )
 
@@ -21,9 +20,9 @@ func rpcSubscribeOptionsToProto(options []SubscribeOption) []*protocol.Subscribe
 	var poptions []*protocol.SubscribeOption
 	for _, o := range options {
 		poptions = append(poptions, &protocol.SubscribeOption{
-			Service:     proto.String(o.Service),
-			MinDistance: proto.Uint32(o.MinDistance),
-			MaxDistance: proto.Uint32(o.MaxDistance),
+			Service:     o.Service,
+			MinDistance: o.MinDistance,
+			MaxDistance: o.MaxDistance,
 		})
 	}
 	return poptions
@@ -45,9 +44,9 @@ func rpcEndpointsToProto(endpoints []Endpoint) []*protocol.Endpoint {
 	var pendpoints []*protocol.Endpoint
 	for _, e := range endpoints {
 		pendpoint := &protocol.Endpoint{
-			Network:  proto.String(e.Network),
-			Address:  proto.String(e.Address),
-			TargetId: proto.Int64(e.TargetID),
+			Network:  e.Network,
+			Address:  e.Address,
+			TargetId: e.TargetID,
 		}
 		pendpoints = append(pendpoints, pendpoint)
 	}
@@ -65,10 +64,10 @@ func rpcProtoToPublishSettings(settings *protocol.PublishSettings) PublishSettin
 
 func rpcPublishSettingsToProto(settings PublishSettings) *protocol.PublishSettings {
 	return &protocol.PublishSettings{
-		Priority:    proto.Uint32(settings.Priority),
-		MaxDistance: proto.Uint32(settings.MaxDistance),
-		Concurrency: proto.Uint32(settings.Concurrency),
-		QueueSize:   proto.Uint32(settings.QueueSize),
+		Priority:    settings.Priority,
+		MaxDistance: settings.MaxDistance,
+		Concurrency: settings.Concurrency,
+		QueueSize:   settings.QueueSize,
 	}
 }
 
@@ -88,7 +87,7 @@ func rpcRoutesToProto(routes []Route) []*protocol.Route {
 	for _, route := range routes {
 		proute := &protocol.Route{
 			Options: rpcSubscribeOptionsToProto(route.Options),
-			Weight:  proto.Uint32(route.Weight),
+			Weight:  route.Weight,
 		}
 		proutes = append(proutes, proute)
 	}
@@ -111,8 +110,8 @@ func rpcServiceChangesToProto(changes []ServiceChange) []*protocol.ServiceChange
 	var pchanges []*protocol.ServiceChange
 	for _, change := range changes {
 		pchanges = append(pchanges, &protocol.ServiceChange{
-			TargetId: proto.Int64(change.TargetID),
-			Name:     proto.String(change.Name),
+			TargetId: change.TargetID,
+			Name:     change.Name,
 			Settings: rpcPublishSettingsToProto(change.Settings),
 		})
 	}

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/snaury/copper/protocol"
 )
 
@@ -52,7 +51,7 @@ func (c *rpcClient) subscribe(settings SubscribeSettings) (int64, error) {
 		protocol.RequestType_Subscribe,
 		&protocol.SubscribeRequest{
 			Options:       rpcSubscribeOptionsToProto(settings.Options),
-			DisableRoutes: proto.Bool(settings.DisableRoutes),
+			DisableRoutes: settings.DisableRoutes,
 		},
 		&response,
 	)
@@ -68,7 +67,7 @@ func (c *rpcClient) getEndpoints(targetID int64) ([]Endpoint, error) {
 		c.RawConn,
 		protocol.RequestType_GetEndpoints,
 		&protocol.GetEndpointsRequest{
-			TargetId: proto.Int64(targetID),
+			TargetId: targetID,
 		},
 		&response,
 	)
@@ -117,7 +116,7 @@ func (c *rpcClient) streamEndpoints(targetID int64) (EndpointChangesStream, erro
 		c.RawConn,
 		protocol.RequestType_StreamEndpoints,
 		&protocol.StreamEndpointsRequest{
-			TargetId: proto.Int64(targetID),
+			TargetId: targetID,
 		},
 	)
 	if err != nil {
@@ -138,7 +137,7 @@ func (c *rpcClient) unsubscribe(targetID int64) error {
 		c.RawConn,
 		protocol.RequestType_Unsubscribe,
 		&protocol.UnsubscribeRequest{
-			TargetId: proto.Int64(targetID),
+			TargetId: targetID,
 		},
 		&response,
 	)
@@ -154,8 +153,8 @@ func (c *rpcClient) publish(targetID int64, name string, settings PublishSetting
 		c.RawConn,
 		protocol.RequestType_Publish,
 		&protocol.PublishRequest{
-			TargetId: proto.Int64(targetID),
-			Name:     proto.String(name),
+			TargetId: targetID,
+			Name:     name,
 			Settings: rpcPublishSettingsToProto(settings),
 		},
 		&response,
@@ -172,7 +171,7 @@ func (c *rpcClient) unpublish(targetID int64) error {
 		c.RawConn,
 		protocol.RequestType_Unpublish,
 		&protocol.UnpublishRequest{
-			TargetId: proto.Int64(targetID),
+			TargetId: targetID,
 		},
 		&response,
 	)
@@ -188,7 +187,7 @@ func (c *rpcClient) setRoute(name string, routes ...Route) error {
 		c.RawConn,
 		protocol.RequestType_SetRoute,
 		&protocol.SetRouteRequest{
-			Name:   proto.String(name),
+			Name:   name,
 			Routes: rpcRoutesToProto(routes),
 		},
 		&response,
@@ -219,7 +218,7 @@ func (c *rpcClient) lookupRoute(name string) ([]Route, error) {
 		c.RawConn,
 		protocol.RequestType_LookupRoute,
 		&protocol.LookupRouteRequest{
-			Name: proto.String(name),
+			Name: name,
 		},
 		&response,
 	)

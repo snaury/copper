@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/snaury/copper/protocol"
 )
 
@@ -37,7 +36,7 @@ func rpcWrapServer(stream Stream, server lowLevelServer) error {
 			return err
 		}
 		return rpcWriteMessage(stream, &protocol.SubscribeResponse{
-			TargetId: proto.Int64(targetID),
+			TargetId: targetID,
 		})
 	case protocol.RequestType_GetEndpoints:
 		var request protocol.GetEndpointsRequest
